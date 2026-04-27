@@ -1,0 +1,523 @@
+; Zepo prelude — derived forms and list utilities.
+;
+; `let`, `let*`, `letrec`, `and`, `or`, `when`, `unless` are recognized by
+; the AST builder and desugared to core forms. Everything else is plain
+; Zepo code on top of the primitives.
+
+(define (length lst)
+  (if (null? lst)
+      0
+      (+ 1 (length (cdr lst)))))
+
+(define (map f lst)
+  (if (null? lst)
+      (quote ())
+      (cons (f (car lst)) (map f (cdr lst)))))
+
+(define (filter pred lst)
+  (cond ((null? lst) (quote ()))
+        ((pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
+        (#t (filter pred (cdr lst)))))
+
+(define (fold-left f acc lst)
+  (if (null? lst)
+      acc
+      (fold-left f (f acc (car lst)) (cdr lst))))
+
+(define (fold-right f init lst)
+  (if (null? lst)
+      init
+      (f (car lst) (fold-right f init (cdr lst)))))
+
+(define (append . lists)
+  (define (append2 lst1 lst2)
+    (if (null? lst1)
+        lst2
+        (cons (car lst1) (append2 (cdr lst1) lst2))))
+  (define (concat ls)
+    (if (null? ls) (quote ())
+        (if (null? (cdr ls)) (car ls)
+            (append2 (car ls) (concat (cdr ls))))))
+  (concat lists))
+
+(define (reverse lst)
+  (if (null? lst)
+      (quote ())
+      (append (reverse (cdr lst)) (cons (car lst) (quote ())))))
+
+(define (for-each f lst)
+  (if (null? lst)
+      (quote ())
+      (begin (f (car lst)) (for-each f (cdr lst)))))
+
+(define (assoc key lst)
+  (cond ((null? lst) #f)
+        ((equal? key (car (car lst))) (car lst))
+        (#t (assoc key (cdr lst)))))
+
+(define (member x lst)
+  (cond ((null? lst) #f)
+        ((equal? x (car lst)) lst)
+        (#t (member x (cdr lst)))))
+
+(define (caar x) (car (car x)))
+(define (cadr x) (car (cdr x)))
+(define (cdar x) (cdr (car x)))
+(define (cddr x) (cdr (cdr x)))
+(define (caddr x) (car (cdr (cdr x))))
+(define (cadddr x) (car (cdr (cdr (cdr x)))))
+
+(define (zero? n) (= n 0))
+(define (positive? n) (> n 0))
+(define (negative? n) (< n 0))
+
+(define (abs n) (if (< n 0) (- n) n))
+
+(define (min2 a b) (if (< a b) a b))
+(define (max2 a b) (if (> a b) a b))
+; Zepo standard library.
+; Loaded after the prelude. Depends on all primitives and prelude definitions.
+
+;;; ── List predicates ───────────────────────────────────────────────────────
+
+(define (list? x)
+  (let loop ((fast x) (slow x))
+    (cond ((null? fast) #t)
+          ((not (pair? fast)) #f)
+          ((null? (cdr fast)) #t)
+          ((not (pair? (cdr fast))) #f)
+          ((eq? (cddr fast) slow) #f)
+          (#t (loop (cddr fast) (cdr slow))))))
+
+;;; ── List access ───────────────────────────────────────────────────────────
+
+(define (list-ref lst n)
+  (if (= n 0)
+      (car lst)
+      (list-ref (cdr lst) (- n 1))))
+
+(define (list-tail lst n)
+  (if (= n 0)
+      lst
+      (list-tail (cdr lst) (- n 1))))
+
+(define (last lst)
+  (if (null? (cdr lst))
+      (car lst)
+      (last (cdr lst))))
+
+(define (take lst n)
+  (if (or (= n 0) (null? lst))
+      (quote ())
+      (cons (car lst) (take (cdr lst) (- n 1)))))
+
+(define (drop lst n)
+  (list-tail lst n))
+
+;;; ── List generation ───────────────────────────────────────────────────────
+
+(define (iota count . args)
+  (let ((start (if (null? args) 0 (car args)))
+        (step  (if (or (null? args) (null? (cdr args))) 1 (cadr args))))
+    (let loop ((i 0) (acc (quote ())))
+      (if (= i count)
+          (reverse acc)
+          (loop (+ i 1) (cons (+ start (* i step)) acc))))))
+
+;;; ── List higher-order ─────────────────────────────────────────────────────
+
+(define (any pred lst)
+  (cond ((null? lst) #f)
+        ((pred (car lst)) #t)
+        (#t (any pred (cdr lst)))))
+
+(define (every pred lst)
+  (cond ((null? lst) #t)
+        ((not (pred (car lst))) #f)
+        (#t (every pred (cdr lst)))))
+
+(define (find pred lst)
+  (cond ((null? lst) #f)
+        ((pred (car lst)) (car lst))
+        (#t (find pred (cdr lst)))))
+
+(define (remove pred lst)
+  (filter (lambda (x) (not (pred x))) lst))
+
+(define (count pred lst)
+  (fold-left (lambda (acc x) (if (pred x) (+ acc 1) acc)) 0 lst))
+
+(define (flatten lst)
+  (cond ((null? lst) (quote ()))
+        ((pair? (car lst)) (append (flatten (car lst)) (flatten (cdr lst))))
+        (#t (cons (car lst) (flatten (cdr lst))))))
+
+(define (zip . lists)
+  (if (any null? lists)
+      (quote ())
+      (cons (map car lists) (apply zip (map cdr lists)))))
+
+;;; ── Alist helpers ─────────────────────────────────────────────────────────
+
+(define (alist-get key al)
+  (let ((pair (assoc key al)))
+    (if pair (cdr pair) #f)))
+
+(define (alist-set key val al)
+  (cons (cons key val)
+        (filter (lambda (p) (not (equal? (car p) key))) al)))
+
+(define (alist-delete key al)
+  (filter (lambda (p) (not (equal? (car p) key))) al))
+
+(define (alist-keys al)
+  (map car al))
+
+(define (alist-values al)
+  (map cdr al))
+
+(define (assq key lst)
+  (cond ((null? lst) #f)
+        ((eq? key (car (car lst))) (car lst))
+        (#t (assq key (cdr lst)))))
+
+(define (memq x lst)
+  (cond ((null? lst) #f)
+        ((eq? x (car lst)) lst)
+        (#t (memq x (cdr lst)))))
+
+;;; ── Numbers ───────────────────────────────────────────────────────────────
+
+(define (min first . rest)
+  (fold-left min2 first rest))
+
+(define (max first . rest)
+  (fold-left max2 first rest))
+
+; Simple O(n) expt — fast expt added when even?/modulo available.
+(define (expt base exp)
+  (if (= exp 0)
+      1
+      (* base (expt base (- exp 1)))))
+
+;;; ── Characters ────────────────────────────────────────────────────────────
+
+(define (char=?  a b) (= (char->integer a) (char->integer b)))
+(define (char<?  a b) (< (char->integer a) (char->integer b)))
+(define (char>?  a b) (> (char->integer a) (char->integer b)))
+(define (char<=? a b) (<= (char->integer a) (char->integer b)))
+(define (char>=? a b) (>= (char->integer a) (char->integer b)))
+
+(define (char-alphabetic? c)
+  (let ((n (char->integer c)))
+    (or (and (>= n 65) (<= n 90))
+        (and (>= n 97) (<= n 122)))))
+
+(define (char-numeric? c)
+  (let ((n (char->integer c)))
+    (and (>= n 48) (<= n 57))))
+
+(define (char-whitespace? c)
+  (let ((n (char->integer c)))
+    (or (= n 32) (= n 9) (= n 10) (= n 13))))
+
+(define (char-upcase c)
+  (let ((n (char->integer c)))
+    (if (and (>= n 97) (<= n 122))
+        (integer->char (- n 32))
+        c)))
+
+(define (char-downcase c)
+  (let ((n (char->integer c)))
+    (if (and (>= n 65) (<= n 90))
+        (integer->char (+ n 32))
+        c)))
+
+;;; ── Strings ───────────────────────────────────────────────────────────────
+
+(define (string=?  a b) (equal? a b))
+(define (string<?  a b)
+  (let loop ((i 0))
+    (cond ((= i (string-length a)) (< (string-length a) (string-length b)))
+          ((= i (string-length b)) #f)
+          ((char<? (string-ref a i) (string-ref b i)) #t)
+          ((char>? (string-ref a i) (string-ref b i)) #f)
+          (#t (loop (+ i 1))))))
+(define (string>?  a b) (string<? b a))
+(define (string<=? a b) (not (string>? a b)))
+(define (string>=? a b) (not (string<? a b)))
+
+(define (string->list s)
+  (let loop ((i (- (string-length s) 1)) (acc (quote ())))
+    (if (< i 0)
+        acc
+        (loop (- i 1) (cons (string-ref s i) acc)))))
+
+(define (string-contains s sub)
+  (let ((sl (string-length s))
+        (pl (string-length sub)))
+    (let loop ((i 0))
+      (cond ((> (+ i pl) sl) #f)
+            ((equal? (substring s i (+ i pl)) sub) i)
+            (#t (loop (+ i 1)))))))
+
+(define (string-join strs sep)
+  (if (null? strs)
+      ""
+      (fold-left (lambda (acc s) (string-append acc sep s))
+                 (car strs)
+                 (cdr strs))))
+
+(define (string-trim-left s)
+  (let loop ((i 0))
+    (cond ((= i (string-length s)) "")
+          ((char-whitespace? (string-ref s i)) (loop (+ i 1)))
+          (#t (substring s i (string-length s))))))
+
+(define (string-trim-right s)
+  (let loop ((i (- (string-length s) 1)))
+    (cond ((< i 0) "")
+          ((char-whitespace? (string-ref s i)) (loop (- i 1)))
+          (#t (substring s 0 (+ i 1))))))
+
+(define (string-trim s)
+  (string-trim-left (string-trim-right s)))
+
+(define (string-split s delim)
+  (define delim-str (if (char? delim) (char->string delim) delim))
+  (let ((dl (string-length delim-str))
+        (sl (string-length s)))
+    (let loop ((i 0) (start 0) (acc (quote ())))
+      (cond ((> (+ i dl) sl)
+             (reverse (cons (substring s start sl) acc)))
+            ((equal? (substring s i (+ i dl)) delim-str)
+             (loop (+ i dl) (+ i dl) (cons (substring s start i) acc)))
+            (else (loop (+ i 1) start acc))))))
+
+;;; ── Higher-order utilities ────────────────────────────────────────────────
+
+(define (compose f g) (lambda (x) (f (g x))))
+(define (identity x) x)
+(define (const x) (lambda args x))
+(define (flip f) (lambda (a b) (f b a)))
+
+;;; ── I/O ───────────────────────────────────────────────────────────────────
+
+(define (println x) (begin (display x) (newline)))
+
+;;; ── Misc ──────────────────────────────────────────────────────────────────
+
+(define (assert expr)
+  (if (not expr) (error "Assertion failed") expr))
+
+;;; ── Vector utilities ──────────────────────────────────────────────────────
+
+(define (vector->list v)
+  (let loop ((i (- (vector-length v) 1)) (acc (quote ())))
+    (if (< i 0)
+        acc
+        (loop (- i 1) (cons (vector-ref v i) acc)))))
+
+(define (list->vector lst)
+  (let* ((len (length lst))
+         (v   (make-vector len #f)))
+    (let loop ((i 0) (l lst))
+      (if (null? l)
+          v
+          (begin (vector-set! v i (car l))
+                 (loop (+ i 1) (cdr l)))))))
+
+(define (vector-map f v)
+  (let* ((len (vector-length v))
+         (out (make-vector len #f)))
+    (let loop ((i 0))
+      (if (= i len)
+          out
+          (begin (vector-set! out i (f (vector-ref v i)))
+                 (loop (+ i 1)))))))
+
+(define (vector-for-each f v)
+  (let loop ((i 0))
+    (if (= i (vector-length v))
+        (quote ())
+        (begin (f (vector-ref v i))
+               (loop (+ i 1))))))
+
+;;; ── Extended cXr ──────────────────────────────────────────────────────────
+
+(define (caaar x)  (car (car (car x))))
+(define (cdaar x)  (cdr (car (car x))))
+(define (cadar x)  (car (cdr (car x))))
+(define (cddar x)  (cdr (cdr (car x))))
+(define (caadr x)  (car (car (cdr x))))
+(define (cdadr x)  (cdr (car (cdr x))))
+(define (cdddr x)  (cdr (cdr (cdr x))))
+(define (cadaar x) (car (cdr (car (car x)))))
+(define (caddar x) (car (cdr (cdr (car x)))))
+(define (cadadr x) (car (cdr (car (cdr x)))))
+(define (caaddr x) (car (car (cdr (cdr x)))))
+(define (cddddr x) (cdr (cdr (cdr (cdr x)))))
+(define (caaaar x) (car (car (car (car x)))))
+
+;;; ── Sort ──────────────────────────────────────────────────────────────────
+
+(define (sort lst less?)
+  (define (merge a b)
+    (cond ((null? a) b)
+          ((null? b) a)
+          ((less? (car a) (car b))
+           (cons (car a) (merge (cdr a) b)))
+          (#t (cons (car b) (merge a (cdr b))))))
+  (define (split lst)
+    (let loop ((fast lst) (slow lst) (left (quote ())))
+      (if (or (null? fast) (null? (cdr fast)))
+          (cons left slow)
+          (loop (cddr fast) (cdr slow) (cons (car slow) left)))))
+  (if (or (null? lst) (null? (cdr lst)))
+      lst
+      (let* ((halves (split lst))
+             (left   (sort (car halves) less?))
+             (right  (sort (cdr halves) less?)))
+        (merge left right))))
+
+;;; ── Added after Zig primitives ────────────────────────────────────────────
+
+(define (even? n) (= (modulo n 2) 0))
+(define (odd?  n) (not (even? n)))
+
+(define (gcd a b)
+  (if (= b 0) (abs a) (gcd b (modulo a b))))
+
+(define (lcm a b)
+  (/ (abs (* a b)) (gcd a b)))
+
+; Fast expt using even? now that modulo is available.
+(define (expt base exp)
+  (cond ((= exp 0) 1)
+        ((even? exp) (let ((half (expt base (/ exp 2)))) (* half half)))
+        (#t (* base (expt base (- exp 1))))))
+
+(define (list->string chars)
+  (apply string-append (map char->string chars)))
+
+(define (writeln x) (begin (write x) (newline)))
+
+;;; ── Plist helpers ─────────────────────────────────────────────────────────
+; Plists are flat lists: (key1 val1 key2 val2 ...)
+
+(define (plist-get pl key)
+  (cond ((null? pl) #f)
+        ((equal? (car pl) key) (cadr pl))
+        (#t (plist-get (cddr pl) key))))
+
+(define (plist-set pl key val)
+  (cond ((null? pl) (list key val))
+        ((equal? (car pl) key) (cons key (cons val (cddr pl))))
+        (#t (cons (car pl) (cons (cadr pl) (plist-set (cddr pl) key val))))))
+
+(define (plist-has? pl key)
+  (cond ((null? pl) #f)
+        ((equal? (car pl) key) #t)
+        (#t (plist-has? (cddr pl) key))))
+
+(define (plist-keys pl)
+  (if (null? pl)
+      (quote ())
+      (cons (car pl) (plist-keys (cddr pl)))))
+
+(define (plist-values pl)
+  (if (null? pl)
+      (quote ())
+      (cons (cadr pl) (plist-values (cddr pl)))))
+
+(define (plist-delete pl key)
+  (cond ((null? pl) (quote ()))
+        ((equal? (car pl) key) (cddr pl))
+        (#t (cons (car pl) (cons (cadr pl) (plist-delete (cddr pl) key))))))
+
+(define (plist->alist pl)
+  (if (null? pl)
+      (quote ())
+      (cons (cons (car pl) (cadr pl)) (plist->alist (cddr pl)))))
+
+(define (alist->plist al)
+  (if (null? al)
+      (quote ())
+      (cons (car (car al)) (cons (cdr (car al)) (alist->plist (cdr al))))))
+
+; Result objects — used by FFI and anything that can fail without throwing.
+; Shape:
+;   ok:  (cons 'ok value)                 — single-alloc success wrapper.
+;   err: (list 'err kind-symbol message)  — symbol kind + string message.
+; Constructors avoid clashing with the built-in `error` primitive.
+
+(define (ok val) (cons (quote ok) val))
+
+(define (err kind message) (list (quote err) kind message))
+
+(define (ok? r)
+  (and (pair? r) (eq? (car r) (quote ok))))
+
+(define (err? r)
+  (and (pair? r) (eq? (car r) (quote err))))
+
+(define (result-value r) (cdr r))
+
+(define (err-kind r) (cadr r))
+
+(define (err-message r) (caddr r))
+
+;;; ── String utilities ──────────────────────────────────────────────────────
+
+(define (string-repeat str n)
+  (if (<= n 0) ""
+      (string-append str (string-repeat str (- n 1)))))
+
+(define (string-replace str old new)
+  (let ((slen (string-length str))
+        (olen (string-length old)))
+    (if (= olen 0) str
+        (let loop ((i 0) (acc ""))
+          (if (> (+ i olen) slen)
+              (string-append acc (substring str i slen))
+              (if (equal? (substring str i (+ i olen)) old)
+                  (loop (+ i olen) (string-append acc new))
+                  (loop (+ i 1) (string-append acc (substring str i (+ i 1))))))))))
+
+(define (string-pad-left str width ch)
+  (let ((len (string-length str)))
+    (if (>= len width) str
+        (string-append (string-repeat (char->string ch) (- width len)) str))))
+
+(define (string-pad-right str width ch)
+  (let ((len (string-length str)))
+    (if (>= len width) str
+        (string-append str (string-repeat (char->string ch) (- width len))))))
+
+(define (string-prefix? prefix str)
+  (let ((plen (string-length prefix))
+        (slen (string-length str)))
+    (if (> plen slen) #f
+        (equal? prefix (substring str 0 plen)))))
+
+(define (string-suffix? suffix str)
+  (let ((suflen (string-length suffix))
+        (slen (string-length str)))
+    (if (> suflen slen) #f
+        (equal? suffix (substring str (- slen suflen) slen)))))
+
+(define (string-index str ch . rest)
+  (let ((start (if (null? rest) 0 (car rest)))
+        (len (string-length str)))
+    (let loop ((i start))
+      (cond ((>= i len) #f)
+            ((equal? (string-ref str i) ch) i)
+            (#t (loop (+ i 1)))))))
+
+(defmacro guard (var-and-clauses . body)
+  `(with-exception-handler
+     (lambda (,(car var-and-clauses))
+       (cond
+         ,@(cdr var-and-clauses)
+         (else (raise ,(car var-and-clauses)))))
+     (lambda () ,@body)))

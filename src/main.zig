@@ -1,0 +1,177 @@
+const std = @import("std");
+const zepo = @import("zepo");
+
+const build_cmd = @import("cli/build_cmd.zig");
+const fmt_cmd = @import("cli/fmt_cmd.zig");
+const init_cmd = @import("cli/init_cmd.zig");
+const install_cmd = @import("cli/install_cmd.zig");
+const lint_cmd = @import("cli/lint_cmd.zig");
+const lsp_cmd = @import("cli/lsp_cmd.zig");
+const new_cmd = @import("cli/new_cmd.zig");
+const repl_cmd = @import("cli/repl_cmd.zig");
+const run_cmd = @import("cli/run_cmd.zig");
+const test_cmd = @import("cli/test_cmd.zig");
+
+const HELP =
+    \\Usage: zepo [options] [file]
+    \\       zepo init
+    \\       zepo lsp
+    \\       zepo new <type> [name]
+    \\       zepo run [file.lisp]
+    \\       zepo test [file.lisp]
+    \\       zepo install <path>
+    \\       zepo build <file.lisp> [-o outname]
+    \\
+    \\Options:
+    \\  --repl        Start an interactive REPL
+    \\  --help        Show this help message
+    \\
+    \\Commands:
+    \\  fmt [file...]        Format source files in place (--check for CI)
+    \\  init                 Scaffold a new project in the current directory
+    \\  lint [file...]       Run diagnostics on source files
+    \\  lsp                  Start the LSP server (stdio JSON-RPC)
+    \\  new <type> [name]    Generate a component (module, lib, test)
+    \\  run [file.lisp]      Run a file or the project entry point
+    \\  test [file.lisp]     Run a test file or discover tests/**/*_test.lisp
+    \\  install <path>       Install a package to ~/.local/lib/zepo/
+    \\  build <file.lisp>    Compile to a standalone native binary
+    \\    -o <name>          Output binary name (default: input stem)
+    \\
+    \\Arguments:
+    \\  file          Path to a .lisp file to evaluate
+    \\
+    \\If no arguments are given, this help is shown.
+    \\
+;
+
+pub fn main() !void {
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const args = try std.process.argsAlloc(alloc);
+    defer std.process.argsFree(alloc, args);
+
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    if (args.len < 2) {
+        try stdout.writeAll(HELP);
+        return;
+    }
+
+    const arg = args[1];
+
+    if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        try stdout.writeAll(HELP);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "fmt")) {
+        try fmt_cmd.runFmt(alloc, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "init")) {
+        try init_cmd.runInit(alloc);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "lint")) {
+        try lint_cmd.runLint(alloc, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "lsp")) {
+        try lsp_cmd.runLsp(alloc);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "new")) {
+        try new_cmd.runNew(alloc, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "install")) {
+        if (args.len < 3) {
+            try stderr.writeAll("error: install requires a path argument\n");
+            std.process.exit(1);
+        }
+        try install_cmd.runInstall(alloc, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, arg, "build")) {
+        if (args.len < 3) {
+            try stderr.writeAll("error: build requires a .lisp file\n");
+            std.process.exit(1);
+        }
+        try build_cmd.runBuild(alloc, args[2..]);
+        return;
+    }
+
+    // Build interpreter.
+    var gc = try zepo.GC.init(alloc);
+    defer gc.deinit();
+    var syms = try zepo.runtime.SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var globals = try zepo.runtime.GlobalEnv.init(&gc, alloc);
+    defer globals.deinit();
+    try zepo.prims.registerAll(&gc, &globals, &syms);
+    var ctx = try zepo.runtime.EvalContext.init(&gc, &syms, &globals, alloc);
+    defer ctx.deinit();
+    try zepo.runtime.loadStdlib(&ctx);
+
+    // Build module search path: exe/../lib, then ZEPO_PATH entries.
+    var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (path_dirs.items) |d| alloc.free(d);
+        path_dirs.deinit(alloc);
+    }
+    if (std.fs.selfExePathAlloc(alloc)) |exe| {
+        defer alloc.free(exe);
+        if (std.fs.path.dirname(exe)) |exe_dir| {
+            if (std.fs.path.join(alloc, &.{ exe_dir, "../../lib" })) |p| {
+                try path_dirs.append(alloc, p);
+            } else |_| {}
+        }
+    } else |_| {}
+    // ~/.local/lib/zepo/ — user-installed packages
+    if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
+        defer alloc.free(home);
+        const user_lib = std.fs.path.join(alloc, &.{ home, ".local/lib/zepo" }) catch null;
+        if (user_lib) |p| try path_dirs.append(alloc, p);
+    } else |_| {}
+    // ZEPO_PATH — override/extra paths (colon-separated)
+    if (std.process.getEnvVarOwned(alloc, "ZEPO_PATH")) |env| {
+        defer alloc.free(env);
+        var it = std.mem.splitScalar(u8, env, ':');
+        while (it.next()) |dir| {
+            if (dir.len > 0) try path_dirs.append(alloc, try alloc.dupe(u8, dir));
+        }
+    } else |_| {}
+    ctx.module_path = path_dirs.items;
+
+    if (std.mem.eql(u8, arg, "--repl")) {
+        try repl_cmd.runRepl(&ctx, alloc);
+    } else if (std.mem.eql(u8, arg, "run")) {
+        try run_cmd.runRun(&ctx, alloc, args[2..]);
+    } else if (std.mem.eql(u8, arg, "test")) {
+        try test_cmd.runTest(&ctx, alloc, args[2..]);
+    } else {
+        try runFile(&ctx, alloc, arg);
+    }
+}
+
+fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) !void {
+    const src = std.fs.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+        std.debug.print("error: cannot read '{s}': {}\n", .{ path, e });
+        std.process.exit(1);
+    };
+    defer alloc.free(src);
+    _ = ctx.evalString(src, path) catch |e| {
+        std.debug.print("error: {}\n", .{e});
+        std.process.exit(1);
+    };
+}

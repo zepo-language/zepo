@@ -1,0 +1,297 @@
+//! I/O primitives: display, newline.
+
+const std = @import("std");
+const abi = @import("../abi/mod.zig");
+const Value = abi.Value;
+const value_mod = abi.value;
+
+const runtime = @import("../runtime/mod.zig");
+const objects = runtime.objects;
+
+const vm_mod = @import("../vm/dispatch.zig");
+const VM = vm_mod.VM;
+const errs = @import("../runtime/errors.zig");
+const net_prims = @import("net.zig");
+const regex_prims = @import("regex.zig");
+const LispError = errs.LispError;
+
+/// Render `v` into `out` as an appendable stream of bytes.
+pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value) !void {
+    if (value_mod.isNil(v)) {
+        try out.appendSlice(allocator, "()");
+        return;
+    }
+    if (v == value_mod.TRUE) {
+        try out.appendSlice(allocator, "#t");
+        return;
+    }
+    if (v == value_mod.FALSE) {
+        try out.appendSlice(allocator, "#f");
+        return;
+    }
+    if (value_mod.isFixnum(v)) {
+        var buf: [32]u8 = undefined;
+        const s = try std.fmt.bufPrint(&buf, "{d}", .{value_mod.fixnumVal(v)});
+        try out.appendSlice(allocator, s);
+        return;
+    }
+    if (value_mod.isChar(v)) {
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(value_mod.charVal(v), &buf) catch 1;
+        try out.appendSlice(allocator, buf[0..n]);
+        return;
+    }
+    if (value_mod.isPtr(v)) {
+        if (objects.isFloat(v)) {
+            var buf: [64]u8 = undefined;
+            const s = try std.fmt.bufPrint(&buf, "{d}", .{objects.floatVal(v)});
+            try out.appendSlice(allocator, s);
+            return;
+        }
+        if (objects.isString(v)) {
+            try out.appendSlice(allocator, objects.stringBytes(v));
+            return;
+        }
+        if (objects.isSymbol(v)) {
+            try out.appendSlice(allocator, objects.symbolName(v));
+            return;
+        }
+        if (objects.isPair(v)) {
+            try out.appendSlice(allocator, "(");
+            var cur = v;
+            var first = true;
+            while (true) {
+                if (!first) try out.appendSlice(allocator, " ");
+                first = false;
+                try displayValue(out, allocator, objects.pairCar(cur).*);
+                const rest = objects.pairCdr(cur).*;
+                if (value_mod.isNil(rest)) break;
+                if (!objects.isPair(rest)) {
+                    try out.appendSlice(allocator, " . ");
+                    try displayValue(out, allocator, rest);
+                    break;
+                }
+                cur = rest;
+            }
+            try out.appendSlice(allocator, ")");
+            return;
+        }
+        if (objects.isVector(v)) {
+            try out.appendSlice(allocator, "#(");
+            const len = objects.vectorLen(v);
+            for (0..len) |i| {
+                if (i > 0) try out.append(allocator, ' ');
+                try displayValue(out, allocator, objects.vectorGet(v, i));
+            }
+            try out.append(allocator, ')');
+            return;
+        }
+        if (objects.isClosure(v)) {
+            try out.appendSlice(allocator, "#<closure>");
+            return;
+        }
+        if (objects.isPrim(v)) {
+            try out.appendSlice(allocator, "#<primitive>");
+            return;
+        }
+    }
+    if (value_mod.isPtr(v) and objects.isForeign(v)) {
+        const tag = objects.foreignTypeTag(v);
+        if (tag == net_prims.TAG_TCP_CONN) {
+            try out.appendSlice(allocator, "#<tcp-socket>");
+            return;
+        }
+        if (tag == net_prims.TAG_TCP_SERVER) {
+            try out.appendSlice(allocator, "#<tcp-server>");
+            return;
+        }
+        if (tag == regex_prims.TAG_REGEX) {
+            try out.appendSlice(allocator, "#<regex>");
+            return;
+        }
+        if (tag == TAG_STRING_PORT) {
+            try out.appendSlice(allocator, "#<string-port>");
+            return;
+        }
+        try out.appendSlice(allocator, "#<foreign>");
+        return;
+    }
+    try out.appendSlice(allocator, "#<unknown>");
+}
+
+fn writeToStdout(bytes: []const u8) void {
+    const f = std.fs.File.stdout();
+    f.writeAll(bytes) catch {};
+}
+
+pub fn primDisplay(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(vm.allocator);
+    displayValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
+    writeToStdout(buf.items);
+    return value_mod.NIL;
+}
+
+pub fn primNewline(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 0) return error.ArityMismatch;
+    writeToStdout("\n");
+    return value_mod.NIL;
+}
+
+pub fn writeValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value) !void {
+    if (value_mod.isChar(v)) {
+        const cp = value_mod.charVal(v);
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(cp, &buf) catch 1;
+        try out.appendSlice(allocator, "#\\");
+        try out.appendSlice(allocator, buf[0..n]);
+        return;
+    }
+    if (value_mod.isPtr(v) and objects.isString(v)) {
+        try out.append(allocator, '"');
+        for (objects.stringBytes(v)) |b| {
+            if (b == '"' or b == '\\') try out.append(allocator, '\\');
+            try out.append(allocator, b);
+        }
+        try out.append(allocator, '"');
+        return;
+    }
+    if (value_mod.isPtr(v) and objects.isPair(v)) {
+        try out.append(allocator, '(');
+        var cur = v;
+        var first = true;
+        while (true) {
+            if (!first) try out.append(allocator, ' ');
+            first = false;
+            try writeValue(out, allocator, objects.pairCar(cur).*);
+            const rest = objects.pairCdr(cur).*;
+            if (value_mod.isNil(rest)) break;
+            if (!objects.isPair(rest)) {
+                try out.appendSlice(allocator, " . ");
+                try writeValue(out, allocator, rest);
+                break;
+            }
+            cur = rest;
+        }
+        try out.append(allocator, ')');
+        return;
+    }
+    if (value_mod.isPtr(v) and objects.isVector(v)) {
+        try out.appendSlice(allocator, "#(");
+        const len = objects.vectorLen(v);
+        for (0..len) |i| {
+            if (i > 0) try out.append(allocator, ' ');
+            try writeValue(out, allocator, objects.vectorGet(v, i));
+        }
+        try out.append(allocator, ')');
+        return;
+    }
+    try displayValue(out, allocator, v);
+}
+
+pub fn primWrite(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(vm.allocator);
+    writeValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
+    writeToStdout(buf.items);
+    return value_mod.NIL;
+}
+
+pub fn primDisplayToString(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(vm.allocator);
+    displayValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
+    return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
+}
+
+pub fn primWriteToString(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(vm.allocator);
+    writeValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
+    return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
+}
+
+pub fn primExit(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    const code: u8 = if (args.len >= 1 and value_mod.isFixnum(args[0]))
+        @intCast(@max(0, @min(255, value_mod.fixnumVal(args[0]))))
+    else
+        0;
+    std.process.exit(code);
+}
+
+pub fn primArgv(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    const raw = std.os.argv;
+    var result: Value = value_mod.NIL;
+    var i: usize = raw.len;
+    while (i > 0) {
+        i -= 1;
+        const s = std.mem.span(raw[i]);
+        const sv = objects.makeString(vm.gc, s) catch return error.OutOfMemory;
+        result = objects.makePair(vm.gc, sv, result) catch return error.OutOfMemory;
+    }
+    return result;
+}
+
+// ── String output ports ───────────────────────────────────────────────────────
+
+pub const TAG_STRING_PORT: u64 = 0x73747270; // "strp"
+
+const StringPort = struct {
+    buf: std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+};
+
+fn deinitStringPort(ptr: ?*anyopaque) callconv(.c) void {
+    if (ptr) |p| {
+        const sp: *StringPort = @alignCast(@ptrCast(p));
+        sp.buf.deinit(sp.allocator);
+        sp.allocator.destroy(sp);
+    }
+}
+
+fn isStringPort(v: Value) bool {
+    return value_mod.isPtr(v) and objects.isForeign(v) and
+        objects.foreignTypeTag(v) == TAG_STRING_PORT;
+}
+
+pub fn primOpenOutputString(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    const sp = vm.allocator.create(StringPort) catch return error.OutOfMemory;
+    sp.* = .{ .buf = .{}, .allocator = vm.allocator };
+    return objects.makeForeign(vm.gc, sp, deinitStringPort, TAG_STRING_PORT) catch return error.OutOfMemory;
+}
+
+pub fn primStringPortQ(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    return if (isStringPort(args[0])) value_mod.TRUE else value_mod.FALSE;
+}
+
+pub fn primGetOutputString(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!isStringPort(args[0])) return error.TypeError;
+    const sp: *StringPort = @alignCast(@ptrCast(objects.foreignPayload(args[0])));
+    return objects.makeString(vm.gc, sp.buf.items) catch return error.OutOfMemory;
+}
+
+pub fn primPortDisplay(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!isStringPort(args[0])) return error.TypeError;
+    const sp: *StringPort = @alignCast(@ptrCast(objects.foreignPayload(args[0])));
+    displayValue(&sp.buf, sp.allocator, args[1]) catch return error.OutOfMemory;
+    return value_mod.NIL;
+}
+
+pub fn primPortWrite(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!isStringPort(args[0])) return error.TypeError;
+    const sp: *StringPort = @alignCast(@ptrCast(objects.foreignPayload(args[0])));
+    writeValue(&sp.buf, sp.allocator, args[1]) catch return error.OutOfMemory;
+    return value_mod.NIL;
+}

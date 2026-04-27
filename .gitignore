@@ -1,0 +1,26 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Zig package manager dependencies (v0.14.0+)
+zig-pkg/
+
+# Compiled C/C++ objects (if using Zig as a C compiler)
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.omc/
+.beads/
+.claude/
+.code-spider/

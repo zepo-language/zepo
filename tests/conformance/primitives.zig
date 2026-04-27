@@ -1,0 +1,285 @@
+//! Primitive conformance tests.
+
+const std = @import("std");
+const zepo = @import("zepo");
+const helpers = @import("helpers.zig");
+const Rig = helpers.Rig;
+
+const alloc = std.testing.allocator;
+
+test "prims: +, -, *, /" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(+ 1 2 3)"), 6);
+    try helpers.expectInt(try r.eval("(- 10 3)"), 7);
+    try helpers.expectInt(try r.eval("(- 5)"), -5);
+    try helpers.expectInt(try r.eval("(* 2 3 4)"), 24);
+    try helpers.expectInt(try r.eval("(/ 10 2)"), 5);
+}
+
+test "prims: float promotion" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(+ 1 1.5)");
+    try helpers.expectFloat(v, 2.5, 1e-9);
+}
+
+test "prims: comparison operators" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(< 1 2)"));
+    try helpers.expectFalse(try r.eval("(> 1 2)"));
+    try helpers.expectTrue(try r.eval("(<= 2 2)"));
+    try helpers.expectTrue(try r.eval("(>= 3 2)"));
+    try helpers.expectTrue(try r.eval("(= 5 5)"));
+}
+
+test "prims: not" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(not #f)"));
+    try helpers.expectFalse(try r.eval("(not #t)"));
+    try helpers.expectFalse(try r.eval("(not 0)"));
+}
+
+test "prims: apply" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(apply + '(1 2 3))"), 6);
+    try helpers.expectInt(try r.eval("(apply + 1 2 '(3 4))"), 10);
+}
+
+test "prims: type predicates" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(pair? (cons 1 2))"));
+    try helpers.expectTrue(try r.eval("(null? '())"));
+    try helpers.expectTrue(try r.eval("(boolean? #t)"));
+    try helpers.expectTrue(try r.eval("(number? 42)"));
+    try helpers.expectTrue(try r.eval("(integer? 42)"));
+    try helpers.expectTrue(try r.eval("(float? 3.14)"));
+    try helpers.expectTrue(try r.eval("(char? #\\a)"));
+    try helpers.expectTrue(try r.eval("(string? \"hi\")"));
+    try helpers.expectTrue(try r.eval("(symbol? 'foo)"));
+    try helpers.expectTrue(try r.eval("(procedure? car)"));
+}
+
+test "prims: cons/car/cdr" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(car (cons 1 2))"), 1);
+    try helpers.expectInt(try r.eval("(cdr (cons 1 2))"), 2);
+}
+
+test "prims: list builtin" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(list 10 20 30)");
+    try std.testing.expect(helpers.objects.isPair(v));
+    try helpers.expectInt(helpers.objects.pairCar(v).*, 10);
+}
+
+test "prims: prelude length/map/filter" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(length '(1 2 3 4 5))"), 5);
+    try helpers.expectInt(try r.eval("(car (map (lambda (x) (* x x)) '(1 2 3)))"), 1);
+    try helpers.expectInt(try r.eval("(car (cdr (map (lambda (x) (* x x)) '(1 2 3))))"), 4);
+}
+
+test "prims: prelude fold/append/reverse" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(fold-left + 0 '(1 2 3 4 5))"), 15);
+    try helpers.expectInt(try r.eval("(length (append '(1 2) '(3 4 5)))"), 5);
+    try helpers.expectInt(try r.eval("(car (reverse '(1 2 3)))"), 3);
+}
+
+test "prims: string primitives" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(string-length \"hello\")"), 5);
+    const v = try r.eval("(string-append \"foo\" \"bar\")");
+    try std.testing.expect(helpers.objects.isString(v));
+    try std.testing.expectEqualStrings("foobar", helpers.objects.stringBytes(v));
+}
+
+// ── keyword symbols ───────────────────────────────────────────────────────────
+
+test "keywords: self-evaluating" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval(":foo");
+    const expected = try r.eval("(quote :foo)");
+    try std.testing.expectEqual(expected, v);
+}
+
+test "keywords: two distinct keywords are not equal" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectFalse(try r.eval("(equal? :foo :bar)"));
+}
+
+test "keywords: same keyword is equal to itself" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(equal? :key :key)"));
+}
+
+test "keywords: usable as plist keys" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    const v = try r.eval(
+        \\(let ((pl (list :x 1 :y 2)))
+        \\  (plist-get pl :x))
+    );
+    try helpers.expectInt(v, 1);
+}
+
+// ── display-to-string / write-to-string ──────────────────────────────────────
+
+test "display-to-string: integer" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(display-to-string 42)");
+    try helpers.expectString(v, "42");
+}
+
+test "display-to-string: string (no quotes)" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(display-to-string \"hello\")");
+    try helpers.expectString(v, "hello");
+}
+
+test "display-to-string: bool" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectString(try r.eval("(display-to-string #t)"), "#t");
+    try helpers.expectString(try r.eval("(display-to-string #f)"), "#f");
+}
+
+test "display-to-string: list" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    const v = try r.eval("(display-to-string (list 1 2 3))");
+    try helpers.expectString(v, "(1 2 3)");
+}
+
+test "write-to-string: string has quotes" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(write-to-string \"hello\")");
+    try helpers.expectString(v, "\"hello\"");
+}
+
+test "write-to-string: symbol" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(write-to-string (quote foo))");
+    try helpers.expectString(v, "foo");
+}
+
+// ── string utilities ──────────────────────────────────────────────────────────
+
+test "string-replace: replaces all occurrences" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(string-replace \"hello world hello\" \"hello\" \"hi\")"),
+        "hi world hi");
+}
+
+test "string-replace: no match returns original" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(string-replace \"abc\" \"x\" \"y\")"), "abc");
+}
+
+test "string-pad-left: pads to width" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(string-pad-left \"42\" 5 #\\0)"), "00042");
+}
+
+test "string-pad-right: pads to width" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(string-pad-right \"hi\" 5 #\\-)"), "hi---");
+}
+
+test "string-repeat: repeats n times" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(string-repeat \"ab\" 3)"), "ababab");
+}
+
+test "string-prefix?: true and false" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(string-prefix? \"hel\" \"hello\")"));
+    try helpers.expectFalse(try r.eval("(string-prefix? \"world\" \"hello\")"));
+}
+
+test "string-suffix?: true and false" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(string-suffix? \"llo\" \"hello\")"));
+    try helpers.expectFalse(try r.eval("(string-suffix? \"hel\" \"hello\")"));
+}
+
+test "string-index: found and not found" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(string-index \"hello\" #\\l)"), 2);
+    try helpers.expectFalse(try r.eval("(string-index \"hello\" #\\z)"));
+}
+
+// ── date/time ─────────────────────────────────────────────────────────────────
+
+test "current-time-ms: returns positive integer" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const v = try r.eval("(current-time-ms)");
+    if (!helpers.value_mod.isFixnum(v)) return error.TestExpectedFixnum;
+    try std.testing.expect(helpers.value_mod.fixnumVal(v) > 0);
+}
+
+test "epoch->date: known epoch" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    // 2001-09-09 01:46:40 UTC = 1000000000 seconds = 1000000000000 ms
+    _ = try r.eval("(define d (epoch->date 1000000000000))");
+    try helpers.expectInt(try r.eval("(cdr (assoc (quote year) d))"), 2001);
+    try helpers.expectInt(try r.eval("(cdr (assoc (quote month) d))"), 9);
+    try helpers.expectInt(try r.eval("(cdr (assoc (quote day) d))"), 9);
+}
+
+test "date->epoch: round-trips with epoch->date" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    const ms: i63 = 1000000000000;
+    _ = try r.eval("(define d (epoch->date 1000000000000))");
+    const v = try r.eval(
+        \\(date->epoch
+        \\  (cdr (assoc (quote year)   d))
+        \\  (cdr (assoc (quote month)  d))
+        \\  (cdr (assoc (quote day)    d))
+        \\  (cdr (assoc (quote hour)   d))
+        \\  (cdr (assoc (quote minute) d))
+        \\  (cdr (assoc (quote second) d)))
+    );
+    try helpers.expectInt(v, ms);
+}
+
+test "time-format: formats known epoch" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(time-format 1000000000000 \"%Y-%m-%d\")"),
+        "2001-09-09");
+}
