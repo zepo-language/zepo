@@ -332,6 +332,14 @@ pub const EvalContext = struct {
         else
             qq_expanded;
 
+        // Reserve nursery space BEFORE building the AST so that no GC can fire
+        // while quote datum Values live in AST nodes or IR load_const ops — those
+        // are plain Zig struct fields, not GC roots, so a collection would leave
+        // them pointing at forwarding headers.  The VM still exists here, so the
+        // root visitor is live for any GC triggered by reserveNursery itself.
+        // builder/compiler/emitter use only the Zig allocator until the VM runs.
+        try ctx.gc.reserveNursery(16 * 1024);
+
         var builder = Builder.init(&ctx.arena, ctx.symbols, ctx.allocator);
         builder.span_table = &ctx.spans;
         const root_id = try builder.build(expanded);
@@ -341,12 +349,6 @@ pub const EvalContext = struct {
 
         var compiler = Compiler.initWithGc(&ctx.arena, &ctx.program, ctx.symbols, ctx.gc, ctx.allocator);
         const fn_id = try compiler.compileExpr(root_id);
-
-        // Reserve nursery space BEFORE tearing down the old VM so that the
-        // minor GC (if triggered) still has a live root visitor.  The emitter
-        // allocates fresh GC strings/floats for every load_string/load_float op;
-        // without reserved space a GC could fire mid-emit with no root visitor.
-        try ctx.gc.reserveNursery(16 * 1024);
 
         // Incrementally emit only newly compiled functions (O(new) not O(total)).
         if (ctx.vm) |*v| {

@@ -96,6 +96,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         try zepo.prims.registerAll(&gc, &globals, &syms);
         var ctx = try zepo.runtime.EvalContext.init(&gc, &syms, &globals, alloc);
         defer ctx.deinit();
+        ctx.installRootVisitor();
         try zepo.runtime.loadStdlib(&ctx);
         var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
         defer { for (path_dirs.items) |d| alloc.free(d); path_dirs.deinit(alloc); }
@@ -187,6 +188,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         \\    try zepo.prims.registerAll(&gc, &globals, &syms);
         \\    var ctx = try zepo.runtime.EvalContext.init(&gc, &syms, &globals, alloc);
         \\    defer ctx.deinit();
+        \\    ctx.installRootVisitor();
         \\    try zepo.runtime.loadStdlib(&ctx);
         \\
     );
