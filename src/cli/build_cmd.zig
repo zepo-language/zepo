@@ -118,6 +118,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
             ctx.module_path = path_dirs.items;
         }
         ctx.module_file_log = &module_log;
+        ctx.discovery_mode = true;
         const prog_src = std.fs.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024) catch |e| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "error: cannot read '{s}': {}\n", .{ input_path, e }) catch "error\n";

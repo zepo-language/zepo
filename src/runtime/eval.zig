@@ -89,6 +89,11 @@ pub const EvalContext = struct {
     last_error_span: ?errs.Span = null,
     current_src: []const u8 = "",
 
+    // When true, evalFormInner skips non-structural forms (define, applications,
+    // etc.) and only processes import/module/load/include. Used by `zepo build`
+    // to discover module dependencies without running user code.
+    discovery_mode: bool = false,
+
     pub fn init(
         gc: *GC,
         symbols: *SymbolTable,
@@ -224,6 +229,11 @@ pub const EvalContext = struct {
         if (isHeadSymbol(form, "defmacro")) {
             return macros.evalDefmacro(ctx, form);
         }
+
+        // Discovery mode: skip all user-defined expressions. We only care
+        // about structural forms above (import/module/load/include) for the
+        // purpose of logging module dependencies.
+        if (ctx.discovery_mode) return value_mod.NIL;
 
         return ctx.evalNonModuleForm(form);
     }
