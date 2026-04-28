@@ -231,7 +231,10 @@ pub const Compiler = struct {
     }
 
     fn lowerDefine(c: *Compiler, ctx: *FnCtx, name: []const u8, value_id: NodeId) anyerror!Reg {
-        const v = try c.lowerNode(ctx, value_id);
+        const v = switch (c.arena.get(value_id).*) {
+            .lambda => try c.lowerLambdaNamed(ctx, value_id, name),
+            else => try c.lowerNode(ctx, value_id),
+        };
         try ctx.func.emit(.{ .store_global = .{ .name = name, .src = v } });
         return v;
     }
@@ -425,6 +428,10 @@ pub const Compiler = struct {
     }
 
     fn lowerLambda(c: *Compiler, outer: *FnCtx, lambda_id: NodeId) anyerror!Reg {
+        return c.lowerLambdaNamed(outer, lambda_id, null);
+    }
+
+    fn lowerLambdaNamed(c: *Compiler, outer: *FnCtx, lambda_id: NodeId, hint_name: ?[]const u8) anyerror!Reg {
         const lam = c.arena.get(lambda_id).*.lambda;
         const saved_reg = outer.next_reg;
 
@@ -469,10 +476,10 @@ pub const Compiler = struct {
         // Build inner function. Reserve slot up front so nested lambdas
         // appended during body compilation go *after* our slot.
         const inner_id = c.program.nextFunctionId();
-        _ = try c.program.addFunction(Function.init(inner_id, null, @intCast(lam.params.len), lam.rest_param != null, c.allocator));
+        _ = try c.program.addFunction(Function.init(inner_id, hint_name, @intCast(lam.params.len), lam.rest_param != null, c.allocator));
         var inner = FnCtx.init(
             inner_id,
-            null,
+            hint_name,
             @intCast(lam.params.len),
             lam.rest_param != null,
             c.allocator,

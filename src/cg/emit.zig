@@ -152,6 +152,7 @@ pub const Emitter = struct {
             };
         }
 
+        const src_name = if (f.name) |n| e.allocator.dupe(u8, n) catch "" else "";
         return CompiledFn{
             .id = f.id,
             .arity = f.arity,
@@ -162,6 +163,7 @@ pub const Emitter = struct {
             .names = names,
             .safepoint_maps = safepoints,
             .keyword_params = kw_compiled,
+            .src_name = src_name,
             .allocator = e.allocator,
         };
     }

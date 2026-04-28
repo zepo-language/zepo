@@ -305,6 +305,22 @@ pub const EvalContext = struct {
             const msg = std.fmt.bufPrint(&buf, "error: {s}\n", .{err_label}) catch "";
             stderr.writeAll(msg) catch {};
         }
+        // Print call stack from VM frames (innermost first).
+        if (ctx.vm) |*vm| {
+            const frames = vm.call_stack.frames.items;
+            if (frames.len > 0) {
+                stderr.writeAll("call stack (innermost first):\n") catch {};
+                var fi: usize = frames.len;
+                while (fi > 0) {
+                    fi -= 1;
+                    const frame = frames[fi];
+                    const fname = if (frame.func.src_name.len > 0) frame.func.src_name else "<anonymous>";
+                    var fbuf: [256]u8 = undefined;
+                    const fline = std.fmt.bufPrint(&fbuf, "  {s}\n", .{fname}) catch continue;
+                    stderr.writeAll(fline) catch {};
+                }
+            }
+        }
     }
 
     pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {

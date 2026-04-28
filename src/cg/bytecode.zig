@@ -105,11 +105,13 @@ pub const CompiledFn = struct {
     names: [][]const u8,
     safepoint_maps: []SafepointMap,
     keyword_params: []KeywordParam = &.{},
+    src_name: []const u8 = "",  // function name for stack traces
     allocator: std.mem.Allocator,
 
     pub fn deinit(f: *CompiledFn, allocator: std.mem.Allocator) void {
         allocator.free(f.code);
         allocator.free(f.consts);
+        if (f.src_name.len > 0) allocator.free(f.src_name);
         // `names` slices are owned by the emitter's global_names store; do
         // not free the underlying bytes here. We only own the outer slice.
         allocator.free(f.names);

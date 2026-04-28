@@ -233,7 +233,8 @@ pub const VM = struct {
             }
 
             const result = vm.dispatch(func) catch |e| {
-                _ = vm.call_stack.pop();
+                // Leave frame on stack — printDiagnostic walks them for traces.
+                // VM is always torn down by EvalContext after an error.
                 return e;
             };
 
