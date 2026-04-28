@@ -191,16 +191,13 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         \\
     );
     for (0..mod_idx) |j| {
-        try w.print("    _ = ctx.evalString(MODULE_{d}, \"<module>\") catch {{}};\n", .{j});
+        try w.print("    if (ctx.evalString(MODULE_{d}, \"<module>\")) |_| {{}} else |e| ctx.printDiagnostic(e);\n", .{j});
     }
     try w.writeAll(
-        \\    _ = ctx.evalString(PROGRAM, "<program>") catch |e| {
-        \\        const se = std.fs.File.stderr();
-        \\        var buf: [256]u8 = undefined;
-        \\        const msg = std.fmt.bufPrint(&buf, "error: {}\n", .{e}) catch "error\n";
-        \\        se.writeAll(msg) catch {};
+        \\    if (ctx.evalString(PROGRAM, "<program>")) |_| {} else |e| {
+        \\        ctx.printDiagnostic(e);
         \\        std.process.exit(1);
-        \\    };
+        \\    }
         \\}
         \\
     );
