@@ -1,7 +1,8 @@
 const std = @import("std");
 const zepo = @import("zepo");
 const main_opts = @import("main_opts");
-const ProjectConfig = @import("project_config.zig").ProjectConfig;
+const project_config = @import("project_config.zig");
+const ProjectConfig = project_config.ProjectConfig;
 
 // build.zig written into the temp dir. Placeholders: {s}=src_dir, {s}=src_dir, {s}=binary_name.
 pub const BUILD_ZIG_TEMPLATE =
@@ -42,12 +43,8 @@ pub fn setupModulePath(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([
             else |_| {}
         }
     } else |_| {}
-    if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
-        defer alloc.free(home);
-        if (std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" })) |p|
-            try dirs.append(alloc, p)
-        else |_| {}
-    } else |_| {}
+    // ~/.local/lib/zepo/ + packages listed in packages.lisp manifest
+    try project_config.appendGlobalPaths(alloc, dirs);
     // During development: project lib/ is next to src_dir
     if (std.fs.path.join(alloc, &.{ src_dir, "lib" })) |p|
         try dirs.append(alloc, p)
@@ -80,12 +77,14 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     // ── Discovery pass ───────────────────────────────────────────────────────
     // Run the program once to find which module files it loads from disk.
     var module_log = std.StringHashMap([]const u8).init(alloc);
+    var module_order: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         var kit = module_log.keyIterator();
         while (kit.next()) |k| alloc.free(k.*);
         var vit = module_log.valueIterator();
         while (vit.next()) |v| alloc.free(v.*);
         module_log.deinit();
+        module_order.deinit(alloc); // keys are owned by module_log, not freed here
     }
     {
         var gc = try zepo.GC.init(alloc);
@@ -118,6 +117,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
             ctx.module_path = path_dirs.items;
         }
         ctx.module_file_log = &module_log;
+        ctx.module_file_order = &module_order;
         ctx.discovery_mode = true;
         const prog_src = std.fs.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024) catch |e| {
             var buf: [256]u8 = undefined;
@@ -161,10 +161,8 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
 
     // Embed each bundled module and copy its file into temp/lib/
     var mod_idx: usize = 0;
-    var mod_it = module_log.iterator();
-    while (mod_it.next()) |entry| {
-        const mod_name = entry.key_ptr.*;
-        const file_path = entry.value_ptr.*;
+    for (module_order.items) |mod_name| {
+        const file_path = module_log.get(mod_name) orelse continue;
         const rel = try std.fmt.allocPrint(alloc, "lib/{s}.lisp", .{mod_name});
         defer alloc.free(rel);
         if (std.fs.path.dirname(rel)) |par| tmp_dir.makePath(par) catch {};

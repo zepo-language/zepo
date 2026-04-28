@@ -99,12 +99,15 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     }
 
     // Validate every exported name now exists in the module env.
-    var it = m.exports.keyIterator();
-    while (it.next()) |k| {
-        const sym = try ctx.symbols.intern(k.*);
-        if (m.env.findEntry(sym) == null) {
-            ctx.leaveModule();
-            return error.ExportNotDefined;
+    // Skip in discovery mode — definitions are intentionally not evaluated.
+    if (!ctx.discovery_mode) {
+        var it = m.exports.keyIterator();
+        while (it.next()) |k| {
+            const sym = try ctx.symbols.intern(k.*);
+            if (m.env.findEntry(sym) == null) {
+                ctx.leaveModule();
+                return error.ExportNotDefined;
+            }
         }
     }
 
@@ -193,7 +196,8 @@ pub fn logModuleFile(ctx: *EvalContext, name: []const u8, path: []const u8) void
     if (log.contains(name)) return;
     const k = ctx.allocator.dupe(u8, name) catch return;
     const v = ctx.allocator.dupe(u8, path) catch { ctx.allocator.free(k); return; };
-    log.put(k, v) catch { ctx.allocator.free(k); ctx.allocator.free(v); };
+    log.put(k, v) catch { ctx.allocator.free(k); ctx.allocator.free(v); return; };
+    if (ctx.module_file_order) |ord| ord.append(ctx.allocator, k) catch {};
 }
 
 /// Open and read a file by explicit path string. Tries the path as-is (works

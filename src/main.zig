@@ -2,6 +2,7 @@ const std = @import("std");
 const zepo = @import("zepo");
 
 const build_cmd = @import("cli/build_cmd.zig");
+const project_config = @import("cli/project_config.zig");
 const fmt_cmd = @import("cli/fmt_cmd.zig");
 const init_cmd = @import("cli/init_cmd.zig");
 const install_cmd = @import("cli/install_cmd.zig");
@@ -145,12 +146,8 @@ pub fn main() !void {
             } else |_| {}
         }
     } else |_| {}
-    // ~/.local/lib/zepo/ — user-installed packages
-    if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
-        defer alloc.free(home);
-        const user_lib = std.fs.path.join(alloc, &.{ home, ".local/lib/zepo" }) catch null;
-        if (user_lib) |p| try path_dirs.append(alloc, p);
-    } else |_| {}
+    // ~/.local/lib/zepo/ + packages listed in packages.lisp manifest
+    try project_config.appendGlobalPaths(alloc, &path_dirs);
     // ZEPO_PATH — override/extra paths (colon-separated)
     if (std.process.getEnvVarOwned(alloc, "ZEPO_PATH")) |env| {
         defer alloc.free(env);

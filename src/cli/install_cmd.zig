@@ -1,4 +1,5 @@
 const std = @import("std");
+const project_config = @import("project_config.zig");
 
 pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     const stderr = std.fs.File.stderr();
@@ -41,6 +42,8 @@ pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     defer dest_dir.close();
 
     try copyDirAll(alloc, src_dir, dest_dir);
+
+    project_config.registerGlobalPackage(alloc, pkg_name) catch {};
 
     var msg_buf: [512]u8 = undefined;
     const msg = try std.fmt.bufPrint(&msg_buf, "installed '{s}' → {s}\n", .{ pkg_name, dest });

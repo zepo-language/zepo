@@ -84,6 +84,8 @@ pub const EvalContext = struct {
     // When non-null, records module_name → file_path for every module loaded
     // from disk via tryAutoLoad. Used by `zepo build` for bundling.
     module_file_log: ?*std.StringHashMap([]const u8) = null,
+    // Insertion-ordered list of module names (parallel to module_file_log map).
+    module_file_order: ?*std.ArrayListUnmanaged([]const u8) = null,
 
     // Error diagnostics — populated on the first error, used by CLI formatters.
     last_error_span: ?errs.Span = null,
@@ -211,6 +213,15 @@ pub const EvalContext = struct {
     }
 
     fn evalFormInner(ctx: *EvalContext, form: Value) !Value {
+        // Discovery mode: only process module-system forms that reveal dependencies.
+        if (ctx.discovery_mode) {
+            if (isHeadSymbol(form, "module")) return mod_loader.evalModuleDecl(ctx, form);
+            if (isHeadSymbol(form, "import")) return mod_loader.evalImport(ctx, form);
+            if (isHeadSymbol(form, "include") or isHeadSymbol(form, "load")) return mod_loader.evalInclude(ctx, form);
+            if (isHeadSymbol(form, "package")) return mod_loader.evalPackageDecl(ctx, form);
+            return value_mod.NIL;
+        }
+
         if (isHeadSymbol(form, "module")) {
             return mod_loader.evalModuleDecl(ctx, form);
         }
@@ -229,11 +240,6 @@ pub const EvalContext = struct {
         if (isHeadSymbol(form, "defmacro")) {
             return macros.evalDefmacro(ctx, form);
         }
-
-        // Discovery mode: skip all user-defined expressions. We only care
-        // about structural forms above (import/module/load/include) for the
-        // purpose of logging module dependencies.
-        if (ctx.discovery_mode) return value_mod.NIL;
 
         return ctx.evalNonModuleForm(form);
     }

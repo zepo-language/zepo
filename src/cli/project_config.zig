@@ -92,6 +92,59 @@ fn extractString(src: []const u8, marker: []const u8) ?[]const u8 {
     return src[val_start..val_end];
 }
 
+/// Read ~/.local/lib/zepo/packages.lisp and append the base dir plus each
+/// listed package directory to `dirs`. Silent on missing manifest.
+pub fn appendGlobalPaths(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([]const u8)) !void {
+    const home = std.process.getEnvVarOwned(alloc, "HOME") catch return;
+    defer alloc.free(home);
+    const base = std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" }) catch return;
+    try dirs.append(alloc, base);
+    const manifest_path = std.fs.path.join(alloc, &.{ base, "packages.lisp" }) catch return;
+    defer alloc.free(manifest_path);
+    const src = std.fs.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch return;
+    defer alloc.free(src);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const pkgs = extractPaths(arena.allocator(), src, "(paths") orelse return;
+    for (pkgs) |pkg| {
+        const abs = std.fs.path.join(alloc, &.{ base, pkg }) catch continue;
+        try dirs.append(alloc, abs);
+    }
+}
+
+/// Register a package name in ~/.local/lib/zepo/packages.lisp.
+/// Creates the manifest if it doesn't exist; skips if already listed.
+pub fn registerGlobalPackage(alloc: std.mem.Allocator, pkg_name: []const u8) !void {
+    const home = std.process.getEnvVarOwned(alloc, "HOME") catch return;
+    defer alloc.free(home);
+    const base = std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" }) catch return;
+    defer alloc.free(base);
+    const manifest_path = std.fs.path.join(alloc, &.{ base, "packages.lisp" }) catch return;
+    defer alloc.free(manifest_path);
+    const existing = std.fs.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch "";
+    defer if (existing.len > 0) alloc.free(existing);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const current = extractPaths(arena.allocator(), existing, "(paths") orelse &[_][]const u8{};
+    for (current) |p| {
+        if (std.mem.eql(u8, p, pkg_name)) return;
+    }
+    var out = std.ArrayList(u8){};
+    defer out.deinit(alloc);
+    try out.appendSlice(alloc, "(paths");
+    for (current) |p| {
+        try out.appendSlice(alloc, " \"");
+        try out.appendSlice(alloc, p);
+        try out.append(alloc, '"');
+    }
+    try out.appendSlice(alloc, " \"");
+    try out.appendSlice(alloc, pkg_name);
+    try out.appendSlice(alloc, "\")\n");
+    const f = try std.fs.cwd().createFile(manifest_path, .{ .truncate = true });
+    defer f.close();
+    try f.writeAll(out.items);
+}
+
 fn extractPaths(alloc: std.mem.Allocator, src: []const u8, marker: []const u8) ?[][]const u8 {
     const start_idx = std.mem.indexOf(u8, src, marker) orelse return null;
     // Find the closing ')' of this form.
