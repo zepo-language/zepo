@@ -1,6 +1,7 @@
 const std = @import("std");
 const zepo = @import("zepo");
 const main_opts = @import("main_opts");
+const ProjectConfig = @import("project_config.zig").ProjectConfig;
 
 // build.zig written into the temp dir. Placeholders: {s}=src_dir, {s}=src_dir, {s}=binary_name.
 pub const BUILD_ZIG_TEMPLATE =
@@ -100,7 +101,22 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
         defer { for (path_dirs.items) |d| alloc.free(d); path_dirs.deinit(alloc); }
         try setupModulePath(alloc, &path_dirs, src_dir);
-        ctx.module_path = path_dirs.items;
+        // Prepend project.lisp paths so project modules take precedence.
+        var cfg_opt = ProjectConfig.loadOptional(alloc);
+        defer if (cfg_opt) |*c| c.deinit();
+        var proj_path_buf: std.ArrayListUnmanaged([]const u8) = .{};
+        var proj_path_owned: usize = 0;
+        defer {
+            for (proj_path_buf.items[0..proj_path_owned]) |p| alloc.free(p);
+            proj_path_buf.deinit(alloc);
+        }
+        if (cfg_opt) |*cfg| {
+            try cfg.applyModulePath(alloc, path_dirs.items, &proj_path_buf);
+            proj_path_owned = proj_path_buf.items.len -| path_dirs.items.len;
+            ctx.module_path = proj_path_buf.items;
+        } else {
+            ctx.module_path = path_dirs.items;
+        }
         ctx.module_file_log = &module_log;
         const prog_src = std.fs.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024) catch |e| {
             var buf: [256]u8 = undefined;
