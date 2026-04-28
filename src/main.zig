@@ -121,6 +121,7 @@ pub fn main() !void {
     try zepo.prims.registerAll(&gc, &globals, &syms);
     var ctx = try zepo.runtime.EvalContext.init(&gc, &syms, &globals, alloc);
     defer ctx.deinit();
+    ctx.installRootVisitor();
     try zepo.runtime.loadStdlib(&ctx);
 
     // *program-mode* — #t when running as a script, #f when loaded into the REPL.

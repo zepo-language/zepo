@@ -313,10 +313,14 @@ pub const Compiler = struct {
             try ctx.func.emit(.{ .load_nil = .{ .dst = r } });
             return r;
         }
+        const saved_reg = ctx.next_reg;
         var last: Reg = 0;
         for (exprs, 0..) |eid, i| {
             const is_last = i + 1 == exprs.len;
             last = try c.lowerNodeTail(ctx, eid, tail and is_last);
+            // Reclaim non-last results — they are discarded (sequence evaluates
+            // for side effects; only the final value matters).
+            if (!is_last) ctx.next_reg = saved_reg;
         }
         return last;
     }
@@ -368,9 +372,11 @@ pub const Compiler = struct {
             try ctx.func.emit(.{ .load_nil = .{ .dst = r } });
             return r;
         }
+        const saved_reg = ctx.next_reg;
         var last: Reg = 0;
-        for (exprs) |eid| {
+        for (exprs, 0..) |eid, i| {
             last = try c.lowerNode(ctx, eid);
+            if (i + 1 < exprs.len) ctx.next_reg = saved_reg;
         }
         return last;
     }
@@ -380,6 +386,7 @@ pub const Compiler = struct {
     }
 
     fn lowerApplicationTail(c: *Compiler, ctx: *FnCtx, func_id: NodeId, arg_ids: []const NodeId, tail: bool) anyerror!Reg {
+        const saved_reg = ctx.next_reg;
         const func_r = try c.lowerNode(ctx, func_id);
         var arg_regs = std.ArrayList(Reg){};
         defer arg_regs.deinit(ctx.allocator);
@@ -393,11 +400,20 @@ pub const Compiler = struct {
                 .func = func_r,
                 .args = args_owned,
             } });
-            // Tail call never returns through this path; the dst is unused.
+            ctx.next_reg = saved_reg;
             return func_r;
         }
         const sp_id = c.freshSp();
         try ctx.func.emit(.{ .safepoint = .{ .id = sp_id } });
+        // Record conservative root map BEFORE reclaiming registers.
+        var live = std.ArrayList(Reg){};
+        defer live.deinit(ctx.allocator);
+        try live.append(ctx.allocator, func_r);
+        for (arg_regs.items) |r| try live.append(ctx.allocator, r);
+        try ctx.func.recordRootMap(sp_id, live.items);
+        // Reclaim func_r and all arg registers — they are consumed by the
+        // call and not needed after it. dst gets the first recycled slot.
+        ctx.next_reg = saved_reg;
         const dst = ctx.freshReg();
         try ctx.func.emit(.{ .call = .{
             .dst = dst,
@@ -405,17 +421,12 @@ pub const Compiler = struct {
             .args = args_owned,
             .safepoint = sp_id,
         } });
-        // Record a conservative root map: the function reg + all args.
-        var live = std.ArrayList(Reg){};
-        defer live.deinit(ctx.allocator);
-        try live.append(ctx.allocator, func_r);
-        for (arg_regs.items) |r| try live.append(ctx.allocator, r);
-        try ctx.func.recordRootMap(sp_id, live.items);
         return dst;
     }
 
     fn lowerLambda(c: *Compiler, outer: *FnCtx, lambda_id: NodeId) anyerror!Reg {
         const lam = c.arena.get(lambda_id).*.lambda;
+        const saved_reg = outer.next_reg;
 
         // Resolve capture sources in outer context.
         var capture_src_regs = std.ArrayList(Reg){};
@@ -565,8 +576,10 @@ pub const Compiler = struct {
         inner.func = undefined;
         inner.deinit();
 
-        // Emit make_closure in outer.
+        // Emit make_closure in outer. Reclaim capture src registers first —
+        // they are consumed by make_closure and not needed afterward.
         const captures_owned = try outer.func.dupRegs(capture_src_regs.items);
+        outer.next_reg = saved_reg;
         const dst = outer.freshReg();
         try outer.func.emit(.{ .make_closure = .{
             .dst = dst,

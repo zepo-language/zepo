@@ -95,7 +95,7 @@ pub const EvalContext = struct {
         globals: *GlobalEnv,
         allocator: std.mem.Allocator,
     ) !EvalContext {
-        var ctx = EvalContext{
+        return EvalContext{
             .gc = gc,
             .symbols = symbols,
             .globals = globals,
@@ -111,12 +111,14 @@ pub const EvalContext = struct {
             .vm = null,
             .macro_names = std.StringHashMap(void).init(allocator),
         };
-        // Keep compiled fn consts rooted at all times, even while VM is
-        // torn down between eval steps (prevents GC from collecting literals
-        // embedded in already-compiled function bodies).
-        gc.roots.visit_fn2 = compiledConstsVisit;
-        gc.roots.visit_ctx2 = &ctx;
-        return ctx;
+    }
+
+    /// Register compiled fn consts as a GC root. Must be called once the
+    /// EvalContext is at its final address (after init returns to the caller).
+    /// Keeps quoted literals in compiled closures alive across VM teardown.
+    pub fn installRootVisitor(ctx: *EvalContext) void {
+        ctx.gc.roots.visit_fn2 = compiledConstsVisit;
+        ctx.gc.roots.visit_ctx2 = ctx;
     }
 
     fn compiledConstsVisit(ctx_opaque: *anyopaque, visitor: @import("../gc/roots.zig").RootVisitor, visitor_ctx: *anyopaque) void {
@@ -128,8 +130,10 @@ pub const EvalContext = struct {
     }
 
     pub fn deinit(ctx: *EvalContext) void {
-        ctx.gc.roots.visit_fn2 = null;
-        ctx.gc.roots.visit_ctx2 = null;
+        if (ctx.gc.roots.visit_ctx2 == @as(?*anyopaque, ctx)) {
+            ctx.gc.roots.visit_fn2 = null;
+            ctx.gc.roots.visit_ctx2 = null;
+        }
         if (ctx.vm) |*v| v.deinit();
         for (ctx.compiled.items) |*cf| cf.deinit(ctx.allocator);
         ctx.compiled.deinit(ctx.allocator);
