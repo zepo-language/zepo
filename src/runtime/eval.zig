@@ -90,6 +90,9 @@ pub const EvalContext = struct {
     // Error diagnostics — populated on the first error, used by CLI formatters.
     last_error_span: ?errs.Span = null,
     current_src: []const u8 = "",
+    // Maps file path → source text so printDiagnostic can show the right line
+    // even when the error span points to a different file than current_src.
+    source_map: std.StringHashMap([]const u8),
 
     // When true, evalFormInner skips non-structural forms (define, applications,
     // etc.) and only processes import/module/load/include. Used by `zepo build`
@@ -117,6 +120,7 @@ pub const EvalContext = struct {
             .compiled = .{},
             .vm = null,
             .macro_names = std.StringHashMap(void).init(allocator),
+            .source_map = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -153,6 +157,12 @@ pub const EvalContext = struct {
         var kit = ctx.macro_names.keyIterator();
         while (kit.next()) |k| ctx.allocator.free(k.*);
         ctx.macro_names.deinit();
+        var smit = ctx.source_map.iterator();
+        while (smit.next()) |e| {
+            ctx.allocator.free(e.key_ptr.*);
+            ctx.allocator.free(e.value_ptr.*);
+        }
+        ctx.source_map.deinit();
     }
 
     /// Returns the currently-active global environment: the current module's
@@ -182,6 +192,18 @@ pub const EvalContext = struct {
     pub fn evalString(ctx: *EvalContext, src: []const u8, file: []const u8) !Value {
         ctx.current_src = src;
         ctx.last_error_span = null;
+        // Store file→src so printDiagnostic can find the right source even
+        // after current_src has been overwritten by a nested evalString call.
+        if (!ctx.source_map.contains(file)) {
+            if (ctx.allocator.dupe(u8, file)) |fk| {
+                if (ctx.allocator.dupe(u8, src)) |fv| {
+                    ctx.source_map.put(fk, fv) catch {
+                        ctx.allocator.free(fk);
+                        ctx.allocator.free(fv);
+                    };
+                } else |_| ctx.allocator.free(fk);
+            } else |_| {}
+        }
         var parser = Parser.init(ctx.gc, ctx.symbols, &ctx.spans, src, file, ctx.allocator);
         defer parser.deinit();
 
@@ -258,7 +280,8 @@ pub const EvalContext = struct {
             break :blk @errorName(err);
         };
         if (ctx.last_error_span) |span| {
-            const line_text = extractSourceLine(ctx.current_src, span.start.offset);
+            const src_for_file = ctx.source_map.get(span.file) orelse ctx.current_src;
+            const line_text = extractSourceLine(src_for_file, span.start.offset);
             const header = std.fmt.bufPrint(&buf, "{s}:{d}:{d}: error: {s}\n", .{
                 span.file,
                 span.start.line,
