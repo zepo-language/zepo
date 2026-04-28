@@ -100,20 +100,20 @@ pub const Parser = struct {
             if (tok.kind == .eof) break;
             const v = try p.parseToken(tok);
             const v_slot = scope.push(v);
-            const new_pair = try objects.makePair(p.gc, v_slot.*, head_slot.*);
-            head_slot.* = new_pair;
+            head_slot.* = try objects.makePairFromSlots(p.gc, v_slot, head_slot);
         }
 
-        // Reverse.
-        var result: Value = value_mod.NIL;
-        var cur = head_slot.*;
-        while (!value_mod.isNil(cur)) {
-            const car = objects.pairCar(cur).*;
-            const cdr = objects.pairCdr(cur).*;
-            result = try objects.makePair(p.gc, car, result);
-            cur = cdr;
+        // Reverse — use rooted slots so a GC inside makePairFromSlots cannot
+        // invalidate the traversal pointer or the accumulator.
+        const result_slot = scope.push(value_mod.NIL);
+        const cur_slot = scope.push(head_slot.*);
+        const car_slot = scope.push(value_mod.NIL);
+        while (!value_mod.isNil(cur_slot.*)) {
+            car_slot.* = objects.pairCar(cur_slot.*).*;
+            cur_slot.* = objects.pairCdr(cur_slot.*).*;
+            result_slot.* = try objects.makePairFromSlots(p.gc, car_slot, result_slot);
         }
-        return result;
+        return result_slot.*;
     }
 
     fn parseToken(p: *Parser, tok: Token) anyerror!Value {
@@ -230,19 +230,20 @@ pub const Parser = struct {
             }
             const next_tok = try p.lexer.next();
             v_slot.* = try p.parseToken(next_tok);
-            const new_pair = try objects.makePair(p.gc, v_slot.*, reversed_slot.*);
-            reversed_slot.* = new_pair;
+            reversed_slot.* = try objects.makePairFromSlots(p.gc, v_slot, reversed_slot);
         }
 
-        // Build the final list in correct order.
-        var result: Value = if (has_tail) tail_slot.* else value_mod.NIL;
-        var cur = reversed_slot.*;
-        while (!value_mod.isNil(cur)) {
-            const car = objects.pairCar(cur).*;
-            const cdr = objects.pairCdr(cur).*;
-            result = try objects.makePair(p.gc, car, result);
-            cur = cdr;
+        // Build the final list in correct order — rooted slots guard against
+        // a GC triggered inside makePairFromSlots invalidating the traversal.
+        const result_slot = scope.push(if (has_tail) tail_slot.* else value_mod.NIL);
+        const cur_slot = scope.push(reversed_slot.*);
+        const car_slot = scope.push(value_mod.NIL);
+        while (!value_mod.isNil(cur_slot.*)) {
+            car_slot.* = objects.pairCar(cur_slot.*).*;
+            cur_slot.* = objects.pairCdr(cur_slot.*).*;
+            result_slot.* = try objects.makePairFromSlots(p.gc, car_slot, result_slot);
         }
+        const result = result_slot.*;
 
         // An empty list () must return NIL, not a freshly allocated pair.
         if (value_mod.isNil(result)) return value_mod.NIL;

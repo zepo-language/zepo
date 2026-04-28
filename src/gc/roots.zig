@@ -39,6 +39,10 @@ pub const RootSet = struct {
     /// slot pointers into `extra`.
     visit_fn: ?*const fn (ctx: *anyopaque, visitor: RootVisitor, visitor_ctx: *anyopaque) void = null,
     visit_ctx: ?*anyopaque = null,
+    /// Second custom visitor — used by EvalContext to keep compiled fn consts
+    /// rooted even while the VM is torn down between eval steps.
+    visit_fn2: ?*const fn (ctx: *anyopaque, visitor: RootVisitor, visitor_ctx: *anyopaque) void = null,
+    visit_ctx2: ?*anyopaque = null,
 
     pub fn deinit(rs: *RootSet, alloc: std.mem.Allocator) void {
         rs.extra.deinit(alloc);
@@ -87,6 +91,11 @@ pub const RootSet = struct {
 
         if (rs.visit_fn) |vfn| {
             if (rs.visit_ctx) |vctx| {
+                vfn(vctx, visitor, ctx);
+            }
+        }
+        if (rs.visit_fn2) |vfn| {
+            if (rs.visit_ctx2) |vctx| {
                 vfn(vctx, visitor, ctx);
             }
         }

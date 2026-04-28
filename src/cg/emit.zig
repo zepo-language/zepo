@@ -45,6 +45,8 @@ pub const Emitter = struct {
     /// Owns the backing storage for all names referenced by CompiledFn.names
     /// across the program. We keep one per-emitter pool for simplicity.
     names_pool: std.ArrayList([]const u8),
+    /// Number of functions already emitted; emitAppend only emits beyond this.
+    emitted_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, symbols: *SymbolTable, gc: *GC) Emitter {
         return .{
@@ -67,6 +69,19 @@ pub const Emitter = struct {
             funcs[i] = try e.emitOne(f);
         }
         return funcs;
+    }
+
+    /// Append newly-compiled functions to `list`. Only emits functions added
+    /// to `program` since the last call. O(new) instead of O(total).
+    pub fn emitAppend(e: *Emitter, program: *Program, list: *std.ArrayListUnmanaged(CompiledFn)) !void {
+        const new_count = program.functions.items.len;
+        if (new_count <= e.emitted_count) return;
+        try list.ensureTotalCapacity(e.allocator, new_count);
+        for (e.emitted_count..new_count) |i| {
+            const cf = try e.emitOne(&program.functions.items[i]);
+            list.appendAssumeCapacity(cf);
+        }
+        e.emitted_count = new_count;
     }
 
     fn emitOne(e: *Emitter, f: *Function) !CompiledFn {

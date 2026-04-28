@@ -40,7 +40,7 @@ pub fn runRun(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, run_args
     defer alloc.free(src);
 
     _ = ctx.evalString(src, file) catch |e| {
-        std.debug.print("error: {}\n", .{e});
+        ctx.printDiagnostic(e);
         std.process.exit(1);
     };
 }

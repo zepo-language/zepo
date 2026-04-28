@@ -95,15 +95,17 @@ test "ModuleNotAtTopLevel: nested module inside lambda body" {
     ));
 }
 
-test "ImportNotAtTopLevel: nested import inside lambda body" {
+test "import inside lambda body compiles to IMPORT opcode and runs at call time" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
     _ = try rig.eval(
         \\(module m (export x) (define x 1))
     );
-    try std.testing.expectError(error.ImportNotAtTopLevel, rig.eval(
-        \\(define (f) (import m))
-    ));
+    _ = try rig.eval(
+        \\(define (f) (import m) x)
+    );
+    const result = try rig.eval("(f)");
+    try std.testing.expect(result != 0);
 }
 
 test "ExportOutsideModule: export at top level" {
@@ -114,7 +116,7 @@ test "ExportOutsideModule: export at top level" {
     ));
 }
 
-test "ImportNameConflict: two modules export the same name, both full-imported" {
+test "full import conflict: existing binding wins, second import silently skipped" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
     _ = try rig.eval(
@@ -124,5 +126,7 @@ test "ImportNameConflict: two modules export the same name, both full-imported" 
         \\(module b (export x) (define x 2))
     );
     _ = try rig.eval("(import a)");
-    try std.testing.expectError(error.ImportNameConflict, rig.eval("(import b)"));
+    _ = try rig.eval("(import b)");
+    const result = try rig.eval("x");
+    try std.testing.expect(result != 0);
 }

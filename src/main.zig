@@ -123,6 +123,13 @@ pub fn main() !void {
     defer ctx.deinit();
     try zepo.runtime.loadStdlib(&ctx);
 
+    // *program-mode* — #t when running as a script, #f when loaded into the REPL.
+    // Default #f; run/file dispatch sets it to #t below.
+    {
+        const sym = try syms.intern("*program-mode*");
+        try globals.define(sym, zepo.abi.value.FALSE);
+    }
+
     // Build module search path: exe/../lib, then ZEPO_PATH entries.
     var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
@@ -154,14 +161,27 @@ pub fn main() !void {
     ctx.module_path = path_dirs.items;
 
     if (std.mem.eql(u8, arg, "--repl")) {
-        try repl_cmd.runRepl(&ctx, alloc);
+        // argv for preloaded files: [file, extra-args...]  (no "zepo --repl" prefix)
+        zepo.prims.io.program_argv = args[2..];
+        try repl_cmd.runRepl(&ctx, alloc, args[2..]);
     } else if (std.mem.eql(u8, arg, "run")) {
+        zepo.prims.io.program_argv = args[2..];
+        setProgramMode(&syms, &globals);
         try run_cmd.runRun(&ctx, alloc, args[2..]);
     } else if (std.mem.eql(u8, arg, "test")) {
+        zepo.prims.io.program_argv = args[2..];
         try test_cmd.runTest(&ctx, alloc, args[2..]);
     } else {
+        // Direct file: zepo script.lisp arg1 arg2
+        zepo.prims.io.program_argv = args[1..];
+        setProgramMode(&syms, &globals);
         try runFile(&ctx, alloc, arg);
     }
+}
+
+fn setProgramMode(syms: *zepo.runtime.SymbolTable, globals: *zepo.runtime.GlobalEnv) void {
+    const sym = syms.intern("*program-mode*") catch return;
+    globals.set(sym, zepo.abi.value.TRUE) catch {};
 }
 
 fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) !void {

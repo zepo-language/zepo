@@ -6,6 +6,9 @@ const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
 const value_mod = abi.value;
 
+const gc_collector = @import("../gc/collector.zig");
+const HandleScope = gc_collector.HandleScope;
+
 const package_mod = @import("package.zig");
 const PackageInfo = package_mod.PackageInfo;
 
@@ -55,15 +58,24 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     }
 
     ctx.enterModule(m);
-    // Evaluate body forms in the module's env.
-    var body_iter = body_cur;
+
+    // Root body_iter so a GC triggered by evalImport/evalForm (e.g. via
+    // tryAutoLoad → evalString) cannot stale the traversal pointer.
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+    const iter_slot = scope.push(body_cur);
+    const form_slot = scope.push(value_mod.NIL);
+
     var last: Value = value_mod.NIL;
-    while (!value_mod.isNil(body_iter)) {
-        if (!objects.isPair(body_iter)) {
+    while (!value_mod.isNil(iter_slot.*)) {
+        if (!objects.isPair(iter_slot.*)) {
             ctx.leaveModule();
             return error.InvalidSpecialForm;
         }
-        const body_form = objects.pairCar(body_iter).*;
+        form_slot.* = objects.pairCar(iter_slot.*).*;
+        iter_slot.* = objects.pairCdr(iter_slot.*).*;
+        const body_form = form_slot.*;
         // Nested module declarations are not allowed.
         if (isHeadSymbol(body_form, "module")) {
             ctx.leaveModule();
@@ -73,18 +85,17 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
         // so currentEnv() targets the module's env.
         if (isHeadSymbol(body_form, "import")) {
             last = evalImport(ctx, body_form) catch |e| {
+                if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(body_form);
                 ctx.leaveModule();
                 return e;
             };
-            body_iter = objects.pairCdr(body_iter).*;
             continue;
         }
         last = ctx.evalForm(body_form) catch |e| {
-            std.debug.print("Module body form failed: {}\n", .{e});
+            if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(body_form);
             ctx.leaveModule();
             return e;
         };
-        body_iter = objects.pairCdr(body_iter).*;
     }
 
     // Validate every exported name now exists in the module env.
@@ -185,9 +196,14 @@ pub fn logModuleFile(ctx: *EvalContext, name: []const u8, path: []const u8) void
     log.put(k, v) catch { ctx.allocator.free(k); ctx.allocator.free(v); };
 }
 
+/// Open and read a file by explicit path string. Tries the path as-is (works
+/// for both absolute and CWD-relative paths since openat with an absolute path
+/// ignores the dirfd on POSIX).
+fn readModuleFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    return std.fs.cwd().readFileAlloc(alloc, path, 4 * 1024 * 1024) catch null;
+}
+
 pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
-    // If called from inside a module body, temporarily suspend that context
-    // so nested module files can call enterModule without hitting the assert.
     const saved_module = ctx.current_module;
     ctx.current_module = null;
     defer ctx.current_module = saved_module;
@@ -196,44 +212,33 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
 
     for (ctx.module_path) |dir| {
         if (slash) |idx| {
-            // pkg/mod style
             const pkg = name[0..idx];
             const mod = name[idx + 1 ..];
 
-            const pkg_dir = std.fs.path.join(ctx.allocator, &.{ dir, pkg }) catch continue;
-            defer ctx.allocator.free(pkg_dir);
-            const manifest = std.fs.path.join(ctx.allocator, &.{ pkg_dir, "package.lisp" }) catch continue;
-            defer ctx.allocator.free(manifest);
-            std.fs.cwd().access(manifest, .{}) catch continue;
-
-            const mod_file = std.fmt.allocPrint(ctx.allocator, "{s}.lisp", .{mod}) catch continue;
-            defer ctx.allocator.free(mod_file);
-            const full_path = std.fs.path.join(ctx.allocator, &.{ pkg_dir, mod_file }) catch continue;
+            // Try <dir>/<pkg>/<mod>.lisp directly — no package.lisp required for
+            // user project modules. Installed lib packages also match this path.
+            const full_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.lisp", .{ dir, pkg, mod }) catch continue;
             defer ctx.allocator.free(full_path);
-            const src = std.fs.cwd().readFileAlloc(ctx.allocator, full_path, 4 * 1024 * 1024) catch continue;
+            const src = readModuleFile(ctx.allocator, full_path) orelse continue;
             defer ctx.allocator.free(src);
             _ = try ctx.evalString(src, full_path);
             logModuleFile(ctx, name, full_path);
         } else {
-            // Bare name: try <dir>/<name>.lisp first
-            const mod_file = std.fmt.allocPrint(ctx.allocator, "{s}.lisp", .{name}) catch continue;
-            defer ctx.allocator.free(mod_file);
-            const file_path = std.fs.path.join(ctx.allocator, &.{ dir, mod_file }) catch continue;
+            // Try <dir>/<name>.lisp
+            const file_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch continue;
             defer ctx.allocator.free(file_path);
-            if (std.fs.cwd().readFileAlloc(ctx.allocator, file_path, 4 * 1024 * 1024)) |src| {
+            if (readModuleFile(ctx.allocator, file_path)) |src| {
                 defer ctx.allocator.free(src);
                 _ = try ctx.evalString(src, file_path);
                 logModuleFile(ctx, name, file_path);
-            } else |_| {
-                // Then try <dir>/<name>/mod.lisp (package entry point)
-                const pkg_dir = std.fs.path.join(ctx.allocator, &.{ dir, name }) catch continue;
-                defer ctx.allocator.free(pkg_dir);
-                const manifest = std.fs.path.join(ctx.allocator, &.{ pkg_dir, "package.lisp" }) catch continue;
+            } else {
+                // Try <dir>/<name>/mod.lisp (package entry point)
+                const manifest = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/package.lisp", .{ dir, name }) catch continue;
                 defer ctx.allocator.free(manifest);
                 std.fs.cwd().access(manifest, .{}) catch continue;
-                const mod_path = std.fs.path.join(ctx.allocator, &.{ pkg_dir, "mod.lisp" }) catch continue;
+                const mod_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch continue;
                 defer ctx.allocator.free(mod_path);
-                const src = std.fs.cwd().readFileAlloc(ctx.allocator, mod_path, 4 * 1024 * 1024) catch continue;
+                const src = readModuleFile(ctx.allocator, mod_path) orelse continue;
                 defer ctx.allocator.free(src);
                 _ = try ctx.evalString(src, mod_path);
                 logModuleFile(ctx, name, mod_path);
@@ -286,18 +291,10 @@ pub fn doImportByName(
         }
         return;
     }
-    // import all
+    // import all — existing binding wins, silently skip conflicts
     for (target.env.entries.items) |entry| {
-        const is_exported = target.isExported(runtime_objects.symbolName(entry.sym_slot.*));
         active.importEntry(entry) catch |e| switch (e) {
-            error.ImportNameConflict => {
-                if (is_exported) {
-                    if (active.findEntry(entry.sym_slot.*)) |existing| {
-                        if (existing.val_slot.* == entry.val_slot.*) continue;
-                    }
-                    return error.ImportNameConflict;
-                }
-            },
+            error.ImportNameConflict => {},
             else => return e,
         };
     }
@@ -307,21 +304,44 @@ pub fn doImportByName(
 pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     const objects = runtime_objects;
 
-    const rest = objects.pairCdr(form).*;
-    if (!objects.isPair(rest)) return error.InvalidSpecialForm;
-    const name_v = objects.pairCar(rest).*;
+    // Root `rest` before tryAutoLoad: auto-loading calls evalString which can
+    // trigger a minor GC, moving any nursery pair. Without rooting, the `rest`
+    // local becomes a stale from-space pointer and the tail read below returns
+    // garbage → InvalidSpecialForm.
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+
+    const rest_slot = scope.push(objects.pairCdr(form).*);
+    if (!objects.isPair(rest_slot.*)) return error.InvalidSpecialForm;
+    const name_v = objects.pairCar(rest_slot.*).*;
     if (!objects.isSymbol(name_v)) return error.ImportNameMustBeSymbol;
-    const mod_name = objects.symbolName(name_v);
+    const mod_name = objects.symbolName(name_v); // symbol is old-gen, stable across GC
 
     // Auto-load from search path if not yet registered.
     if (ctx.registry.get(mod_name) == null) {
         try tryAutoLoad(ctx, mod_name);
     }
 
-    const target = ctx.registry.get(mod_name) orelse return error.ModuleNotFound;
+    const target = ctx.registry.get(mod_name) orelse {
+        const stderr = std.fs.File.stderr();
+        var hdr_buf: [256]u8 = undefined;
+        const hdr = std.fmt.bufPrint(&hdr_buf, "note: '{s}' not found in search paths:\n", .{mod_name}) catch "";
+        stderr.writeAll(hdr) catch {};
+        if (ctx.module_path.len == 0) {
+            stderr.writeAll("  (no search paths — add paths to project.lisp or set ZEPO_PATH)\n") catch {};
+        } else {
+            for (ctx.module_path) |dir| {
+                var line_buf: [512]u8 = undefined;
+                const line = std.fmt.bufPrint(&line_buf, "  {s}/{s}.lisp\n", .{ dir, mod_name }) catch continue;
+                stderr.writeAll(line) catch {};
+            }
+        }
+        return error.ModuleNotFound;
+    };
     if (!target.initialized) return error.ImportBeforeInitialization;
 
-    const tail = objects.pairCdr(rest).*;
+    const tail = objects.pairCdr(rest_slot.*).*;
     const active = ctx.currentEnv();
 
     if (value_mod.isNil(tail)) {

@@ -225,8 +225,22 @@ pub fn primExit(vm: *VM, args: []const Value) LispError!Value {
     std.process.exit(code);
 }
 
+/// Set by main.zig before running user code so (argv) returns program-level
+/// args rather than the raw zepo invocation (strips "zepo", "run", "--repl" etc).
+pub var program_argv: ?[]const []const u8 = null;
+
 pub fn primArgv(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 0) return error.ArityMismatch;
+    if (program_argv) |pargs| {
+        var result: Value = value_mod.NIL;
+        var i: usize = pargs.len;
+        while (i > 0) {
+            i -= 1;
+            const sv = objects.makeString(vm.gc, pargs[i]) catch return error.OutOfMemory;
+            result = objects.makePair(vm.gc, sv, result) catch return error.OutOfMemory;
+        }
+        return result;
+    }
     const raw = std.os.argv;
     var result: Value = value_mod.NIL;
     var i: usize = raw.len;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const zepo = @import("zepo");
 const readline = @import("readline.zig");
+const ProjectConfig = @import("project_config.zig").ProjectConfig;
 
 fn completeSymbol(
     prefix: []const u8,
@@ -24,15 +25,46 @@ fn completeSymbol(
     }
 }
 
-pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator) !void {
+pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload: []const []const u8) !void {
     const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+
+    // Apply project.lisp module paths if present.
+    var cfg_opt = ProjectConfig.loadOptional(alloc);
+    defer if (cfg_opt) |*c| c.deinit();
+    var path_buf: std.ArrayListUnmanaged([]const u8) = .{};
+    var path_owned: usize = 0;
+    defer {
+        for (path_buf.items[0..path_owned]) |p| alloc.free(p);
+        path_buf.deinit(alloc);
+    }
+    if (cfg_opt) |*cfg| {
+        try cfg.applyModulePath(alloc, ctx.module_path, &path_buf);
+        path_owned = path_buf.items.len -| ctx.module_path.len;
+    } else {
+        try path_buf.appendSlice(alloc, ctx.module_path);
+    }
+    ctx.module_path = path_buf.items;
+
+    // Pre-load any files passed on the command line.
+    for (preload) |path| {
+        const src = std.fs.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error: cannot read '{s}': {}\n", .{ path, e }) catch "error: cannot read file\n";
+            stdout.writeAll(msg) catch {};
+            continue;
+        };
+        defer alloc.free(src);
+        _ = ctx.evalString(src, path) catch |e| {
+            ctx.printDiagnostic(e);
+        };
+    }
 
     // History file: ~/.zepo_history
-    const hist_path: ?[]const u8 = if (std.process.getEnvVarOwned(alloc, "HOME")) |home|
-        std.fs.path.join(alloc, &.{ home, ".zepo_history" }) catch null
-    else |_|
-        null;
+    const hist_path: ?[]const u8 = blk: {
+        const home = std.process.getEnvVarOwned(alloc, "HOME") catch break :blk null;
+        defer alloc.free(home);
+        break :blk std.fs.path.join(alloc, &.{ home, ".zepo_history" }) catch null;
+    };
     defer if (hist_path) |p| alloc.free(p);
 
     var history = readline.History.init(alloc, hist_path);
@@ -84,9 +116,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator) !void {
                 continue;
             }
             const result = ctx.evalString(input.items, "<repl>") catch |e| {
-                var msg_buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&msg_buf, "error: {}\n", .{e}) catch "error\n";
-                try stderr.writeAll(msg);
+                ctx.printDiagnostic(e);
                 input.clearRetainingCapacity();
                 continue;
             };

@@ -73,8 +73,8 @@ pub const EvalContext = struct {
     emitter: Emitter,
     spans: SpanTable,
 
-    // Current compiled bytecode (re-emitted each eval), owned by this context.
-    compiled: ?[]CompiledFn,
+    // Accumulated compiled bytecode; grows incrementally across evals.
+    compiled: std.ArrayListUnmanaged(CompiledFn),
     vm: ?VM,
 
     // Macro transformer registry. Keys are owned slices; values are closure
@@ -85,13 +85,17 @@ pub const EvalContext = struct {
     // from disk via tryAutoLoad. Used by `zepo build` for bundling.
     module_file_log: ?*std.StringHashMap([]const u8) = null,
 
+    // Error diagnostics — populated on the first error, used by CLI formatters.
+    last_error_span: ?errs.Span = null,
+    current_src: []const u8 = "",
+
     pub fn init(
         gc: *GC,
         symbols: *SymbolTable,
         globals: *GlobalEnv,
         allocator: std.mem.Allocator,
     ) !EvalContext {
-        return .{
+        var ctx = EvalContext{
             .gc = gc,
             .symbols = symbols,
             .globals = globals,
@@ -103,18 +107,32 @@ pub const EvalContext = struct {
             .program = Program.init(allocator),
             .emitter = Emitter.init(allocator, symbols, gc),
             .spans = SpanTable.init(allocator),
-            .compiled = null,
+            .compiled = .{},
             .vm = null,
             .macro_names = std.StringHashMap(void).init(allocator),
         };
+        // Keep compiled fn consts rooted at all times, even while VM is
+        // torn down between eval steps (prevents GC from collecting literals
+        // embedded in already-compiled function bodies).
+        gc.roots.visit_fn2 = compiledConstsVisit;
+        gc.roots.visit_ctx2 = &ctx;
+        return ctx;
+    }
+
+    fn compiledConstsVisit(ctx_opaque: *anyopaque, visitor: @import("../gc/roots.zig").RootVisitor, visitor_ctx: *anyopaque) void {
+        const ctx: *EvalContext = @ptrCast(@alignCast(ctx_opaque));
+        for (ctx.compiled.items) |*cf| {
+            for (cf.consts) |*v| visitor(visitor_ctx, v);
+            for (cf.keyword_params) |*kp| visitor(visitor_ctx, &kp.default_value);
+        }
     }
 
     pub fn deinit(ctx: *EvalContext) void {
+        ctx.gc.roots.visit_fn2 = null;
+        ctx.gc.roots.visit_ctx2 = null;
         if (ctx.vm) |*v| v.deinit();
-        if (ctx.compiled) |cs| {
-            for (cs) |*cf| cf.deinit(ctx.allocator);
-            ctx.allocator.free(cs);
-        }
+        for (ctx.compiled.items) |*cf| cf.deinit(ctx.allocator);
+        ctx.compiled.deinit(ctx.allocator);
         ctx.emitter.deinit();
         ctx.program.deinit();
         ctx.arena.deinit();
@@ -151,6 +169,8 @@ pub const EvalContext = struct {
     /// Evaluate all expressions in `src` and return the value of the last one
     /// (or NIL for an empty source).
     pub fn evalString(ctx: *EvalContext, src: []const u8, file: []const u8) !Value {
+        ctx.current_src = src;
+        ctx.last_error_span = null;
         var parser = Parser.init(ctx.gc, ctx.symbols, &ctx.spans, src, file, ctx.allocator);
         defer parser.deinit();
 
@@ -170,6 +190,18 @@ pub const EvalContext = struct {
     pub fn evalForm(ctx: *EvalContext, form: Value) !Value {
         // Top-level module/import/export recognition. These are strictly
         // compile-time forms and never lower to IR directly.
+        const result = ctx.evalFormInner(form);
+        return result catch |e| {
+            // Record the span of the failing form if not already set by a
+            // more-specific inner handler (inner wins → most precise location).
+            if (ctx.last_error_span == null) {
+                ctx.last_error_span = ctx.spans.get(form);
+            }
+            return e;
+        };
+    }
+
+    fn evalFormInner(ctx: *EvalContext, form: Value) !Value {
         if (isHeadSymbol(form, "module")) {
             return mod_loader.evalModuleDecl(ctx, form);
         }
@@ -177,11 +209,9 @@ pub const EvalContext = struct {
             return mod_loader.evalImport(ctx, form);
         }
         if (isHeadSymbol(form, "export")) {
-            // `export` is only meaningful inside `(module ...)`. The module
-            // handler consumes it; seeing it here means it leaked.
             return error.ExportOutsideModule;
         }
-        if (isHeadSymbol(form, "include")) {
+        if (isHeadSymbol(form, "include") or isHeadSymbol(form, "load")) {
             return mod_loader.evalInclude(ctx, form);
         }
         if (isHeadSymbol(form, "package")) {
@@ -192,6 +222,46 @@ pub const EvalContext = struct {
         }
 
         return ctx.evalNonModuleForm(form);
+    }
+
+    /// Print a caught error with file/line/col and source excerpt to stderr.
+    pub fn printDiagnostic(ctx: *const EvalContext, err: anyerror) void {
+        const stderr = std.fs.File.stderr();
+        var buf: [512]u8 = undefined;
+        // For UserError, prefer the message stored in the VM over the bare name.
+        const err_label: []const u8 = blk: {
+            if (err == error.UserError) {
+                if (ctx.vm) |vm| {
+                    if (vm.error_msg) |msg| break :blk msg;
+                }
+            }
+            break :blk @errorName(err);
+        };
+        if (ctx.last_error_span) |span| {
+            const line_text = extractSourceLine(ctx.current_src, span.start.offset);
+            const header = std.fmt.bufPrint(&buf, "{s}:{d}:{d}: error: {s}\n", .{
+                span.file,
+                span.start.line,
+                span.start.col,
+                err_label,
+            }) catch "";
+            stderr.writeAll(header) catch {};
+            if (line_text.len > 0) {
+                var line_buf: [1024]u8 = undefined;
+                const line_out = std.fmt.bufPrint(&line_buf, "  {s}\n", .{line_text}) catch "";
+                stderr.writeAll(line_out) catch {};
+                const col: usize = if (span.start.col > 0) span.start.col - 1 else 0;
+                var caret_buf: [256]u8 = undefined;
+                const spaces = @min(col + 2, caret_buf.len - 2);
+                @memset(caret_buf[0..spaces], ' ');
+                caret_buf[spaces] = '^';
+                caret_buf[spaces + 1] = '\n';
+                stderr.writeAll(caret_buf[0 .. spaces + 2]) catch {};
+            }
+        } else {
+            const msg = std.fmt.bufPrint(&buf, "error: {s}\n", .{err_label}) catch "";
+            stderr.writeAll(msg) catch {};
+        }
     }
 
     pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
@@ -219,21 +289,16 @@ pub const EvalContext = struct {
         // without reserved space a GC could fire mid-emit with no root visitor.
         try ctx.gc.reserveNursery(16 * 1024);
 
-        // Re-emit the full program (including new functions appended above).
-        if (ctx.compiled) |old| {
-            for (old) |*cf| cf.deinit(ctx.allocator);
-            ctx.allocator.free(old);
-            ctx.compiled = null;
-        }
+        // Incrementally emit only newly compiled functions (O(new) not O(total)).
         if (ctx.vm) |*v| {
             v.deinit();
             ctx.vm = null;
         }
-        ctx.compiled = try ctx.emitter.emit(&ctx.program);
+        try ctx.emitter.emitAppend(&ctx.program, &ctx.compiled);
         // The VM always sees the currently-active env — if we're inside a
         // module, that's the module's env; the top-level globals become the
         // read-only fallback so the module body can call prims/prelude.
-        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.?, ctx.allocator);
+        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator);
         if (ctx.current_module != null) {
             ctx.vm.?.fallback_globals = ctx.globals;
         }
@@ -248,6 +313,15 @@ pub const EvalContext = struct {
 fn vmImportCallback(ctx_opaque: *anyopaque, name: []const u8, alias: ?[]const u8, only: ?[]const []const u8) errs.LispError!void {
     const ctx: *EvalContext = @ptrCast(@alignCast(ctx_opaque));
     return mod_loader.doImportByName(ctx, name, alias, only);
+}
+
+fn extractSourceLine(src: []const u8, offset: u32) []const u8 {
+    const off: usize = @min(@as(usize, offset), src.len);
+    var start: usize = off;
+    while (start > 0 and src[start - 1] != '\n') : (start -= 1) {}
+    var end: usize = off;
+    while (end < src.len and src[end] != '\n') : (end += 1) {}
+    return src[start..end];
 }
 
 pub fn isHeadSymbol(v: Value, expected: []const u8) bool {

@@ -109,25 +109,20 @@ fn marshalJson(vm: *VM, jv: std.json.Value) LispError!Value {
             return vec_slot.*;
         },
         .object => |obj| {
-            // Build an alist: (cons (cons key value) rest).
-            // Iterate entries and accumulate.
-            var result: Value = value_mod.NIL;
+            const ht = @import("../runtime/hashtable.zig").make(vm.gc) catch return error.OutOfMemory;
             var scope = HandleScope{};
             vm.gc.roots.pushHandleScope(&scope);
             defer vm.gc.roots.popHandleScope();
-            const acc_slot = scope.push(result);
+            const ht_slot = scope.push(ht);
             var it = obj.iterator();
             while (it.next()) |entry| {
                 const key_str = objects.makeString(vm.gc, entry.key_ptr.*) catch return error.OutOfMemory;
                 const key_slot = scope.push(key_str);
                 const val = try marshalJson(vm, entry.value_ptr.*);
                 const val_slot = scope.push(val);
-                const cell = objects.makePair(vm.gc, key_slot.*, val_slot.*) catch return error.OutOfMemory;
-                const cell_slot = scope.push(cell);
-                acc_slot.* = objects.makePair(vm.gc, cell_slot.*, acc_slot.*) catch return error.OutOfMemory;
+                _ = @import("../runtime/hashtable.zig").set(vm.gc, vm, ht_slot.*, key_slot.*, val_slot.*) catch return error.OutOfMemory;
             }
-            result = acc_slot.*;
-            return result;
+            return ht_slot.*;
         },
     }
 }
@@ -211,8 +206,28 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
         try buf.append(a, ']');
         return;
     }
+    const ht_mod = @import("../runtime/hashtable.zig");
+    if (ht_mod.isHashTable(v)) {
+        try buf.append(a, '{');
+        const Ctx = struct { buf: *std.ArrayList(u8), a: std.mem.Allocator, first: bool, err: ?anyerror };
+        var ctx2 = Ctx{ .buf = buf, .a = a, .first = true, .err = null };
+        ht_mod.forEach(v, &ctx2, struct {
+            fn visit(raw: *anyopaque, k: Value, val: Value) void {
+                const c: *Ctx = @ptrCast(@alignCast(raw));
+                if (c.err != null) return;
+                if (!c.first) c.buf.append(c.a, ',') catch { c.err = error.OutOfMemory; return; };
+                c.first = false;
+                writeJson(c.buf, c.a, k) catch |e| { c.err = e; return; };
+                c.buf.append(c.a, ':') catch { c.err = error.OutOfMemory; return; };
+                writeJson(c.buf, c.a, val) catch |e| { c.err = e; return; };
+            }
+        }.visit);
+        if (ctx2.err) |e| return e;
+        try buf.append(a, '}');
+        return;
+    }
     if (objects.isPair(v)) {
-        // Treat as alist object: (list (cons key val) ...).
+        // Alist fallback: ((key . val) ...).
         try buf.append(a, '{');
         var cur = v;
         var first = true;
