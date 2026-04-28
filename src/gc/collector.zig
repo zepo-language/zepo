@@ -1,6 +1,7 @@
 //! Top-level GC facade that orchestrates nursery, old-gen, card table, roots.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
 const ObjHeader = abi.ObjHeader;
@@ -21,12 +22,30 @@ pub const RootSet = roots_mod.RootSet;
 pub const HandleScope = roots_mod.HandleScope;
 pub const WORD: usize = 8;
 
+/// RAII guard that asserts no GC collection fires while in scope (debug builds
+/// only). Nest freely — the depth counter handles recursive/overlapping scopes.
+/// Usage:
+///   var guard = gc.noCollect();
+///   defer guard.release();
+pub const NoCollectGuard = struct {
+    gc: if (builtin.mode == .Debug) *GC else void,
+
+    pub fn release(g: *NoCollectGuard) void {
+        if (builtin.mode != .Debug) return;
+        g.gc.no_gc_depth -= 1;
+    }
+};
+
 pub const GC = struct {
     allocator: std.mem.Allocator,
     nursery: Nursery,
     old_gen: OldGen,
     cards: CardTable,
     roots: RootSet,
+    /// Debug-only nesting counter for noCollect guards. Zero means collections
+    /// are allowed; nonzero means a guard is active and minor() will panic.
+    no_gc_depth: if (builtin.mode == .Debug) u32 else void =
+        if (builtin.mode == .Debug) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator) !GC {
         var nursery = try Nursery.init();
@@ -114,7 +133,47 @@ pub const GC = struct {
     }
 
     pub fn minor(gc: *GC) !void {
+        if (builtin.mode == .Debug) {
+            if (gc.no_gc_depth > 0) {
+                std.debug.panic(
+                    "GC collection fired while a noCollect guard is active (depth={}). " ++
+                        "An unrooted GC Value is live across an allocation. " ++
+                        "Check the call site that triggered this collection.",
+                    .{gc.no_gc_depth},
+                );
+            }
+        }
         try nursery_mod.collect(&gc.nursery, &gc.old_gen, &gc.cards, &gc.roots);
+    }
+
+    /// Returns a guard that asserts no minor GC fires while it is alive.
+    /// Zero cost in release builds. Use with defer:
+    ///   var guard = gc.noCollect();
+    ///   defer guard.release();
+    pub fn noCollect(gc: *GC) NoCollectGuard {
+        if (builtin.mode == .Debug) {
+            gc.no_gc_depth += 1;
+            return .{ .gc = gc };
+        }
+        return .{ .gc = {} };
+    }
+
+    /// Assert that `v`, if a pointer, does not point to a forwarded (moved)
+    /// object. A forwarded object has bit 0 set in its header word — reading
+    /// it as a live value produces garbage. Panics with the raw bits of `v` in
+    /// debug builds; no-op in release.
+    pub fn assertLive(gc: *GC, v: Value) void {
+        _ = gc;
+        if (builtin.mode != .Debug) return;
+        if (!value_mod.isPtr(v)) return;
+        const obj = value_mod.ptrVal(v);
+        if (obj.isForward()) {
+            std.debug.panic(
+                "assertLive failed: Value 0x{x} points to a forwarded object " ++
+                    "(header=0x{x}). The Value was not rooted across a GC collection.",
+                .{ @as(u64, @bitCast(v)), obj.word },
+            );
+        }
     }
 
     /// Ensure the nursery has at least `needed_bytes` of contiguous free space.

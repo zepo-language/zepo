@@ -343,6 +343,11 @@ pub const EvalContext = struct {
         // GC roots.  expanded_slot is rooted above so reserveNursery's GC is safe.
         try ctx.gc.reserveNursery(16 * 1024);
 
+        // In debug builds, assert no collection fires from here through emitAppend.
+        // Any GC in this window would stale the unrooted quote datums in AST/IR.
+        var no_gc = ctx.gc.noCollect();
+        defer no_gc.release();
+
         var builder = Builder.init(&ctx.arena, ctx.symbols, ctx.allocator);
         builder.span_table = &ctx.spans;
         const root_id = try builder.build(expanded_slot.*);
