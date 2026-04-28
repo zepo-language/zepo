@@ -17,6 +17,7 @@ zig-pkg/
 
 
 # Beads / Dolt files (added by bd init)
+.nardo/
 .dolt/
 *.db
 .beads-credential-key
