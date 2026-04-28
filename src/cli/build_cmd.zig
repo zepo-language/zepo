@@ -162,6 +162,8 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
 
     // Embed each bundled module and copy its file into temp/lib/
     var mod_idx: usize = 0;
+    var mod_names: std.ArrayListUnmanaged([]const u8) = .{};
+    defer mod_names.deinit(alloc);
     for (module_order.items) |mod_name| {
         const file_path = module_log.get(mod_name) orelse continue;
         const rel = try std.fmt.allocPrint(alloc, "lib/{s}.lisp", .{mod_name});
@@ -171,6 +173,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         defer alloc.free(fsrc);
         tmp_dir.writeFile(.{ .sub_path = rel, .data = fsrc }) catch continue;
         try w.print("const MODULE_{d} = @embedFile(\"{s}\");\n", .{ mod_idx, rel });
+        try mod_names.append(alloc, mod_name);
         mod_idx += 1;
     }
 
@@ -192,8 +195,8 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         \\    try zepo.runtime.loadStdlib(&ctx);
         \\
     );
-    for (0..mod_idx) |j| {
-        try w.print("    if (ctx.evalString(MODULE_{d}, \"<module>\")) |_| {{}} else |e| ctx.printDiagnostic(e);\n", .{j});
+    for (mod_names.items, 0..) |mod_name, j| {
+        try w.print("    if (ctx.evalString(MODULE_{d}, \"{s}\")) |_| {{}} else |e| ctx.printDiagnostic(e);\n", .{ j, mod_name });
     }
     try w.writeAll(
         \\    if (ctx.evalString(PROGRAM, "<program>")) |_| {} else |e| {

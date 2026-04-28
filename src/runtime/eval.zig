@@ -324,25 +324,28 @@ pub const EvalContext = struct {
     }
 
     pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
-        // Phase 1: quasiquote desugaring.
-        const qq_expanded = try expand_mod.expand(form, ctx.symbols, ctx.gc);
-        // Phase 2: macro expansion (requires VM to exist for transformer calls).
-        const expanded = if (ctx.vm != null)
-            try macros.macroExpand(ctx, qq_expanded)
-        else
-            qq_expanded;
+        // Root all intermediate Values across any GC-triggering call so the
+        // collector does not move them while they live only in local variables.
+        var scope = HandleScope{};
+        ctx.gc.roots.pushHandleScope(&scope);
+        defer ctx.gc.roots.popHandleScope();
 
-        // Reserve nursery space BEFORE building the AST so that no GC can fire
-        // while quote datum Values live in AST nodes or IR load_const ops — those
-        // are plain Zig struct fields, not GC roots, so a collection would leave
-        // them pointing at forwarding headers.  The VM still exists here, so the
-        // root visitor is live for any GC triggered by reserveNursery itself.
-        // builder/compiler/emitter use only the Zig allocator until the VM runs.
+        // Phase 1: quasiquote desugaring.
+        const qq_slot = scope.push(try expand_mod.expand(form, ctx.symbols, ctx.gc));
+        // Phase 2: macro expansion (requires VM to exist for transformer calls).
+        const expanded_slot = scope.push(if (ctx.vm != null)
+            try macros.macroExpand(ctx, qq_slot.*)
+        else
+            qq_slot.*);
+
+        // Reserve nursery space so no GC fires while quote datum Values live in
+        // AST nodes or IR load_const ops — those are plain Zig struct fields, not
+        // GC roots.  expanded_slot is rooted above so reserveNursery's GC is safe.
         try ctx.gc.reserveNursery(16 * 1024);
 
         var builder = Builder.init(&ctx.arena, ctx.symbols, ctx.allocator);
         builder.span_table = &ctx.spans;
-        const root_id = try builder.build(expanded);
+        const root_id = try builder.build(expanded_slot.*);
 
         var analyzer = sema_mod.CaptureAnalyzer.init(&ctx.arena, ctx.allocator);
         try analyzer.analyze(root_id);
