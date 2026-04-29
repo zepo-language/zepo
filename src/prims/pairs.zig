@@ -296,7 +296,15 @@ pub fn primWithExceptionHandler(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 2) return error.ArityMismatch;
     const handler = args[0];
     const thunk = args[1];
+    // Record depth so we can unwind stale frames left by execFn on error.
+    const depth_before = vm.call_stack.frames.items.len;
     const result = vm.callValue(thunk, &[_]Value{}) catch |err| {
+        // execFn leaves the failed frame on the call stack for diagnostics;
+        // unwind back to the pre-thunk depth before invoking the handler so
+        // that currentFrame() points at the correct outer frame.
+        while (vm.call_stack.frames.items.len > depth_before) {
+            _ = vm.call_stack.pop();
+        }
         // Pass the raised value if set, otherwise wrap the Zig error name.
         const exc_val = if (!value_mod.isNil(vm.raised_val))
             vm.raised_val
