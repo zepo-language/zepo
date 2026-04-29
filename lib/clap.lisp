@@ -6,7 +6,7 @@
     make-program make-command make-option make-positional
     opt-set cmd-add-option cmd-add-positional
     parse run
-    render-help render-usage render-error
+    render-help render-usage render-error render-markdown render-manpage
     parse-result? parse-error?
     result-option result-positional result-command result-remaining
     ctx-option ctx-positional ctx-command ctx-remaining ctx-program
@@ -500,64 +500,106 @@
 
   ;;; ── Rendering ─────────────────────────────────────────────────────────────
 
+  ;;; ── Rendering helpers ────────────────────────────────────────────────────
+
+  ; Build the flag+long token for an option, e.g. "-p, --port=PORT"
+  (define (opt-flag-str opt)
+    (let* ((short (plist-get opt :short))
+           (long  (plist-get opt :long))
+           (kind  (plist-get opt :kind))
+           (vname (or (plist-get opt :value-name) "VALUE"))
+           (takes-value (or (equal? kind 'value) (equal? kind 'multi)))
+           (short-str (if short (string-append "-" (short->string short)) #f))
+           (long-str  (if long
+                          (string-append "--" long
+                                         (if takes-value (string-append "=" vname) ""))
+                          #f)))
+      (cond ((and short-str long-str) (string-append short-str ", " long-str))
+            (short-str short-str)
+            (long-str  (string-append "    " long-str))
+            (#t        (string-append "    " (symbol->string (plist-get opt :key)))))))
+
+  ; Build the env hint suffix for an option, e.g. "  [env: API_TOKEN]"
+  (define (opt-env-str opt)
+    (let ((env (plist-get opt :env)))
+      (if env (string-append "  [env: " env "]") "")))
+
+  ; Column-aligned option lines. col-width is the width of the left column.
+  (define (render-option-line-aligned opt col-width)
+    (let* ((flag  (opt-flag-str opt))
+           (help  (or (plist-get opt :help) ""))
+           (env   (opt-env-str opt))
+           (padded (string-pad-right (string-append "  " flag) col-width #\space)))
+      (string-append padded "  " help env)))
+
+  ; Compute the column width for a list of options.
+  (define (opts-col-width opts)
+    (fold-left (lambda (mx opt)
+                 (let ((w (+ 2 (string-length (opt-flag-str opt)))))
+                   (if (> w mx) w mx)))
+               0 opts))
+
   (define (render-usage prog cmd)
     (let ((name (plist-get prog :name))
           (opts (plist-get cmd :options))
           (pos  (plist-get cmd :positionals))
           (subs (plist-get cmd :subcommands)))
       (let* ((pos-strs (map (lambda (p)
-                              (if (plist-get p :required)
-                                  (symbol->string (plist-get p :key))
-                                  (string-append "[" (symbol->string (plist-get p :key)) "]")))
+                              (let ((k (symbol->string (plist-get p :key))))
+                                (if (plist-get p :required) k (string-append "[" k "]"))))
                             pos))
              (parts (append
-                      (append (list "Usage:" name)
-                              (append (if (not (null? opts)) (list "[OPTIONS]") (quote ()))
-                                      (if (not (null? subs)) (list "[COMMAND]") (quote ()))))
+                      (list "Usage:" name)
+                      (if (not (null? opts)) '("[OPTIONS]") '())
+                      (if (not (null? subs)) '("[COMMAND]") '())
                       pos-strs)))
         (string-join parts " "))))
 
-  (define (render-option-line opt)
-    (let* ((short (plist-get opt :short))
-           (long  (plist-get opt :long))
-           (kind  (plist-get opt :kind))
-           (vname (plist-get opt :value-name))
-           (help  (plist-get opt :help))
-           (short-part (if short
-                           (string-append "-" (short->string short) ", ")
-                           "    "))
-           (long-part  (if long
-                           (string-append "--" long
-                                          (if (or (equal? kind :value)
-                                                  (equal? kind (quote multi)))
-                                              (string-append "=" vname)
-                                              ""))
-                           ""))
-           (line (string-append "  " short-part long-part "  " help)))
-      line))
-
   (define (render-help prog cmd)
-    (let* ((name    (plist-get prog :name))
-           (ver     (plist-get prog :version))
+    (let* ((ver     (plist-get prog :version))
            (summary (plist-get prog :summary))
+           (desc    (plist-get prog :description))
            (opts    (plist-get cmd :options))
+           (pos     (plist-get cmd :positionals))
            (subs    (plist-get cmd :subcommands))
-           (parts   (quote ())))
-      (let* ((parts (if (not (equal? summary ""))
-                        (list summary "" (render-usage prog cmd))
-                        (list (render-usage prog cmd))))
+           (col-w   (opts-col-width opts))
+           (sub-col (fold-left (lambda (mx s)
+                                 (let ((w (+ 2 (string-length (plist-get s :name)))))
+                                   (if (> w mx) w mx)))
+                               0 subs)))
+      (let* ((parts (if (not (equal? summary "")) (list summary) '()))
+             (parts (if (and desc (not (equal? desc "")))
+                        (append parts (list "" desc))
+                        parts))
+             (parts (append parts (list "" (render-usage prog cmd))))
+             (parts (if (not (null? pos))
+                        (append parts
+                                (list "" "Arguments:")
+                                (map (lambda (p)
+                                       (let* ((k   (symbol->string (plist-get p :key)))
+                                              (req (plist-get p :required))
+                                              (h   (or (plist-get p :help) ""))
+                                              (tag (if req " (required)" "")))
+                                         (string-append "  " k "  " h tag)))
+                                     pos))
+                        parts))
              (parts (if (not (null? opts))
-                        (append parts (append (list "" "Options:")
-                                              (map render-option-line opts)))
+                        (append parts
+                                (list "" "Options:")
+                                (map (lambda (o) (render-option-line-aligned o col-w)) opts))
                         parts))
              (parts (if (not (null? subs))
-                        (append parts (append (list "" "Commands:")
-                                              (map (lambda (s)
-                                                     (string-append "  " (plist-get s :name)
-                                                                    "  " (plist-get s :summary)))
-                                                   subs)))
+                        (append parts
+                                (list "" "Commands:")
+                                (map (lambda (s)
+                                       (string-append
+                                         (string-pad-right
+                                           (string-append "  " (plist-get s :name))
+                                           sub-col #\space)
+                                         "  " (plist-get s :summary)))
+                                     subs))
                         parts))
-             (parts (if (not (equal? ver ""))
+             (parts (if (and ver (not (equal? ver "")))
                         (append parts (list "" (string-append "Version: " ver)))
                         parts)))
         (string-join parts "\n"))))
@@ -568,13 +610,120 @@
            (sugg (plist-get err :suggestions))
            (lines (list (string-append "error: " msg))))
       (let* ((lines (if tok
-                        (append lines (list (string-append "  Token: " tok)))
+                        (append lines (list (string-append "  token: " tok)))
                         lines))
              (lines (if (and sugg (not (null? sugg)))
-                        (append lines (list (string-append "  Did you mean: "
+                        (append lines (list (string-append "  did you mean: "
                                                            (string-join sugg ", "))))
                         lines)))
         (string-join lines "\n"))))
+
+  ;;; ── render-markdown ──────────────────────────────────────────────────────
+
+  (define (render-markdown prog)
+    (let* ((name    (plist-get prog :name))
+           (ver     (plist-get prog :version))
+           (summary (plist-get prog :summary))
+           (desc    (plist-get prog :description))
+           (root    (plist-get prog :root-command))
+           (subs    (plist-get root :subcommands)))
+      (define (cmd-section cmd prefix)
+        (let* ((cname (plist-get cmd :name))
+               (csum  (plist-get cmd :summary))
+               (cdesc (plist-get cmd :description))
+               (opts  (plist-get cmd :options))
+               (pos   (plist-get cmd :positionals))
+               (lines (list (string-append prefix " `" cname "`")
+                            ""
+                            (or csum ""))))
+          (let* ((lines (if (and cdesc (not (equal? cdesc "")))
+                            (append lines (list "" cdesc))
+                            lines))
+                 (lines (if (not (null? pos))
+                            (append lines
+                                    (list "" "**Arguments:**" "")
+                                    (map (lambda (p)
+                                           (let ((k (symbol->string (plist-get p :key)))
+                                                 (h (or (plist-get p :help) ""))
+                                                 (r (plist-get p :required)))
+                                             (string-append "- `" k "`"
+                                                            (if r " *(required)*" "")
+                                                            " — " h)))
+                                         pos))
+                            lines))
+                 (lines (if (not (null? opts))
+                            (append lines
+                                    (list "" "**Options:**" "")
+                                    (map (lambda (o)
+                                           (let* ((flag (opt-flag-str o))
+                                                  (help (or (plist-get o :help) ""))
+                                                  (env  (plist-get o :env))
+                                                  (ev   (if env (string-append " `$" env "`") "")))
+                                             (string-append "- `" flag "`" ev " — " help)))
+                                         opts))
+                            lines)))
+            lines)))
+      (let* ((parts (list (string-append "# " name)
+                          ""
+                          (or summary "")))
+             (parts (if (and desc (not (equal? desc "")))
+                        (append parts (list "" desc))
+                        parts))
+             (parts (if (and ver (not (equal? ver "")))
+                        (append parts (list "" (string-append "**Version:** " ver)))
+                        parts))
+             (parts (if (not (null? subs))
+                        (append parts
+                                (list "" "## Commands" "")
+                                (apply append (map (lambda (s) (cmd-section s "###")) subs)))
+                        (append parts (list "") (cmd-section root "##")))))
+        (string-join parts "\n"))))
+
+  ;;; ── render-manpage ───────────────────────────────────────────────────────
+
+  (define (render-manpage prog)
+    (let* ((name    (plist-get prog :name))
+           (ver     (or (plist-get prog :version) ""))
+           (summary (or (plist-get prog :summary) ""))
+           (desc    (or (plist-get prog :description) ""))
+           (root    (plist-get prog :root-command))
+           (opts    (plist-get root :options))
+           (subs    (plist-get root :subcommands)))
+      (define (groff-escape s)
+        ; Escape backslash and hyphen for groff
+        (let* ((s (string-replace s "\\" "\\\\"))
+               (s (string-replace s "-" "\\-")))
+          s))
+      (define (opt-manline o)
+        (let* ((flag (opt-flag-str o))
+               (help (or (plist-get o :help) ""))
+               (env  (plist-get o :env))
+               (ev   (if env (string-append "\n.br\nEnvironment: " env) "")))
+          (string-append ".TP\n.B " (groff-escape flag) "\n" (groff-escape help) ev)))
+      (let* ((parts (list
+                      (string-append ".TH " (string-upcase name) " 1 \"\" \"" ver "\"")
+                      ".SH NAME"
+                      (string-append name " \\- " (groff-escape summary))
+                      ".SH SYNOPSIS"
+                      (string-append ".B " name)
+                      (render-usage prog root)))
+             (parts (if (not (equal? desc ""))
+                        (append parts (list ".SH DESCRIPTION" (groff-escape desc)))
+                        parts))
+             (parts (if (not (null? opts))
+                        (append parts (list ".SH OPTIONS") (map opt-manline opts))
+                        parts))
+             (parts (if (not (null? subs))
+                        (append parts
+                                (list ".SH COMMANDS")
+                                (map (lambda (s)
+                                       (string-append ".TP\n.B "
+                                                      (groff-escape (plist-get s :name))
+                                                      "\n"
+                                                      (groff-escape (or (plist-get s :summary) ""))))
+                                     subs))
+                        parts)))
+        (string-join parts "\n"))))
 
   ;;; ── 2.0 DSL ───────────────────────────────────────────────────────────────
 
