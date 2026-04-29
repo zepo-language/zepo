@@ -276,6 +276,11 @@ pub const VM = struct {
             pc += 1;
 
             const op = bytecode.decodeOp(instr);
+            if (vm.gc.trace.opcodes) {
+                std.debug.print("[op] {s}:{d}  {s}\n", .{
+                    func.src_name, pc - 1, @tagName(op),
+                });
+            }
             switch (op) {
                 .LOAD_CONST => {
                     const a = bytecode.decodeA(instr);

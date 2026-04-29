@@ -208,6 +208,9 @@ fn readModuleFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
 }
 
 pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
+    if (ctx.gc.trace.module) {
+        std.debug.print("[module] loading '{s}' ({d} search paths)\n", .{ name, ctx.module_path.len });
+    }
     const saved_module = ctx.current_module;
     ctx.current_module = null;
     defer ctx.current_module = saved_module;
@@ -248,7 +251,16 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
                 logModuleFile(ctx, name, mod_path);
             }
         }
-        if (ctx.registry.get(name) != null) return;
+        if (ctx.registry.get(name) != null) {
+            if (ctx.gc.trace.module) {
+                const path = if (ctx.module_file_log) |log| log.get(name) orelse "<unknown>" else "<unknown>";
+                std.debug.print("[module] loaded '{s}' from '{s}'\n", .{ name, path });
+            }
+            return;
+        }
+    }
+    if (ctx.gc.trace.module) {
+        std.debug.print("[module] '{s}' not found in {d} search path(s)\n", .{ name, ctx.module_path.len });
     }
 }
 

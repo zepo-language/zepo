@@ -324,6 +324,14 @@ pub const EvalContext = struct {
     }
 
     pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
+        if (ctx.gc.trace.eval) {
+            if (ctx.spans.get(form)) |span| {
+                std.debug.print("[eval] {s}:{d}:{d}\n", .{ span.file, span.start.line, span.start.col });
+            } else {
+                std.debug.print("[eval] <unknown location>\n", .{});
+            }
+        }
+
         // Root all intermediate Values across any GC-triggering call so the
         // collector does not move them while they live only in local variables.
         var scope = HandleScope{};
@@ -345,8 +353,8 @@ pub const EvalContext = struct {
 
         // In debug builds, assert no collection fires from here through emitAppend.
         // Any GC in this window would stale the unrooted quote datums in AST/IR.
+        // Released explicitly before vm.run so the VM can allocate freely.
         var no_gc = ctx.gc.noCollect();
-        defer no_gc.release();
 
         var builder = Builder.init(&ctx.arena, ctx.symbols, ctx.allocator);
         builder.span_table = &ctx.spans;
@@ -364,6 +372,7 @@ pub const EvalContext = struct {
             ctx.vm = null;
         }
         try ctx.emitter.emitAppend(&ctx.program, &ctx.compiled);
+        no_gc.release(); // AST/IR pipeline done; VM may now allocate freely.
         // The VM always sees the currently-active env — if we're inside a
         // module, that's the module's env; the top-level globals become the
         // read-only fallback so the module body can call prims/prelude.

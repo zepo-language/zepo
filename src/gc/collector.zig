@@ -3,6 +3,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const abi = @import("../abi/mod.zig");
+const trace_mod = @import("../runtime/trace.zig");
+pub const TraceFlags = trace_mod.TraceFlags;
 const Value = abi.Value;
 const ObjHeader = abi.ObjHeader;
 const Kind = abi.Kind;
@@ -49,6 +51,8 @@ pub const GC = struct {
     /// Lifetime collection counters — always tracked, cheap, useful for gc-stats.
     minor_count: u64 = 0,
     major_count: u64 = 0,
+    /// Subsystem trace flags read from ZEPO_TRACE at init time.
+    trace: TraceFlags = .{},
 
     pub fn init(allocator: std.mem.Allocator) !GC {
         var nursery = try Nursery.init();
@@ -62,6 +66,7 @@ pub const GC = struct {
             .old_gen = old_gen,
             .cards = cards,
             .roots = .{},
+            .trace = TraceFlags.fromEnv(),
         };
     }
 
@@ -146,8 +151,27 @@ pub const GC = struct {
                 );
             }
         }
-        try nursery_mod.collect(&gc.nursery, &gc.old_gen, &gc.cards, &gc.roots);
-        gc.minor_count += 1;
+        if (gc.trace.gc) {
+            const used_before = gc.nursery.used();
+            const roots_n = gc.roots.extra.items.len;
+            try nursery_mod.collect(&gc.nursery, &gc.old_gen, &gc.cards, &gc.roots);
+            gc.minor_count += 1;
+            const promoted = gc.old_gen.usedBytes();
+            _ = promoted;
+            std.debug.print(
+                "[gc] minor #{d}  nursery {d}/{d} bytes ({d}%)  roots={d}\n",
+                .{
+                    gc.minor_count,
+                    used_before,
+                    nursery_mod.NURSERY_SIZE,
+                    used_before * 100 / nursery_mod.NURSERY_SIZE,
+                    roots_n,
+                },
+            );
+        } else {
+            try nursery_mod.collect(&gc.nursery, &gc.old_gen, &gc.cards, &gc.roots);
+            gc.minor_count += 1;
+        }
     }
 
     /// Returns a guard that asserts no minor GC fires while it is alive.
@@ -193,11 +217,23 @@ pub const GC = struct {
     }
 
     pub fn major(gc: *GC) !void {
+        const old_used_before = if (gc.trace.gc) gc.old_gen.usedBytes() else 0;
         // Minor first so there are no nursery pointers to worry about.
         try gc.minor();
         gc.old_gen.mark(&gc.roots, &gc.cards, gc.nursery.from_start, nursery_mod.NURSERY_SIZE);
         gc.old_gen.sweep();
         gc.major_count += 1;
+        if (gc.trace.gc) {
+            std.debug.print(
+                "[gc] major #{d}  old-gen {d} → {d} bytes  roots={d}\n",
+                .{
+                    gc.major_count,
+                    old_used_before,
+                    gc.old_gen.usedBytes(),
+                    gc.roots.extra.items.len,
+                },
+            );
+        }
     }
 
     /// Write barrier. Call before storing `new_val` into `*field_ptr` when
