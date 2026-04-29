@@ -16,7 +16,7 @@
 //!   number_string             => float fallback (approximate)
 //!   string                    => lisp string
 //!   array                     => lisp vector
-//!   object                    => alist ( (key . value) ... ), keys as strings
+//!   object                    => hash table, keys as strings
 
 const std = @import("std");
 const abi = @import("../abi/mod.zig");

@@ -92,12 +92,13 @@ test "json: parse array yields vector" {
     try expectInt(try rig.eval("(vector-ref arr 2)"), 30);
 }
 
-test "json: parse object yields alist" {
+test "json: parse object yields hash table" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
     _ = try rig.eval("(define obj (result-value (json-parse \"{\\\"a\\\":1,\\\"b\\\":2}\")))");
-    try expectInt(try rig.eval("(alist-get \"a\" obj)"), 1);
-    try expectInt(try rig.eval("(alist-get \"b\" obj)"), 2);
+    try expectTrue(try rig.eval("(hash-table? obj)"));
+    try expectInt(try rig.eval("(hash-get obj \"a\")"), 1);
+    try expectInt(try rig.eval("(hash-get obj \"b\")"), 2);
 }
 
 test "json: parse error returns err result" {
@@ -125,13 +126,11 @@ test "json: stringify round-trips primitives" {
 test "json: parse then stringify round-trips an object" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
-    // Note: alist order reverses during parse (we push-front), and stringify
-    // walks in alist order, so the expected output has keys reversed.
     _ = try rig.eval("(define obj (result-value (json-parse \"{\\\"a\\\":1,\\\"b\\\":2}\")))");
     const s = try rig.eval("(result-value (json-stringify obj))");
     // Accept either key order — verify it parses back equivalently.
     _ = try rig.eval("(define r2 (result-value (json-parse (result-value (json-stringify obj)))))");
-    try expectInt(try rig.eval("(alist-get \"a\" r2)"), 1);
-    try expectInt(try rig.eval("(alist-get \"b\" r2)"), 2);
+    try expectInt(try rig.eval("(hash-get r2 \"a\")"), 1);
+    try expectInt(try rig.eval("(hash-get r2 \"b\")"), 2);
     _ = s;
 }
