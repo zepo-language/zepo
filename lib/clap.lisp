@@ -10,7 +10,8 @@
     parse-result? parse-error?
     result-option result-positional result-command result-remaining
     ctx-option ctx-positional ctx-command ctx-remaining ctx-program
-    error-kind error-message error-token error-suggestions)
+    error-kind error-message error-token error-suggestions
+    option positional command defprogram)
 
   ;;; ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -534,6 +535,103 @@
                                                            (string-join sugg ", "))))
                         lines)))
         (string-join lines "\n"))))
+
+  ;;; ── 2.0 DSL ───────────────────────────────────────────────────────────────
+
+  ; (option key :long "name" :short "n" :kind 'flag/:value/:multi
+  ;             :type 'string/:integer/:boolean
+  ;             :required #t/:default val :env "VAR" :help "...")
+  ; Returns an option plist ready to be added to a command.
+  (define (option key . props)
+    (let* ((base (make-option key (or (plist-get props :help) "")))
+           (base (if (plist-get props :long)
+                     (plist-set base :long (plist-get props :long))
+                     base))
+           (base (if (plist-get props :short)
+                     (plist-set base :short (plist-get props :short))
+                     base))
+           (base (if (plist-get props :kind)
+                     (plist-set base :kind (plist-get props :kind))
+                     base))
+           (base (if (plist-get props :type)
+                     (plist-set base :type (plist-get props :type))
+                     base))
+           (base (if (plist-get props :required)
+                     (plist-set base :required (plist-get props :required))
+                     base))
+           (base (if (plist-get props :default)
+                     (plist-set base :default (plist-get props :default))
+                     base))
+           (base (if (plist-get props :env)
+                     (plist-set base :env (plist-get props :env))
+                     base))
+           (base (if (plist-get props :validate)
+                     (plist-set base :validate (plist-get props :validate))
+                     base))
+           (base (if (plist-get props :value-name)
+                     (plist-set base :value-name (plist-get props :value-name))
+                     base)))
+      base))
+
+  ; (positional key :required #t :type 'string :help "...")
+  ; Returns a positional plist.
+  (define (positional key . props)
+    (let* ((base (make-positional key (or (plist-get props :help) "")))
+           (base (if (plist-get props :required)
+                     (plist-set base :required (plist-get props :required))
+                     base))
+           (base (if (plist-get props :type)
+                     (plist-set base :type (plist-get props :type))
+                     base))
+           (base (if (plist-get props :default)
+                     (plist-set base :default (plist-get props :default))
+                     base)))
+      base))
+
+  ; (command name :summary "..." :options (list ...) :positionals (list ...)
+  ;               :handler (lambda (ctx) ...))
+  ; Returns a command plist with all options and positionals wired in.
+  (define (command name . props)
+    (let* ((base (make-command name (or (plist-get props :summary) "")))
+           (base (if (plist-get props :handler)
+                     (plist-set base :handler (plist-get props :handler))
+                     base))
+           (opts (or (plist-get props :options) '()))
+           (pos  (or (plist-get props :positionals) '()))
+           (subs (or (plist-get props :subcommands) '()))
+           (base (fold-left cmd-add-option    base opts))
+           (base (fold-left cmd-add-positional base pos))
+           (base (plist-set base :subcommands subs)))
+      base))
+
+  ; Internal: assemble a program from DSL keyword args + command list.
+  (define (build-program . args)
+    (let* ((name    (or (plist-get args :name)    "app"))
+           (summary (or (plist-get args :summary) ""))
+           (desc    (or (plist-get args :description) ""))
+           (version (or (plist-get args :version) ""))
+           (cmds    (or (plist-get args :commands) '()))
+           (root    (plist-set (make-command name summary)
+                               :subcommands cmds)))
+      (make-program name summary desc version root)))
+
+  ; (defprogram name :name "..." :version "..." :summary "..." cmd1 cmd2 ...)
+  ; Defines `name` as a program. Command forms (non-keyword values) become
+  ; subcommands; keyword pairs become program-level metadata.
+  (defmacro defprogram (name . body)
+    (let loop ((rest body) (props '()) (cmds '()))
+      (cond
+        ((null? rest)
+         `(define ,name
+            (build-program ,@(reverse props)
+                           :commands (list ,@(reverse cmds)))))
+        ((and (symbol? (car rest))
+              (string-prefix? ":" (symbol->string (car rest))))
+         (loop (cddr rest)
+               (cons (cadr rest) (cons (car rest) props))
+               cmds))
+        (#t
+         (loop (cdr rest) props (cons (car rest) cmds))))))
 
   ;;; ── Run ───────────────────────────────────────────────────────────────────
 
