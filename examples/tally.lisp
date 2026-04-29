@@ -155,6 +155,13 @@
     :options (list format-opt limit-opt)
     :handler (lambda (ctx) (run-count (list :lines :words :chars) ctx)))
 
+  (command "help"
+    :summary "Show usage and available commands"
+    :handler (lambda (ctx)
+      (let ((prog (ctx-program ctx)))
+        (display (render-help prog (plist-get prog :root-command)))
+        (newline))))
+
   (command "docs"
     :summary "Print this program's documentation as Markdown"
     :handler (lambda (ctx)
