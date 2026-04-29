@@ -306,8 +306,7 @@ pub const Compiler = struct {
     }
 
     fn lowerCondTail(c: *Compiler, ctx: *FnCtx, clauses: []const ast.CondClause, tail: bool) anyerror!Reg {
-        _ = tail; // Tail marking for cond not yet propagated — conservative.
-        return c.lowerCond(ctx, clauses);
+        return c.lowerCond(ctx, clauses, tail);
     }
 
     fn lowerSequenceTail(c: *Compiler, ctx: *FnCtx, exprs: []const NodeId, tail: bool) anyerror!Reg {
@@ -328,7 +327,7 @@ pub const Compiler = struct {
         return last;
     }
 
-    fn lowerCond(c: *Compiler, ctx: *FnCtx, clauses: []const ast.CondClause) anyerror!Reg {
+    fn lowerCond(c: *Compiler, ctx: *FnCtx, clauses: []const ast.CondClause, tail: bool) anyerror!Reg {
         const end_lbl = ctx.func.newLabel();
         const result_slot = ctx.allocSlot();
         const saved_reg = ctx.next_reg;
@@ -351,10 +350,14 @@ pub const Compiler = struct {
             try ctx.func.placeLabel(body_lbl);
             var last_r: Reg = test_r;
             if (cl.body.len > 0) {
-                for (cl.body) |bid| {
-                    last_r = try c.lowerNode(ctx, bid);
+                for (cl.body, 0..) |bid, i| {
+                    const is_last = i + 1 == cl.body.len;
+                    last_r = try c.lowerNodeTail(ctx, bid, tail and is_last);
+                    if (!is_last) ctx.next_reg = saved_reg;
                 }
             }
+            // store_local + branch to end are dead code after a tail_call, but
+            // harmless — the tail_call transfers control before reaching them.
             try ctx.func.emit(.{ .store_local = .{ .slot = result_slot, .src = last_r } });
             try ctx.func.emit(.{ .branch = .{ .label = end_lbl } });
 

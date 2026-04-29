@@ -106,6 +106,11 @@ pub const CopyCtx = struct {
     to_bump: [*]u8,
     to_end: [*]u8,
     err: ?anyerror = null,
+    /// Promoted objects whose interiors need scanning after the Cheney loop.
+    /// Promoted objects land in old-gen (not to-space), so the Cheney scan
+    /// pointer never visits them; we must scan them explicitly before the
+    /// flip while from-space forwarding pointers are still valid.
+    promoted: std.ArrayListUnmanaged(*ObjHeader) = .{},
 };
 
 /// Returns size in BYTES for an object given its header, assuming header-word
@@ -175,16 +180,29 @@ fn forwardSlot(ctx: *CopyCtx, slot: *Value) void {
 
     const target: *ObjHeader = blk: {
         if (should_promote) {
-            if (ctx.old_gen.promoteRaw(obj, sz_bytes)) |p| break :blk p else |e| {
+            if (ctx.old_gen.promoteRaw(obj, sz_bytes)) |p| {
+                // Queue for interior scan after the Cheney loop. We can't scan
+                // inline: a deep list would overflow the Zig call stack, and
+                // from-space forwarding pointers must still be valid (i.e. we
+                // must finish before the flip). The index loop in collect()
+                // handles cascading promotions.
+                ctx.promoted.append(ctx.old_gen.allocator, p) catch {
+                    ctx.err = error.OutOfMemory;
+                };
+                break :blk p;
+            } else |e| {
                 ctx.err = e;
                 // Fall back to to-space copy on promote failure.
             }
         }
-        // To-space copy.
+        // To-space copy. If to-space is full, force-promote to old-gen to
+        // avoid leaving the heap in a partially-collected state.
         const end_addr = @intFromPtr(ctx.to_bump) + sz_bytes;
         if (end_addr > @intFromPtr(ctx.to_end)) {
-            ctx.err = error.NurseryOverflow;
-            return;
+            if (ctx.old_gen.promoteRaw(obj, sz_bytes)) |p| break :blk p else |e| {
+                ctx.err = e;
+                return;
+            }
         }
         const dst: *ObjHeader = @ptrCast(@alignCast(ctx.to_bump));
         const src_bytes: [*]const u8 = @ptrCast(obj);
@@ -229,6 +247,19 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
         const sz = objectSizeBytes(obj);
         cheneyScanObj(&ctx, obj);
         ctx.scan = @ptrFromInt(@intFromPtr(ctx.scan) + sz);
+    }
+
+    // 3.5 Scan promoted-object interiors. Must happen before the flip because
+    //     forwarding pointers in from-space are zeroed when to-space is reset.
+    //     Index-based loop handles cascading promotions: scanning one promoted
+    //     object may promote additional objects, which are appended and then
+    //     visited in subsequent iterations.
+    {
+        var pi: usize = 0;
+        while (pi < ctx.promoted.items.len) : (pi += 1) {
+            cheneyScanObj(&ctx, ctx.promoted.items[pi]);
+        }
+        ctx.promoted.deinit(og.allocator);
     }
 
     if (ctx.err) |e| return e;

@@ -826,7 +826,11 @@
 
   (define (run prog)
     (let* ((all-argv  (argv))
-           (user-argv (if (null? all-argv) (quote ()) (cdr all-argv)))
+           (raw-argv  (if (null? all-argv) (quote ()) (cdr all-argv)))
+           ; strip leading "--" that zepo inserts when running scripts
+           (user-argv (if (and (not (null? raw-argv)) (equal? (car raw-argv) "--"))
+                          (cdr raw-argv)
+                          raw-argv))
            (result    (parse prog user-argv)))
       (if (parse-error? result)
           (begin (display (render-error result)) (newline) #f)

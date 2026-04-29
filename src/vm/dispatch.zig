@@ -216,11 +216,22 @@ pub const VM = struct {
                     if (!found) return error.UnknownKeyword;
                 }
             } else if (func.has_rest) {
-                // Reserve nursery capacity up-front so no GC can fire during
-                // the loop; args_buf lives on the C stack and is not a GC root.
                 const rest_count = args_len - func.arity;
                 const pair_bytes: usize = 24; // 8 header + 2 body words
-                vm.gc.reserveNursery(pair_bytes * rest_count) catch return error.OutOfMemory;
+
+                // args_buf lives on the C stack and is not a GC root.
+                // reserveNursery may call gc.minor(), which moves heap objects.
+                // Root the rest args so GC updates them before we use them in
+                // the makePair loop below. Fixed args are already in registers.
+                const prev_extra = vm.gc.roots.extra.items.len;
+                vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, rest_count) catch return error.OutOfMemory;
+                for (func.arity..args_len) |ri| vm.gc.roots.extra.appendAssumeCapacity(&args_buf[ri]);
+                vm.gc.reserveNursery(pair_bytes * rest_count) catch {
+                    vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                    return error.OutOfMemory;
+                };
+                // Space is now reserved; no GC will fire in the makePair loop.
+                vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
 
                 // Build rest-list from args_buf[func.arity..args_len].
                 var rest: Value = value_mod.NIL;

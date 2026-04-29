@@ -376,7 +376,12 @@ pub fn primSubstring(vm: *VM, args: []const Value) LispError!Value {
         break :blk @intCast(value_mod.fixnumVal(args[2]));
     } else bytes.len;
     if (start > end or end > bytes.len) return error.ContractViolation;
-    return objects.makeString(vm.gc, bytes[start..end]) catch error.OutOfMemory;
+    // Copy to non-GC buffer before calling makeString: makeString calls gc.alloc
+    // which can trigger a minor GC that moves the source string, leaving bytes stale.
+    const slice = bytes[start..end];
+    const copy = vm.allocator.dupe(u8, slice) catch return error.OutOfMemory;
+    defer vm.allocator.free(copy);
+    return objects.makeString(vm.gc, copy) catch error.OutOfMemory;
 }
 
 pub fn primStringToNumber(vm: *VM, args: []const Value) LispError!Value {
