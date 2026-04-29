@@ -44,7 +44,7 @@ pub const ProjectConfig = struct {
         var arena = std.heap.ArenaAllocator.init(alloc);
         const a = arena.allocator();
 
-        const name = extractString(src, "(name \"") orelse "unknown";
+        const name = extractString(src, "(name \"") orelse extractSymbol(src, "(project ") orelse "unknown";
         const version = extractString(src, "(version \"") orelse "0.0.0";
         const entry = extractString(src, "(entry \"") orelse "src/main.lisp";
         const test_dir = extractString(src, "(test-dir \"") orelse "tests";
@@ -84,6 +84,21 @@ pub const ProjectConfig = struct {
         try path_buf.appendSlice(alloc, existing);
     }
 };
+
+/// Extract a bare symbol token immediately following `marker`.
+/// Used to read the project name from `(project <name> ...)`.
+fn extractSymbol(src: []const u8, marker: []const u8) ?[]const u8 {
+    const start_idx = std.mem.indexOf(u8, src, marker) orelse return null;
+    var i = start_idx + marker.len;
+    // skip whitespace
+    while (i < src.len and (src[i] == ' ' or src[i] == '\t' or src[i] == '\n' or src[i] == '\r')) i += 1;
+    if (i >= src.len) return null;
+    const sym_start = i;
+    // read until whitespace or closing paren
+    while (i < src.len and src[i] != ' ' and src[i] != '\t' and src[i] != '\n' and src[i] != '\r' and src[i] != ')') i += 1;
+    if (i == sym_start) return null;
+    return src[sym_start..i];
+}
 
 fn extractString(src: []const u8, marker: []const u8) ?[]const u8 {
     const start_idx = std.mem.indexOf(u8, src, marker) orelse return null;

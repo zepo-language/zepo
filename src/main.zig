@@ -105,10 +105,18 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, arg, "build")) {
         if (args.len < 3) {
-            try stderr.writeAll("error: build requires a .lisp file\n");
-            std.process.exit(1);
+            // No file arg: look for project.lisp and use entry + project name.
+            var cfg = project_config.ProjectConfig.loadOptional(alloc) orelse {
+                try stderr.writeAll("error: build requires a .lisp file (or run from a project directory with project.lisp)\n");
+                std.process.exit(1);
+            };
+            defer cfg.deinit();
+            const synthetic = try alloc.dupe([]const u8, &.{ cfg.entry, "-o", cfg.name });
+            defer alloc.free(synthetic);
+            try build_cmd.runBuild(alloc, synthetic);
+        } else {
+            try build_cmd.runBuild(alloc, args[2..]);
         }
-        try build_cmd.runBuild(alloc, args[2..]);
         return;
     }
 
