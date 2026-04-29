@@ -9,6 +9,7 @@
     render-help render-usage render-error
     parse-result? parse-error?
     result-option result-positional result-command result-remaining
+    ctx-option ctx-positional ctx-command ctx-remaining ctx-program
     error-kind error-message error-token error-suggestions)
 
   ;;; ── Internal helpers ──────────────────────────────────────────────────────
@@ -115,6 +116,18 @@
 
   (define (result-remaining r)
     (plist-get r :remaining))
+
+  ;;; ── Handler context (2.0 API) ─────────────────────────────────────────────
+  ; ctx is the parse-result plist. These accessors are the documented interface
+  ; for handler functions; result-* remain for backward compatibility.
+
+  (define ctx-option     result-option)
+  (define ctx-positional result-positional)
+  (define ctx-command    result-command)
+  (define ctx-remaining  result-remaining)
+
+  (define (ctx-program ctx)
+    (plist-get ctx :program))
 
   (define (error-kind e)    (plist-get e :kind))
   (define (error-message e) (plist-get e :message))
