@@ -430,14 +430,54 @@
                                                  (symbol->string key))
                                   #f key (quote ()))
                 (check-required (cdr opts) acc)))))
-    (let* ((opt-acc2 (apply-defaults all-opts opt-acc))
-           (req-err  (check-required all-opts opt-acc2)))
+    (define (apply-env opts acc)
+      ; For each option with :env, if not yet in acc, try getenv.
+      (if (null? opts)
+          acc
+          (let* ((opt (car opts))
+                 (key (plist-get opt :key))
+                 (env (plist-get opt :env)))
+            (apply-env (cdr opts)
+                       (if (and env (not (plist-has? acc key)))
+                           (let ((val (getenv env)))
+                             (if val
+                                 (let ((coerced (coerce-value (plist-get opt :type) val)))
+                                   (if (coerce-error? coerced)
+                                       acc
+                                       (plist-set acc key coerced)))
+                                 acc))
+                           acc)))))
+    (define (validate-opts opts acc)
+      ; Run :validate predicates; return a parse-error on first failure.
+      (if (null? opts)
+          #f
+          (let* ((opt      (car opts))
+                 (key      (plist-get opt :key))
+                 (pred     (plist-get opt :validate))
+                 (val      (plist-get acc key)))
+            (if (and pred val (not (pred val)))
+                (make-parse-error (quote invalid-value)
+                                  (string-append "Invalid value for --"
+                                                 (or (plist-get opt :long)
+                                                     (symbol->string key))
+                                                 ": "
+                                                 (if (string? val) val
+                                                     (number->string val)))
+                                  (if (string? val) val #f)
+                                  key (quote ()))
+                (validate-opts (cdr opts) acc)))))
+    (let* ((opt-acc2  (apply-env all-opts opt-acc))
+           (opt-acc2  (apply-defaults all-opts opt-acc2))
+           (req-err   (check-required all-opts opt-acc2)))
       (if req-err
           req-err
-          (let ((pos-result (bind-positionals positionals pos-acc (quote ()))))
-            (if (parse-error? pos-result)
-                pos-result
-                (make-parse-result prog cmd cmd-path opt-acc2 pos-result (quote ())))))))
+          (let ((val-err (validate-opts all-opts opt-acc2)))
+            (if val-err
+                val-err
+                (let ((pos-result (bind-positionals positionals pos-acc (quote ()))))
+                  (if (parse-error? pos-result)
+                      pos-result
+                      (make-parse-result prog cmd cmd-path opt-acc2 pos-result (quote ())))))))))
 
   ;;; ── Parse command ─────────────────────────────────────────────────────────
 
