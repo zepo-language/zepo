@@ -42,7 +42,7 @@ zepo fmt [file...] [--check] [--stdout]  # format source files in place
 zepo lint [file...]  # run diagnostics on source files
 zepo --repl       # start the interactive REPL
 zepo file.lisp    # evaluate a script
-zepo build file.lisp [-o name]  # compile to a standalone native binary
+zepo build [file.lisp] [-o name]  # compile to a standalone native binary
 zepo lsp          # start the LSP server (stdio JSON-RPC)
 ```
 
@@ -235,9 +235,14 @@ Zepo uses R7RS-style structured exceptions:
 Compile any Lisp program to a standalone native executable with `zepo build`:
 
 ```sh
+zepo build                       # reads project.lisp, builds with project name
 zepo build myprogram.lisp        # produces ./myprogram
 zepo build myprogram.lisp -o bin # produces ./bin
 ```
+
+With no arguments, `build` reads `project.lisp` from the current directory,
+uses its `entry` field as the source file, and its `name` field as the output
+binary name. With an explicit file argument it works as before.
 
 The `build` command performs module discovery, embeds all imports as data, generates a Zig wrapper, and compiles to native code. The resulting binary requires no runtime or `.lisp` files.
 

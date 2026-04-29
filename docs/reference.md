@@ -24,7 +24,7 @@ Key properties:
 ```
 Usage: zepo [options] [file]
        zepo install <path>
-       zepo build <file.lisp> [-o outname]
+       zepo build [file.lisp] [-o outname]
 
 Options:
   --repl        Start an interactive REPL
@@ -32,8 +32,8 @@ Options:
 
 Commands:
   install <path>       Install a package to ~/.local/lib/zepo/
-  build <file.lisp>    Compile to a standalone native binary
-    -o <name>          Output binary name (default: input stem)
+  build [file.lisp]    Compile to a standalone native binary
+    -o <name>          Output binary name (default: input stem or project name)
 
 Arguments:
   file          Path to a .lisp file to evaluate
@@ -83,6 +83,24 @@ If not found, `ModuleNotFound` is raised.
 ZEPO_PATH=~/.zepo/lib zepo myscript.lisp
 ```
 
+### Debugging / ZEPO_TRACE
+
+Set the `ZEPO_TRACE` environment variable to a comma-separated list of
+subsystem names to enable structured runtime tracing. Trace output is written
+to stderr.
+
+| Subsystem | What it traces |
+|-----------|----------------|
+| `gc` | GC collections — nursery/major, bytes promoted, objects freed |
+| `module` | Module load events — which file was found and loaded |
+| `eval` | Per-expression source location during dispatch |
+| `opcodes` | Every opcode executed, shown as `funcname:pc  OPCODE` |
+
+```sh
+ZEPO_TRACE=gc,opcodes zepo myscript.lisp
+ZEPO_TRACE=gc,module,eval,opcodes zepo myscript.lisp
+```
+
 ### Script convention
 
 Scripts use an explicit entry point — no magic:
@@ -99,6 +117,7 @@ Scripts use an explicit entry point — no magic:
 The `build` subcommand compiles a Lisp program to a standalone native executable.
 
 ```sh
+zepo build                      # reads project.lisp → entry + project name
 zepo build program.lisp         # produces ./program
 zepo build program.lisp -o name # produces ./name
 ```
@@ -120,8 +139,11 @@ zepo build examples/macros.lisp -o demo
 ./demo   ; runs standalone
 ```
 
-The `build` command automatically determines the output filename from the input
-file's stem (e.g., `program.lisp` → `program`). Use `-o` to override.
+When called with no arguments, `build` reads `project.lisp` from the current
+directory, uses its `entry` field as the source file, and uses the project
+`name` field as the output binary name. When called with an explicit file,
+the output filename defaults to that file's stem (e.g., `program.lisp` →
+`program`). Use `-o` to override in either mode.
 
 ---
 
@@ -705,12 +727,45 @@ formatted output or building strings.
 
 ### Error
 
+Zepo uses R7RS-style structured exceptions.
+
 ```scheme
 (error "message")
 (error "bad value:" x)   ; additional args are appended to the message
 ```
 
-Raises a runtime error that unwinds to the REPL or terminates a script.
+`error` raises an error condition object. Additional arguments beyond the
+message string become the condition's *irritants*.
+
+```scheme
+; raise any value as an exception
+(raise 42)
+
+; with-exception-handler — low-level catch
+(with-exception-handler
+  (lambda (e)
+    (if (error-object? e)
+      (display (error-object-message e))
+      (display "unknown error")))
+  (lambda () (error "oops" 1 2)))
+
+; guard — structured catch with clauses (evaluated top-to-bottom)
+(guard (exn
+  ((error-object? exn)
+   (string-append "Error: " (error-object-message exn)))
+  (else "unknown"))
+  (error "something failed"))
+```
+
+| Procedure | Description |
+|-----------|-------------|
+| `(error msg irritant ...)` | Raise an error condition |
+| `(raise val)` | Raise any value as an exception |
+| `(with-exception-handler h thunk)` | Call thunk; pass condition to h on error |
+| `(guard (var clause...) body...)` | Structured exception handling |
+| `(error-object? val)` | True if val is an error condition |
+| `(error-object-message cond)` | Extract message string |
+| `(error-object-irritants cond)` | Extract irritants list |
 
 ---
 
@@ -1192,6 +1247,55 @@ Extract fields from an err result. Undefined on ok results.
 (if (ok? r)
     (use (result-value r))
     (display (err-message r)))
+```
+
+---
+
+### JSON
+
+Built-in primitives — no import needed.
+
+#### `(json-parse str)` → `result`
+
+Parses a JSON string. Returns `(ok value)` on success or `(err kind msg)` on
+failure (see [Result objects](#result-objects-stdlib) for the result API).
+
+Type mapping from JSON to Zepo:
+
+| JSON | Zepo |
+|------|------|
+| object | hash table (string keys) |
+| array | vector |
+| string | string |
+| number | number |
+| `true` / `false` | `#t` / `#f` |
+| `null` | `()` |
+
+#### `(json-stringify value)` → `result`
+
+Serializes a Lisp value to a JSON string. Returns `(ok json-str)` on success
+or `(err kind msg)` on failure.
+
+Type mapping from Zepo to JSON:
+
+| Zepo | JSON |
+|------|------|
+| hash table | object |
+| alist (list of pairs) | object |
+| vector | array |
+| string | string |
+| number | number |
+| `#t` / `#f` | `true` / `false` |
+| `()` | `null` |
+
+```scheme
+(define r (json-parse "{\"x\": 1, \"y\": [2, 3]}"))
+(when (ok? r)
+  (define obj (result-value r))
+  (hash-get obj "x"))               ; => 1
+
+(json-stringify (list (cons "name" "zepo") (cons "version" 1)))
+; => (ok "{\"name\":\"zepo\",\"version\":1}")
 ```
 
 ---
