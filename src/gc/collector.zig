@@ -46,6 +46,9 @@ pub const GC = struct {
     /// are allowed; nonzero means a guard is active and minor() will panic.
     no_gc_depth: if (builtin.mode == .Debug) u32 else void =
         if (builtin.mode == .Debug) 0 else {},
+    /// Lifetime collection counters — always tracked, cheap, useful for gc-stats.
+    minor_count: u64 = 0,
+    major_count: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !GC {
         var nursery = try Nursery.init();
@@ -144,6 +147,7 @@ pub const GC = struct {
             }
         }
         try nursery_mod.collect(&gc.nursery, &gc.old_gen, &gc.cards, &gc.roots);
+        gc.minor_count += 1;
     }
 
     /// Returns a guard that asserts no minor GC fires while it is alive.
@@ -193,6 +197,7 @@ pub const GC = struct {
         try gc.minor();
         gc.old_gen.mark(&gc.roots, &gc.cards, gc.nursery.from_start, nursery_mod.NURSERY_SIZE);
         gc.old_gen.sweep();
+        gc.major_count += 1;
     }
 
     /// Write barrier. Call before storing `new_val` into `*field_ptr` when

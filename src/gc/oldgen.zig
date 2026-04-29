@@ -115,6 +115,10 @@ pub const OldGen = struct {
         return og.size;
     }
 
+    pub fn usedBytes(og: *const OldGen) usize {
+        return @intFromPtr(og.bump) - @intFromPtr(og.base);
+    }
+
     pub const AllocResult = struct {
         hdr: *ObjHeader,
         actual_words: usize,

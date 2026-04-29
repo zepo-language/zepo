@@ -1,6 +1,7 @@
 //! Wire every primitive into the global environment.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
 
@@ -31,6 +32,7 @@ const net_prims = @import("net.zig");
 const http_prims = @import("http.zig");
 const regex_prims = @import("regex.zig");
 const math_prims = @import("math.zig");
+const debug_prims = @import("debug.zig");
 
 const Entry = struct {
     name: []const u8,
@@ -226,5 +228,17 @@ pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
         const raw_ptr: u64 = @intCast(@intFromPtr(e.fn_ptr));
         const prim = try objects.makePrim(gc, raw_ptr, e.arity);
         try globals.define(sym, prim);
+    }
+    if (builtin.mode == .Debug) {
+        const debug_table = &[_]Entry{
+            make("zepo/debug-value", 1, debug_prims.primDebugValue),
+            make("zepo/gc-stats",    0, debug_prims.primGcStats),
+        };
+        for (debug_table) |e| {
+            const sym = try symbols.intern(e.name);
+            const raw_ptr: u64 = @intCast(@intFromPtr(e.fn_ptr));
+            const prim = try objects.makePrim(gc, raw_ptr, e.arity);
+            try globals.define(sym, prim);
+        }
     }
 }
