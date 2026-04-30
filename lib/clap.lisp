@@ -11,7 +11,8 @@
     result-option result-positional result-command result-remaining
     ctx-option ctx-positional ctx-command ctx-remaining ctx-program
     error-kind error-message error-token error-suggestions
-    option positional command defprogram)
+    option positional command defprogram
+    run-with-config)
 
   ;;; ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -31,6 +32,8 @@
           :description description
           :version version
           :root-command root-cmd
+          :global-options (quote ())
+          :config-map #f
           :help-enabled #t
           :version-enabled #f
           :parse-mode (quote permute)))
@@ -43,6 +46,8 @@
           :positionals (quote ())
           :subcommands (quote ())
           :aliases (quote ())
+          :before #f
+          :after #f
           :handler #f))
 
   (define (make-option key help)
@@ -57,6 +62,7 @@
           :default #f
           :multiple #f
           :value-name "VALUE"
+          :config #f
           :help help))
 
   (define (make-positional key help)
@@ -447,6 +453,37 @@
                                        (plist-set acc key coerced)))
                                  acc))
                            acc)))))
+    (define (config-lookup config-map path)
+      ; Resolve a dot-separated path ("db.host") into a config hash-table.
+      (let loop ((m config-map) (parts (string-split path ".")))
+        (cond ((not m) #f)
+              ((null? parts) m)
+              (#t (loop (hash-get m (car parts) #f) (cdr parts))))))
+    (define (apply-config opts acc config-map)
+      ; For each option with :config, if not yet in acc, try config-map.
+      ; Priority: CLI > ENV > CONFIG > DEFAULT
+      (if (or (null? opts) (not config-map))
+          acc
+          (let* ((opt      (car opts))
+                 (key      (plist-get opt :key))
+                 (cfg-path (plist-get opt :config)))
+            (apply-config (cdr opts)
+                          (if (and cfg-path (not (plist-has? acc key)))
+                              (let ((val (config-lookup config-map cfg-path)))
+                                (if val
+                                    (let* ((as-str  (cond ((string? val) val)
+                                                         ((number? val) (number->string val))
+                                                         ((equal? val #t) "true")
+                                                         ((equal? val #f) "false")
+                                                         (#t #f)))
+                                           (coerced (if as-str
+                                                        (coerce-value (plist-get opt :type) as-str)
+                                                        val)))
+                                      (if (coerce-error? coerced) acc
+                                          (plist-set acc key coerced)))
+                                    acc))
+                              acc)
+                          config-map))))
     (define (validate-opts opts acc)
       ; Run :validate predicates; return a parse-error on first failure.
       (if (null? opts)
@@ -467,6 +504,7 @@
                                   key (quote ()))
                 (validate-opts (cdr opts) acc)))))
     (let* ((opt-acc2  (apply-env all-opts opt-acc))
+           (opt-acc2  (apply-config all-opts opt-acc2 (plist-get prog :config-map)))
            (opt-acc2  (apply-defaults all-opts opt-acc2))
            (req-err   (check-required all-opts opt-acc2)))
       (if req-err
@@ -482,9 +520,10 @@
   ;;; ── Parse command ─────────────────────────────────────────────────────────
 
   (define (parse-command prog cmd cmd-path argv raw parse-mode help-on ver-on)
-    (let* ((subs      (plist-get cmd :subcommands))
-           (base-opts (plist-get cmd :options))
-           (all-opts  base-opts)
+    (let* ((subs        (plist-get cmd :subcommands))
+           (base-opts   (plist-get cmd :options))
+           (global-opts (or (plist-get prog :global-options) (quote ())))
+           (all-opts    (append global-opts base-opts))
            (positionals (plist-get cmd :positionals)))
       (parse-tokens prog cmd cmd-path argv raw all-opts positionals
                     (quote ()) (quote ()) #f parse-mode subs)))
@@ -540,17 +579,19 @@
                0 opts))
 
   (define (render-usage prog cmd)
-    (let ((name (plist-get prog :name))
-          (opts (plist-get cmd :options))
-          (pos  (plist-get cmd :positionals))
-          (subs (plist-get cmd :subcommands)))
+    (let ((name  (plist-get prog :name))
+          (opts  (plist-get cmd :options))
+          (pos   (plist-get cmd :positionals))
+          (subs  (plist-get cmd :subcommands))
+          (gopts (or (plist-get prog :global-options) (quote ()))))
       (let* ((pos-strs (map (lambda (p)
                               (let ((k (symbol->string (plist-get p :key))))
                                 (if (plist-get p :required) k (string-append "[" k "]"))))
                             pos))
+             (has-opts (not (and (null? opts) (null? gopts))))
              (parts (append
                       (list "Usage:" name)
-                      (if (not (null? opts)) '("[OPTIONS]") '())
+                      (if has-opts '("[OPTIONS]") '())
                       (if (not (null? subs)) '("[COMMAND]") '())
                       pos-strs)))
         (string-join parts " "))))
@@ -562,7 +603,8 @@
            (opts    (plist-get cmd :options))
            (pos     (plist-get cmd :positionals))
            (subs    (plist-get cmd :subcommands))
-           (col-w   (opts-col-width opts))
+           (gopts   (or (plist-get prog :global-options) (quote ())))
+           (col-w   (opts-col-width (append opts gopts)))
            (sub-col (fold-left (lambda (mx s)
                                  (let ((w (+ 2 (string-length (plist-get s :name)))))
                                    (if (> w mx) w mx)))
@@ -587,6 +629,11 @@
                         (append parts
                                 (list "" "Options:")
                                 (map (lambda (o) (render-option-line-aligned o col-w)) opts))
+                        parts))
+             (parts (if (not (null? gopts))
+                        (append parts
+                                (list "" "Global Options:")
+                                (map (lambda (o) (render-option-line-aligned o col-w)) gopts))
                         parts))
              (parts (if (not (null? subs))
                         (append parts
@@ -759,6 +806,9 @@
                      base))
            (base (if (plist-get props :value-name)
                      (plist-set base :value-name (plist-get props :value-name))
+                     base))
+           (base (if (plist-get props :config)
+                     (plist-set base :config (plist-get props :config))
                      base)))
       base))
 
@@ -785,6 +835,12 @@
            (base (if (plist-get props :handler)
                      (plist-set base :handler (plist-get props :handler))
                      base))
+           (base (if (plist-get props :before)
+                     (plist-set base :before (plist-get props :before))
+                     base))
+           (base (if (plist-get props :after)
+                     (plist-set base :after (plist-get props :after))
+                     base))
            (opts (or (plist-get props :options) '()))
            (pos  (or (plist-get props :positionals) '()))
            (subs (or (plist-get props :subcommands) '()))
@@ -800,9 +856,11 @@
            (desc    (or (plist-get args :description) ""))
            (version (or (plist-get args :version) ""))
            (cmds    (or (plist-get args :commands) '()))
+           (gopts   (or (plist-get args :global-options) '()))
            (root    (plist-set (make-command name summary)
-                               :subcommands cmds)))
-      (make-program name summary desc version root)))
+                               :subcommands cmds))
+           (prog    (make-program name summary desc version root)))
+      (plist-set prog :global-options gopts)))
 
   ; (defprogram name :name "..." :version "..." :summary "..." cmd1 cmd2 ...)
   ; Defines `name` as a program. Command forms (non-keyword values) become
@@ -824,17 +882,31 @@
 
   ;;; ── Run ───────────────────────────────────────────────────────────────────
 
-  (define (run prog)
-    (let* ((all-argv  (argv))
+  ; run accepts an optional config-file argument used by run-with-config.
+  (define (run prog . args)
+    (let* ((cfg-file  (if (null? args) #f (car args)))
+           (prog      (if cfg-file
+                          (let* ((raw (file-read-string cfg-file))
+                                 (p   (json-parse raw)))
+                            (plist-set prog :config-map (if (ok? p) (result-value p) #f)))
+                          prog))
+           (all-argv  (argv))
            (raw-argv  (if (null? all-argv) (quote ()) (cdr all-argv)))
-           ; strip leading "--" that zepo inserts when running scripts
            (user-argv (if (and (not (null? raw-argv)) (equal? (car raw-argv) "--"))
                           (cdr raw-argv)
                           raw-argv))
            (result    (parse prog user-argv)))
       (if (parse-error? result)
           (begin (display (render-error result)) (newline) #f)
-          (let ((handler (plist-get (result-command result) :handler)))
-            (if handler
-                (handler result)
-                result))))))
+          (let* ((cmd     (result-command result))
+                 (before  (plist-get cmd :before))
+                 (handler (plist-get cmd :handler))
+                 (after   (plist-get cmd :after)))
+            (if before  (before result))
+            (let ((ret (if handler (handler result) result)))
+              (if after (after result))
+              ret)))))
+
+  ; Like run, but loads a JSON config file first (CLI > ENV > CONFIG > DEFAULT).
+  (define (run-with-config prog config-file)
+    (run prog config-file)))
