@@ -105,6 +105,17 @@ pub const Lexer = struct {
                 _ = l.advance();
             } else if (c == ';') {
                 while (!l.atEnd() and l.src[l.pos] != '\n') _ = l.advance();
+            } else if (c == '#' and l.pos + 1 < l.src.len and l.src[l.pos + 1] == '|') {
+                _ = l.advance(); // #
+                _ = l.advance(); // |
+                while (!l.atEnd()) {
+                    if (l.src[l.pos] == '|' and l.pos + 1 < l.src.len and l.src[l.pos + 1] == '#') {
+                        _ = l.advance(); // |
+                        _ = l.advance(); // #
+                        break;
+                    }
+                    _ = l.advance();
+                }
             } else break;
         }
     }

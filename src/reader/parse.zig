@@ -81,7 +81,26 @@ pub const Parser = struct {
     /// Read a single expression. Returns error.Eof when the input is
     /// exhausted (no more non-whitespace tokens).
     pub fn readOne(p: *Parser) !Value {
-        const tok = try p.lexer.next();
+        const tok = p.lexer.next() catch |e| {
+            const here = Span{
+                .start = .{ .line = p.lexer.line, .col = p.lexer.col, .offset = @intCast(p.lexer.pos) },
+                .end = .{ .line = p.lexer.line, .col = p.lexer.col, .offset = @intCast(p.lexer.pos) },
+                .file = p.lexer.file,
+            };
+            const re: ReaderError = switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.UnexpectedChar => error.UnexpectedChar,
+                error.InvalidEscape => error.InvalidEscape,
+                error.InvalidCharName => error.InvalidCharName,
+                error.InvalidNumber => error.InvalidNumber,
+                error.StringUnterminated => error.StringUnterminated,
+                error.OverflowInt => error.OverflowInt,
+                error.UnexpectedEof => error.UnexpectedEof,
+                error.UnbalancedParen => error.UnbalancedParen,
+                error.DotInvalid => error.DotInvalid,
+            };
+            return p.setDiag(re, here);
+        };
         if (tok.kind == .eof) return EofError.Eof;
         return p.parseToken(tok);
     }
