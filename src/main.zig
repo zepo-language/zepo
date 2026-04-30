@@ -75,7 +75,7 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, arg, "init")) {
-        try init_cmd.runInit(alloc);
+        try init_cmd.runInit(alloc, args[2..]);
         return;
     }
 
