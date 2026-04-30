@@ -857,10 +857,12 @@ Reverse a list.
 (reverse '(1 2 3))   ; => (3 2 1)
 ```
 
-#### `(map f lst)`
-Apply `f` to each element, collect results.
+#### `(map f list ...)`
+Apply `f` to corresponding elements across one or more lists; collect results. Stops at the end of the shortest list.
 ```scheme
 (map (lambda (x) (* x x)) '(1 2 3))   ; => (1 4 9)
+(map + '(1 2 3) '(4 5 6))             ; => (5 7 9)
+(map + '(1 2) '(10 20) '(100 200))    ; => (111 222)
 ```
 
 #### `(filter pred lst)`
@@ -869,10 +871,11 @@ Keep elements where `pred` returns truthy.
 (filter odd? '(1 2 3 4 5))   ; => (1 3 5)
 ```
 
-#### `(for-each f lst)`
-Call `f` on each element for side effects; return `()`.
+#### `(for-each f list ...)`
+Call `f` on corresponding elements for side effects; return `()`. Accepts multiple lists like `map`.
 ```scheme
-(for-each display '(1 2 3))   ; prints: 123
+(for-each display '(1 2 3))                           ; prints: 123
+(for-each (lambda (a b) (display (+ a b))) '(1 2) '(3 4))  ; prints: 36
 ```
 
 #### `(fold-left f acc lst)`
