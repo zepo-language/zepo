@@ -147,6 +147,19 @@ the output filename defaults to that file's stem (e.g., `program.lisp` →
 
 ---
 
+## Comments
+
+```scheme
+; single-line comment — extends to end of line
+
+#| block comment
+   spans multiple lines |#
+```
+
+Both forms are valid anywhere whitespace is allowed. Block comments do not nest.
+
+---
+
 ## Data Types
 
 | Type | Literal example | Notes |
