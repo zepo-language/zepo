@@ -1,0 +1,44 @@
+{
+  "packages": [
+    {
+      "name": "clap",
+      "version": "1.0.0",
+      "summary": "Command-line argument parser for Zepo",
+      "repo": "https://github.com/lesliesrussell/zepo.git",
+      "modules": ["clap"],
+      "dependencies": []
+    },
+    {
+      "name": "csvdb",
+      "version": "0.2.0",
+      "summary": "CSV database — load, query, and export tabular data",
+      "repo": "https://github.com/lesliesrussell/zepo.git",
+      "modules": ["csvdb"],
+      "dependencies": []
+    },
+    {
+      "name": "tui",
+      "version": "0.1.0",
+      "summary": "Terminal UI framework with reactive components",
+      "repo": "https://github.com/lesliesrussell/zepo.git",
+      "modules": ["tui"],
+      "dependencies": []
+    },
+    {
+      "name": "http",
+      "version": "0.1.0",
+      "summary": "HTTP client library",
+      "repo": "https://github.com/lesliesrussell/zepo.git",
+      "modules": ["http"],
+      "dependencies": []
+    },
+    {
+      "name": "regex",
+      "version": "0.1.0",
+      "summary": "Regular expression library",
+      "repo": "https://github.com/leslierussell/zepo.git",
+      "modules": ["regex"],
+      "dependencies": []
+    }
+  ]
+}
