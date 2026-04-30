@@ -674,6 +674,57 @@ Vectors render as `#(1 2 3)` notation in both display and write.
 (argv)                ; => ("zepo" "foo.lisp" ...)
 ```
 
+### File I/O
+
+All paths are relative to the process working directory unless absolute.
+`file-append-string` creates the file if it does not exist.
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `file-read-string` | 1 | `(file-read-string path)` → string — read entire file |
+| `file-write-string` | 2 | `(file-write-string path str)` — write (truncate) file |
+| `file-append-string` | 2 | `(file-append-string path str)` — append to file, creating if needed |
+| `file-exists?` | 1 | `(file-exists? path)` → bool |
+| `file-delete` | 1 | `(file-delete path)` — delete file; raises `IOError` if it does not exist |
+
+```scheme
+(file-write-string "/tmp/out.txt" "hello\n")
+(file-append-string "/tmp/out.txt" "world\n")
+(file-read-string "/tmp/out.txt")   ; => "hello\nworld\n"
+(file-exists? "/tmp/out.txt")       ; => #t
+(file-delete "/tmp/out.txt")
+(file-exists? "/tmp/out.txt")       ; => #f
+```
+
+### Directory and Path
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `directory-list` | 1 | `(directory-list path)` → list of entry name strings |
+| `make-directory` | 1 | `(make-directory path)` — create directory and any missing parents |
+| `current-directory` | 0 | `(current-directory)` → absolute path string of CWD |
+
+```scheme
+(make-directory "/tmp/zepo-test/sub")
+(current-directory)              ; => "/Users/me/myproject"
+(directory-list ".")             ; => ("src" "lib" "project.lisp" ...)
+```
+
+### Environment and Shell
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `getenv` | 1 | `(getenv name)` → string or `#f` if unset |
+| `shell` | 1 | `(shell cmd)` → stdout string (exit code ignored) |
+| `shell/status` | 1 | `(shell/status cmd)` → integer exit code |
+
+```scheme
+(getenv "HOME")                         ; => "/Users/me"
+(getenv "UNDEFINED_VAR")               ; => #f
+(shell "echo hello")                    ; => "hello\n"
+(shell/status "test -f project.lisp")  ; => 0 or 1
+```
+
 ### String Output Ports
 
 String output ports accumulate text without printing to stdout, useful for capturing
