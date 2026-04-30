@@ -36,7 +36,7 @@
       "name": "regex",
       "version": "0.1.0",
       "summary": "Regular expression library",
-      "repo": "https://github.com/leslierussell/zepo.git",
+      "repo": "https://github.com/lesliesrussell/zepo.git",
       "modules": ["regex"],
       "dependencies": []
     }
