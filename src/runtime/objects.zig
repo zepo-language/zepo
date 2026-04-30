@@ -1,8 +1,9 @@
 //! Typed constructors and accessors for heap objects.
 //!
-//! All constructors allocate via the GC. Callers that pass unrooted heap
-//! Values across a call that may allocate must push them onto a HandleScope
-//! first; a GC can trigger at any alloc.
+//! All constructors allocate via the GC. makePair roots its arguments
+//! internally so callers do not need to pre-root car/cdr; all other
+//! constructors still require callers to hold HandleScope roots across
+//! any call that may allocate.
 
 const std = @import("std");
 const gc_mod = @import("../gc/collector.zig");
@@ -36,9 +37,15 @@ pub inline fn storeValue(gc: *GC, container: *ObjHeader, slot: *Value, val: Valu
 // -------------------- Pair --------------------
 
 pub fn makePair(gc: *GC, car: Value, cdr: Value) !Value {
+    // Root car/cdr so a GC triggered by gc.alloc sees updated addresses.
+    var scope = gc_mod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const car_slot = scope.push(car);
+    const cdr_slot = scope.push(cdr);
     const h = try gc.alloc(.pair, 2);
-    storeValue(gc, h, bodyValueSlot(h, 0), car);
-    storeValue(gc, h, bodyValueSlot(h, 1), cdr);
+    storeValue(gc, h, bodyValueSlot(h, 0), car_slot.*);
+    storeValue(gc, h, bodyValueSlot(h, 1), cdr_slot.*);
     return value_mod.fromPtr(h);
 }
 
