@@ -23,16 +23,22 @@ pub fn evalDefmacro(ctx: *EvalContext, form: Value) !Value {
     const name = objs.symbolName(name_v);
 
     // Build (lambda params body...) from the cdr of rest.
-    const lambda_tail = objs.pairCdr(rest).*;
+    // Root lambda_tail before intern/makePair which can trigger GC.
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+    const tail_slot = scope.push(objs.pairCdr(rest).*);
     const lambda_sym = try ctx.symbols.intern("lambda");
-    const lambda_form = try objs.makePair(ctx.gc, lambda_sym, lambda_tail);
+    const sym_slot = scope.push(lambda_sym);
+    const form_slot = scope.push(try objs.makePairFromSlots(ctx.gc, sym_slot, tail_slot));
 
     // Evaluate the lambda to obtain a closure Value.
-    const closure = try ctx.evalNonModuleForm(lambda_form);
+    const closure_slot = scope.push(try ctx.evalNonModuleForm(form_slot.*));
 
     // Store closure in globals so the GC can reach it.
+    // intern can GC, so use rooted closure_slot.
     const sym = try ctx.symbols.intern(name);
-    try ctx.currentEnv().define(sym, closure);
+    try ctx.currentEnv().define(sym, closure_slot.*);
 
     // Register the name as a macro.
     const name_copy = try ctx.allocator.dupe(u8, name);
@@ -56,7 +62,7 @@ pub fn macroExpand(ctx: *EvalContext, form: Value) anyerror!Value {
     if (objs.isSymbol(head)) {
         const name = objs.symbolName(head);
         if (ctx.macro_names.contains(name)) {
-            // Collect unevaluated argument forms.
+            // Collect unevaluated argument forms into a Zig-heap array.
             var args = std.ArrayListUnmanaged(Value){};
             defer args.deinit(ctx.allocator);
             var cur = objs.pairCdr(form).*;
@@ -65,12 +71,21 @@ pub fn macroExpand(ctx: *EvalContext, form: Value) anyerror!Value {
                 try args.append(ctx.allocator, objs.pairCar(cur).*);
                 cur = objs.pairCdr(cur).*;
             }
+            // Root all arg Values before callValue runs the VM (which can GC).
+            // extra_roots stores *Value pointers; args.items[i] addresses are
+            // stable for the lifetime of this frame since we do no further
+            // appends to `args` after this point.
+            const prev_extra = ctx.gc.roots.extra.items.len;
+            try ctx.gc.roots.extra.ensureUnusedCapacity(ctx.gc.allocator, args.items.len);
+            for (args.items) |*arg| ctx.gc.roots.extra.appendAssumeCapacity(arg);
+            defer ctx.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+
             // Look up the transformer from the active env.
             const sym = try ctx.symbols.intern(name);
             const transformer = ctx.currentEnv().lookup(sym) orelse
                 ctx.globals.lookup(sym) orelse
                 return error.UnboundVariable;
-            // Call the transformer with unevaluated args.
+            // Call the transformer with unevaluated args (GC-safe: args rooted above).
             const result = try ctx.vm.?.callValue(transformer, args.items);
             // Re-expand: macros may expand to other macro calls.
             return macroExpand(ctx, result);
@@ -84,20 +99,21 @@ pub fn macroExpand(ctx: *EvalContext, form: Value) anyerror!Value {
 pub fn macroExpandList(ctx: *EvalContext, form: Value) anyerror!Value {
     const objs = runtime_objects;
     if (!objs.isPair(form)) return form;
-    const orig_car = objs.pairCar(form).*;
-    const orig_cdr = objs.pairCdr(form).*;
 
     var scope = HandleScope{};
     ctx.gc.roots.pushHandleScope(&scope);
     defer ctx.gc.roots.popHandleScope();
 
-    const exp_car = try macroExpand(ctx, orig_car);
-    const car_slot = scope.push(exp_car);
-    const exp_cdr = try macroExpandList(ctx, orig_cdr);
-    const cdr_slot = scope.push(exp_cdr);
+    // Root both car and cdr before any recursive call that can trigger GC.
+    const car_slot = scope.push(objs.pairCar(form).*);
+    const cdr_slot = scope.push(objs.pairCdr(form).*);
+    const orig_car = car_slot.*;
+    const orig_cdr = cdr_slot.*;
+    car_slot.* = try macroExpand(ctx, car_slot.*);
+    cdr_slot.* = try macroExpandList(ctx, cdr_slot.*);
 
     // Return original if nothing changed (avoids allocation when no macros present).
-    if (exp_car == orig_car and exp_cdr == orig_cdr) return form;
+    if (car_slot.* == orig_car and cdr_slot.* == orig_cdr) return form;
 
-    return objs.makePair(ctx.gc, car_slot.*, cdr_slot.*);
+    return objs.makePairFromSlots(ctx.gc, car_slot, cdr_slot);
 }

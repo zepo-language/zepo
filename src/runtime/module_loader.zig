@@ -29,42 +29,45 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     if (!objects.isSymbol(name_v)) return error.InvalidSpecialForm;
     const name = objects.symbolName(name_v);
 
-    const after_name = objects.pairCdr(rest).*;
+    // Root all traversal values now — registry.create, markExport, and the
+    // body loop all can trigger GC via allocation.
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+
     // Optional (export sym ...) — must be first in body if present.
-    var body_cur = after_name;
-    var exports_form: ?Value = null;
-    if (objects.isPair(body_cur)) {
-        const first = objects.pairCar(body_cur).*;
+    const after_name_slot = scope.push(objects.pairCdr(rest).*);
+    const exports_slot = scope.push(value_mod.NIL);
+    const iter_slot = scope.push(value_mod.NIL);
+    if (objects.isPair(after_name_slot.*)) {
+        const first = objects.pairCar(after_name_slot.*).*;
         if (isHeadSymbol(first, "export")) {
-            exports_form = first;
-            body_cur = objects.pairCdr(body_cur).*;
+            exports_slot.* = first;
+            iter_slot.* = objects.pairCdr(after_name_slot.*).*;
+        } else {
+            iter_slot.* = after_name_slot.*;
         }
+    } else {
+        iter_slot.* = after_name_slot.*;
     }
 
     const m = try ctx.registry.create(name);
 
     // Register exports before running body so exports can be validated
     // against body-defined names.
-    if (exports_form) |ef| {
-        const export_tail = objects.pairCdr(ef).*;
-        var cur = export_tail;
-        while (!value_mod.isNil(cur)) {
-            if (!objects.isPair(cur)) return error.InvalidSpecialForm;
-            const nm_v = objects.pairCar(cur).*;
+    if (!value_mod.isNil(exports_slot.*)) {
+        const cur_slot = scope.push(objects.pairCdr(exports_slot.*).*);
+        while (!value_mod.isNil(cur_slot.*)) {
+            if (!objects.isPair(cur_slot.*)) return error.InvalidSpecialForm;
+            const nm_v = objects.pairCar(cur_slot.*).*;
             if (!objects.isSymbol(nm_v)) return error.InvalidSpecialForm;
             try m.markExport(objects.symbolName(nm_v));
-            cur = objects.pairCdr(cur).*;
+            cur_slot.* = objects.pairCdr(cur_slot.*).*;
         }
     }
 
     ctx.enterModule(m);
 
-    // Root body_iter so a GC triggered by evalImport/evalForm (e.g. via
-    // tryAutoLoad → evalString) cannot stale the traversal pointer.
-    var scope = HandleScope{};
-    ctx.gc.roots.pushHandleScope(&scope);
-    defer ctx.gc.roots.popHandleScope();
-    const iter_slot = scope.push(body_cur);
     const form_slot = scope.push(value_mod.NIL);
 
     var last: Value = value_mod.NIL;

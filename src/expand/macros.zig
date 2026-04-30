@@ -45,13 +45,12 @@ fn expandList(v: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
     gc.roots.pushHandleScope(&scope);
     defer gc.roots.popHandleScope();
 
-    const car = objects.pairCar(v).*;
-    const cdr = objects.pairCdr(v).*;
-    const exp_car = try expandForm(car, symbols, gc);
-    const car_slot = scope.push(exp_car);
-    const exp_cdr = try expandList(cdr, symbols, gc);
-    const cdr_slot = scope.push(exp_cdr);
-    return objects.makePair(gc, car_slot.*, cdr_slot.*);
+    // Root both car and cdr before any recursive call that can trigger GC.
+    const car_slot = scope.push(objects.pairCar(v).*);
+    const cdr_slot = scope.push(objects.pairCdr(v).*);
+    car_slot.* = try expandForm(car_slot.*, symbols, gc);
+    cdr_slot.* = try expandList(cdr_slot.*, symbols, gc);
+    return objects.makePairFromSlots(gc, car_slot, cdr_slot);
 }
 
 // Expand a quasiquote template (one level).
@@ -81,10 +80,11 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
             var scope = HandleScope{};
             gc.roots.pushHandleScope(&scope);
             defer gc.roots.popHandleScope();
+            // Root both splice_expr and tail before expandQQ can trigger GC.
             const splice_slot = scope.push(splice_expr);
-            const rest_exp = try expandQQ(tail, symbols, gc);
-            const rest_slot = scope.push(rest_exp);
-            return makeCall2(symbols, gc, "append", splice_slot.*, rest_slot.*);
+            const tail_slot = scope.push(tail);
+            tail_slot.* = try expandQQ(tail_slot.*, symbols, gc);
+            return makeCall2(symbols, gc, "append", splice_slot.*, tail_slot.*);
         }
     }
 
@@ -93,10 +93,11 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
     gc.roots.pushHandleScope(&scope);
     defer gc.roots.popHandleScope();
 
-    const exp_head = try expandQQ(head, symbols, gc);
-    const h_slot = scope.push(exp_head);
-    const exp_tail = try expandQQ(tail, symbols, gc);
-    const t_slot = scope.push(exp_tail);
+    // Root tail before expandQQ(head, ...) can trigger GC.
+    const h_slot = scope.push(head);
+    const t_slot = scope.push(tail);
+    h_slot.* = try expandQQ(h_slot.*, symbols, gc);
+    t_slot.* = try expandQQ(t_slot.*, symbols, gc);
     return makeCall2(symbols, gc, "cons", h_slot.*, t_slot.*);
 }
 
@@ -108,9 +109,9 @@ fn makeQuote(val: Value, symbols: *SymbolTable, gc: *GC) !Value {
     const q = try symbols.intern("quote");
     const q_slot = scope.push(q);
     const v_slot = scope.push(val);
-    const inner = try objects.makePair(gc, v_slot.*, value_mod.NIL);
-    const inner_slot = scope.push(inner);
-    return objects.makePair(gc, q_slot.*, inner_slot.*);
+    const nil_slot = scope.push(value_mod.NIL);
+    const inner_slot = scope.push(try objects.makePairFromSlots(gc, v_slot, nil_slot));
+    return objects.makePairFromSlots(gc, q_slot, inner_slot);
 }
 
 fn makeCall2(symbols: *SymbolTable, gc: *GC, sym_name: []const u8, a: Value, b: Value) !Value {
@@ -122,9 +123,8 @@ fn makeCall2(symbols: *SymbolTable, gc: *GC, sym_name: []const u8, a: Value, b: 
     const fn_slot = scope.push(fn_sym);
     const a_slot = scope.push(a);
     const b_slot = scope.push(b);
-    const b_cons = try objects.makePair(gc, b_slot.*, value_mod.NIL);
-    const b_slot2 = scope.push(b_cons);
-    const a_cons = try objects.makePair(gc, a_slot.*, b_slot2.*);
-    const a_slot2 = scope.push(a_cons);
-    return objects.makePair(gc, fn_slot.*, a_slot2.*);
+    const nil_slot = scope.push(value_mod.NIL);
+    const b_slot2 = scope.push(try objects.makePairFromSlots(gc, b_slot, nil_slot));
+    const a_slot2 = scope.push(try objects.makePairFromSlots(gc, a_slot, b_slot2));
+    return objects.makePairFromSlots(gc, fn_slot, a_slot2);
 }

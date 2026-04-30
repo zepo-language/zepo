@@ -882,15 +882,8 @@
 
   ;;; ── Run ───────────────────────────────────────────────────────────────────
 
-  ; run accepts an optional config-file argument used by run-with-config.
-  (define (run prog . args)
-    (let* ((cfg-file  (if (null? args) #f (car args)))
-           (prog      (if cfg-file
-                          (let* ((raw (file-read-string cfg-file))
-                                 (p   (json-parse raw)))
-                            (plist-set prog :config-map (if (ok? p) (result-value p) #f)))
-                          prog))
-           (all-argv  (argv))
+  (define (run prog)
+    (let* ((all-argv  (argv))
            (raw-argv  (if (null? all-argv) (quote ()) (cdr all-argv)))
            (user-argv (if (and (not (null? raw-argv)) (equal? (car raw-argv) "--"))
                           (cdr raw-argv)
@@ -909,4 +902,8 @@
 
   ; Like run, but loads a JSON config file first (CLI > ENV > CONFIG > DEFAULT).
   (define (run-with-config prog config-file)
-    (run prog config-file)))
+    (let* ((raw    (file-read-string config-file))
+           (parsed (json-parse raw))
+           (cmap   (if (ok? parsed) (result-value parsed) #f))
+           (prog2  (plist-set prog :config-map cmap)))
+      (run prog2))))

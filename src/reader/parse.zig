@@ -166,9 +166,9 @@ pub const Parser = struct {
         const inner = try p.parseToken(inner_tok);
         const inner_slot = scope.push(inner);
 
-        const inner_cons = try objects.makePair(p.gc, inner_slot.*, value_mod.NIL);
-        const inner_cons_slot = scope.push(inner_cons);
-        const result = try objects.makePair(p.gc, sym_slot.*, inner_cons_slot.*);
+        const nil_slot = scope.push(value_mod.NIL);
+        const inner_cons_slot = scope.push(try objects.makePairFromSlots(p.gc, inner_slot, nil_slot));
+        const result = try objects.makePairFromSlots(p.gc, sym_slot, inner_cons_slot);
         try p.recordSpan(result, tok.span.start, tok.span.end);
         return result;
     }
@@ -187,9 +187,9 @@ pub const Parser = struct {
         const inner_slot = scope.push(inner);
 
         // Build (quote inner) = (cons quote (cons inner NIL))
-        const inner_cons = try objects.makePair(p.gc, inner_slot.*, value_mod.NIL);
-        const inner_cons_slot = scope.push(inner_cons);
-        const result = try objects.makePair(p.gc, quote_slot.*, inner_cons_slot.*);
+        const nil_slot = scope.push(value_mod.NIL);
+        const inner_cons_slot = scope.push(try objects.makePairFromSlots(p.gc, inner_slot, nil_slot));
+        const result = try objects.makePairFromSlots(p.gc, quote_slot, inner_cons_slot);
         try p.recordSpan(result, quote_tok.span.start, quote_tok.span.end);
         return result;
     }
