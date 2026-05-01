@@ -246,12 +246,14 @@ pub const EvalContext = struct {
         // Discovery mode: only process module-system forms that reveal dependencies.
         if (ctx.discovery_mode) {
             if (isHeadSymbol(form, "module")) return mod_loader.evalModuleDecl(ctx, form);
+            if (isHeadSymbol(form, "lib")) return mod_loader.evalLibDecl(ctx, form);
             if (isHeadSymbol(form, "import")) return mod_loader.evalImport(ctx, form);
             if (isHeadSymbol(form, "include") or isHeadSymbol(form, "load")) return mod_loader.evalInclude(ctx, form);
             if (isHeadSymbol(form, "package")) return mod_loader.evalPackageDecl(ctx, form);
             return value_mod.NIL;
         }
 
+        if (isHeadSymbol(form, "lib")) return mod_loader.evalLibDecl(ctx, form);
         if (isHeadSymbol(form, "module")) {
             return mod_loader.evalModuleDecl(ctx, form);
         }

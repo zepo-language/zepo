@@ -14,12 +14,37 @@ const GC = gc_mod.GC;
 const globals_mod = @import("globals.zig");
 const GlobalEnv = globals_mod.GlobalEnv;
 
+/// Metadata attached to any container form (module, lib, package).
+/// All string fields are owned allocations; null means not specified.
+pub const ContainerMeta = struct {
+    docstring: ?[]u8 = null,
+    version: ?[]u8 = null,
+    author: ?[]u8 = null,
+    license: ?[]u8 = null,
+    depends: [][]const u8 = &.{},
+    allocator: std.mem.Allocator,
+
+    pub fn init(alloc: std.mem.Allocator) ContainerMeta {
+        return .{ .allocator = alloc };
+    }
+
+    pub fn deinit(self: *ContainerMeta) void {
+        if (self.docstring) |s| self.allocator.free(s);
+        if (self.version) |s| self.allocator.free(s);
+        if (self.author) |s| self.allocator.free(s);
+        if (self.license) |s| self.allocator.free(s);
+        for (self.depends) |d| self.allocator.free(d);
+        if (self.depends.len > 0) self.allocator.free(self.depends);
+    }
+};
+
 pub const Module = struct {
     name: []u8, // owned
     exports: std.StringHashMap(void),
     env: GlobalEnv,
     initialized: bool,
     allocator: std.mem.Allocator,
+    meta: ContainerMeta,
 
     pub fn init(alloc: std.mem.Allocator, gc: *GC, name: []const u8) !Module {
         const name_owned = try alloc.dupe(u8, name);
@@ -30,10 +55,12 @@ pub const Module = struct {
             .env = try GlobalEnv.init(gc, alloc),
             .initialized = false,
             .allocator = alloc,
+            .meta = ContainerMeta.init(alloc),
         };
     }
 
     pub fn deinit(self: *Module) void {
+        self.meta.deinit();
         // Free copies of export-name keys.
         var it = self.exports.keyIterator();
         while (it.next()) |k| {

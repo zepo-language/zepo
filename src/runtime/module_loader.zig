@@ -11,6 +11,8 @@ const HandleScope = gc_collector.HandleScope;
 
 const package_mod = @import("package.zig");
 const PackageInfo = package_mod.PackageInfo;
+const module_mod = @import("module.zig");
+const ContainerMeta = module_mod.ContainerMeta;
 
 const runtime_objects = @import("objects.zig");
 const eval = @import("eval.zig");
@@ -20,6 +22,69 @@ const isHeadSymbol = eval.isHeadSymbol;
 const cg_mod = @import("../cg/mod.zig");
 const serialize = cg_mod.serialize;
 const VM = @import("../vm/mod.zig").VM;
+
+/// Walk a Value list consuming leading `:keyword value` pairs, populating meta.
+/// Returns the first non-keyword element (the rest of the form body).
+/// Keyword names: :docstring, :version, :author, :license, :depends.
+fn parseContainerKeywords(alloc: std.mem.Allocator, objects: anytype, list: Value, meta: *ContainerMeta) !Value {
+    var cur = list;
+    while (!value_mod.isNil(cur)) {
+        if (!objects.isPair(cur)) break;
+        const elem = objects.pairCar(cur).*;
+        // Keywords are symbols starting with ':'
+        if (!objects.isSymbol(elem)) break;
+        const sym_name = objects.symbolName(elem);
+        if (sym_name.len == 0 or sym_name[0] != ':') break;
+        const kw = sym_name[1..]; // strip leading ':'
+
+        const rest = objects.pairCdr(cur).*;
+        if (!objects.isPair(rest)) break;
+        const val = objects.pairCar(rest).*;
+        cur = objects.pairCdr(rest).*;
+
+        if (std.mem.eql(u8, kw, "docstring")) {
+            if (objects.isString(val)) {
+                if (meta.docstring) |s| alloc.free(s);
+                meta.docstring = try alloc.dupe(u8, objects.stringBytes(val));
+            }
+        } else if (std.mem.eql(u8, kw, "version")) {
+            if (objects.isString(val)) {
+                if (meta.version) |s| alloc.free(s);
+                meta.version = try alloc.dupe(u8, objects.stringBytes(val));
+            }
+        } else if (std.mem.eql(u8, kw, "author")) {
+            if (objects.isString(val)) {
+                if (meta.author) |s| alloc.free(s);
+                meta.author = try alloc.dupe(u8, objects.stringBytes(val));
+            }
+        } else if (std.mem.eql(u8, kw, "license")) {
+            if (objects.isString(val)) {
+                if (meta.license) |s| alloc.free(s);
+                meta.license = try alloc.dupe(u8, objects.stringBytes(val));
+            }
+        } else if (std.mem.eql(u8, kw, "depends")) {
+            // :depends (a b c) — val must be a list of symbols/strings
+            var deps: std.ArrayListUnmanaged([]const u8) = .{};
+            errdefer { for (deps.items) |d| alloc.free(d); deps.deinit(alloc); }
+            var dep = val;
+            while (!value_mod.isNil(dep)) {
+                if (!objects.isPair(dep)) break;
+                const d = objects.pairCar(dep).*;
+                if (objects.isSymbol(d)) {
+                    try deps.append(alloc, try alloc.dupe(u8, objects.symbolName(d)));
+                } else if (objects.isString(d)) {
+                    try deps.append(alloc, try alloc.dupe(u8, objects.stringBytes(d)));
+                }
+                dep = objects.pairCdr(dep).*;
+            }
+            for (meta.depends) |d| alloc.free(d);
+            if (meta.depends.len > 0) alloc.free(meta.depends);
+            meta.depends = try deps.toOwnedSlice(alloc);
+        }
+        // Unknown keywords are silently ignored for forward-compatibility.
+    }
+    return cur;
+}
 
 pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     if (ctx.current_module != null) return error.ModuleNotAtTopLevel;
@@ -39,8 +104,13 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     ctx.gc.roots.pushHandleScope(&scope);
     defer ctx.gc.roots.popHandleScope();
 
-    // Optional (export sym ...) — must be first in body if present.
-    const after_name_slot = scope.push(objects.pairCdr(rest).*);
+    // Parse leading :keyword metadata, then look for optional (export ...).
+    var meta = ContainerMeta.init(ctx.allocator);
+    errdefer meta.deinit();
+    const after_name = objects.pairCdr(rest).*;
+    const after_meta = try parseContainerKeywords(ctx.allocator, objects, after_name, &meta);
+
+    const after_name_slot = scope.push(after_meta);
     const exports_slot = scope.push(value_mod.NIL);
     const iter_slot = scope.push(value_mod.NIL);
     if (objects.isPair(after_name_slot.*)) {
@@ -56,6 +126,9 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     }
 
     const m = try ctx.registry.create(name);
+    m.meta = meta;
+    // meta is now owned by m; reset local so errdefer doesn't double-free.
+    meta = ContainerMeta.init(ctx.allocator);
 
     // Register exports before running body so exports can be validated
     // against body-defined names.
@@ -122,7 +195,7 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     return last;
 }
 
-/// Evaluate `(package name (version "x") (description "y") (depends a b ...))`.
+/// Evaluate `(package name :version "x" :description "y" :depends (a b ...))`.
 /// Registers package metadata; does not load any modules.
 pub fn evalPackageDecl(ctx: *EvalContext, form: Value) !Value {
     const objs = runtime_objects;
@@ -133,52 +206,129 @@ pub fn evalPackageDecl(ctx: *EvalContext, form: Value) !Value {
     const name = try ctx.allocator.dupe(u8, objs.symbolName(name_v));
     errdefer ctx.allocator.free(name);
 
-    var version: []const u8 = try ctx.allocator.dupe(u8, "");
-    var description: []const u8 = try ctx.allocator.dupe(u8, "");
-    var depends: std.ArrayListUnmanaged([]const u8) = .{};
+    var meta = ContainerMeta.init(ctx.allocator);
+    errdefer meta.deinit();
+    const after_name = objs.pairCdr(rest).*;
+    _ = try parseContainerKeywords(ctx.allocator, objs, after_name, &meta);
 
-    var cur = objs.pairCdr(rest).*;
-    while (!value_mod.isNil(cur)) {
-        if (!objs.isPair(cur)) break;
-        const clause = objs.pairCar(cur).*;
-        if (objs.isPair(clause)) {
-            const head = objs.pairCar(clause).*;
-            if (objs.isSymbol(head)) {
-                const kw = objs.symbolName(head);
-                const tail = objs.pairCdr(clause).*;
-                if (objs.isPair(tail)) {
-                    const val = objs.pairCar(tail).*;
-                    if (std.mem.eql(u8, kw, "version") and objs.isString(val)) {
-                        ctx.allocator.free(version);
-                        version = try ctx.allocator.dupe(u8, objs.stringBytes(val));
-                    } else if (std.mem.eql(u8, kw, "description") and objs.isString(val)) {
-                        ctx.allocator.free(description);
-                        description = try ctx.allocator.dupe(u8, objs.stringBytes(val));
-                    } else if (std.mem.eql(u8, kw, "depends")) {
-                        var dep = tail;
-                        while (!value_mod.isNil(dep)) {
-                            if (!objs.isPair(dep)) break;
-                            const d = objs.pairCar(dep).*;
-                            if (objs.isSymbol(d))
-                                try depends.append(ctx.allocator, try ctx.allocator.dupe(u8, objs.symbolName(d)));
-                            dep = objs.pairCdr(dep).*;
-                        }
-                    }
-                }
-            }
-        }
-        cur = objs.pairCdr(cur).*;
-    }
+    // Take ownership of fields PackageInfo uses; deinit remaining meta fields.
+    const version = meta.version orelse try ctx.allocator.dupe(u8, "");
+    meta.version = null;
+    const description = meta.docstring orelse try ctx.allocator.dupe(u8, "");
+    meta.docstring = null;
+    const depends_owned = meta.depends;
+    meta.depends = &.{};
+    // author and license not stored in PackageInfo; deinit frees them.
+    meta.deinit();
+    meta = ContainerMeta.init(ctx.allocator); // reset so errdefer is a no-op
 
     const info = PackageInfo{
         .name = name,
         .version = version,
         .description = description,
-        .depends = try depends.toOwnedSlice(ctx.allocator),
+        .depends = depends_owned,
         .allocator = ctx.allocator,
     };
     try ctx.packages.register(info);
     return value_mod.NIL;
+}
+
+/// Evaluate `(lib name :keyword value... (export ...) body...)`.
+/// A lib is a compiled artifact container — same semantics as module but
+/// declared with the `lib` keyword to signal it is a distributable library.
+pub fn evalLibDecl(ctx: *EvalContext, form: Value) !Value {
+    if (ctx.current_module != null) return error.ModuleNotAtTopLevel;
+
+    const objects = runtime_objects;
+    const rest = objects.pairCdr(form).*;
+    if (!objects.isPair(rest)) return error.InvalidSpecialForm;
+    const name_v = objects.pairCar(rest).*;
+    if (!objects.isSymbol(name_v)) return error.InvalidSpecialForm;
+    const name = objects.symbolName(name_v);
+
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+
+    var meta = ContainerMeta.init(ctx.allocator);
+    errdefer meta.deinit();
+    const after_name = objects.pairCdr(rest).*;
+    const after_meta = try parseContainerKeywords(ctx.allocator, objects, after_name, &meta);
+
+    const after_name_slot = scope.push(after_meta);
+    const exports_slot = scope.push(value_mod.NIL);
+    const iter_slot = scope.push(value_mod.NIL);
+    if (objects.isPair(after_name_slot.*)) {
+        const first = objects.pairCar(after_name_slot.*).*;
+        if (isHeadSymbol(first, "export")) {
+            exports_slot.* = first;
+            iter_slot.* = objects.pairCdr(after_name_slot.*).*;
+        } else {
+            iter_slot.* = after_name_slot.*;
+        }
+    } else {
+        iter_slot.* = after_name_slot.*;
+    }
+
+    const m = try ctx.registry.create(name);
+    m.meta = meta;
+    meta = ContainerMeta.init(ctx.allocator);
+
+    if (!value_mod.isNil(exports_slot.*)) {
+        const cur_slot = scope.push(objects.pairCdr(exports_slot.*).*);
+        while (!value_mod.isNil(cur_slot.*)) {
+            if (!objects.isPair(cur_slot.*)) return error.InvalidSpecialForm;
+            const nm_v = objects.pairCar(cur_slot.*).*;
+            if (!objects.isSymbol(nm_v)) return error.InvalidSpecialForm;
+            try m.markExport(objects.symbolName(nm_v));
+            cur_slot.* = objects.pairCdr(cur_slot.*).*;
+        }
+    }
+
+    ctx.enterModule(m);
+
+    const form_slot = scope.push(value_mod.NIL);
+    var last: Value = value_mod.NIL;
+    while (!value_mod.isNil(iter_slot.*)) {
+        if (!objects.isPair(iter_slot.*)) {
+            ctx.leaveModule();
+            return error.InvalidSpecialForm;
+        }
+        form_slot.* = objects.pairCar(iter_slot.*).*;
+        iter_slot.* = objects.pairCdr(iter_slot.*).*;
+        const body_form = form_slot.*;
+        if (isHeadSymbol(body_form, "module") or isHeadSymbol(body_form, "lib")) {
+            ctx.leaveModule();
+            return error.ModuleNotAtTopLevel;
+        }
+        if (isHeadSymbol(body_form, "import")) {
+            last = evalImport(ctx, body_form) catch |e| {
+                if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(body_form);
+                ctx.leaveModule();
+                return e;
+            };
+            continue;
+        }
+        last = ctx.evalForm(body_form) catch |e| {
+            if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(body_form);
+            ctx.leaveModule();
+            return e;
+        };
+    }
+
+    if (!ctx.discovery_mode) {
+        var it = m.exports.keyIterator();
+        while (it.next()) |k| {
+            const sym = try ctx.symbols.intern(k.*);
+            if (m.env.findEntry(sym) == null) {
+                ctx.leaveModule();
+                return error.ExportNotDefined;
+            }
+        }
+    }
+
+    ctx.leaveModule();
+    return last;
 }
 
 /// Evaluate `(include "path")` — reads and evaluates a file in the current env.
