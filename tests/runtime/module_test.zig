@@ -132,3 +132,105 @@ test "module: selective import does not import unlisted names" {
     const v = rig.eval("b");
     try std.testing.expectError(error.UnboundVariable, v);
 }
+
+test "module: :keyword metadata is parsed and ignored at eval time" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    const v = try rig.eval(
+        \\(module math
+        \\  :version "1.0.0"
+        \\  :docstring "arithmetic helpers"
+        \\  :author "leslie"
+        \\  (export square)
+        \\  (define (square x) (* x x)))
+    );
+    _ = v;
+    const r = try rig.eval("(import math) (square 9)");
+    try expectInt(r, 81);
+}
+
+test "lib: container registers in module registry and is importable" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(lib mylib
+        \\  :version "0.1.0"
+        \\  :docstring "test lib"
+        \\  (export add1)
+        \\  (define (add1 x) (+ x 1)))
+    );
+    const v = try rig.eval("(import mylib) (add1 41)");
+    try expectInt(v, 42);
+}
+
+test "lib: :keyword metadata does not interfere with body" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(lib utils
+        \\  :version "2.0.0"
+        \\  :author "test"
+        \\  :license "MIT"
+        \\  :depends (a b)
+        \\  (export double)
+        \\  (define (double x) (* x 2)))
+    );
+    const v = try rig.eval("(import utils) (double 21)");
+    try expectInt(v, 42);
+}
+
+test "package: container registers in module registry" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(package mypkg
+        \\  :version "0.1.0"
+        \\  :docstring "a package")
+    );
+    // package should be registered
+    const m = rig.ctx.registry.get("mypkg");
+    try std.testing.expect(m != null);
+}
+
+test "package: body forms execute in package environment" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(package tools
+        \\  :version "1.0.0"
+        \\  (define pi 3))
+    );
+    _ = try rig.eval("(import tools)");
+    const v = try rig.eval("pi");
+    try expectInt(v, 3);
+}
+
+test "import: :modules keyword form loads module by name" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module math :version "1.0" (export square) (define (square x) (* x x)))
+    );
+    _ = try rig.eval("(import :modules (math))");
+    const v = try rig.eval("(square 6)");
+    try expectInt(v, 36);
+}
+
+test "import: mixed keyword form loads from multiple tiers" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval("(module modA (export a) (define a 1))");
+    _ = try rig.eval("(lib  libB  (export b) (define b 2))");
+    _ = try rig.eval("(import :modules (modA) :libs (libB))");
+    const va = try rig.eval("a");
+    const vb = try rig.eval("b");
+    try expectInt(va, 1);
+    try expectInt(vb, 2);
+}

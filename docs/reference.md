@@ -76,96 +76,174 @@ automatically.
 
 Press **Ctrl-D** or type `.quit` to exit.
 
+### Container forms
+
+Zepo has three explicit container forms — `module`, `lib`, and `package` —
+each with optional `:keyword` metadata. All containers register in the module
+registry so they can be imported.
+
+**Metadata keywords** (all optional, all containers):
+
+| Keyword | Type | Meaning |
+|---------|------|---------|
+| `:version` | string | Semantic version, e.g. `"1.0.0"` |
+| `:docstring` | string | Human-readable description |
+| `:author` | string | Author name |
+| `:license` | string | License identifier, e.g. `"MIT"` |
+| `:depends` | list | Dependency names: `(foo bar)` |
+
+**`(module name ...)`** — a named namespace inside a project. Declares
+exported names, then evaluates body forms in the module's private environment.
+
+```lisp
+(module math
+  :version "1.0.0"
+  :docstring "Core arithmetic helpers"
+  (export square cube)
+
+  (define square (lambda (x) (* x x)))
+  (define cube   (lambda (x) (* x x x))))
+```
+
+**`(lib name ...)`** — a single-file distributable library. Same evaluation
+semantics as `module`; the `lib` keyword signals it is compiled and installed
+as a standalone artifact rather than living inside a project.
+
+```lisp
+(lib mylib
+  :version "0.1.0"
+  :docstring "A reusable library"
+  (export greet)
+
+  (define greet (lambda (name) (string-append "hello " name))))
+```
+
+**`(package name ...)`** — a multi-module distribution container. Declares
+metadata and (optionally) bootstraps sub-modules via `(import :modules ...)`.
+Body forms are evaluated in the package's environment.
+
+```lisp
+(package myapp
+  :version "1.0.0"
+  :docstring "My application package"
+  :depends (math mylib))
+```
+
+### The `import` form
+
+```lisp
+; Keyword form — explicit tier dispatch (preferred):
+(import :modules  (utils math))      ; project-local .lisp/.zbc files
+(import :libs     (parser json))     ; installed single-file libraries
+(import :packages (myapp framework)) ; installed multi-module packages
+
+; Mixed in one form:
+(import :modules (utils) :libs (json) :packages (framework))
+
+; Legacy bare form (still supported):
+(import math)
+(import math as m)             ; all exports prefixed as m.square, m.cube
+(import math (only square))    ; selective import
+```
+
+Each tier searches a different path:
+
+| Tier | Paths searched |
+|------|---------------|
+| `:modules` | Project-local paths (project.lisp, `ZEPO_PATH`) |
+| `:libs` | `~/.local/lib/zepo/<pkg>/` — installed lib dirs |
+| `:packages` | `~/.local/lib/zepo/` — package roots; loads `<name>/src/main.lisp` |
+
 ### Scaffolding with `zepo new`
 
-Generate boilerplate for common component types. Requires being inside a
-project (`project.lisp`) except for `package`.
+Generate boilerplate. `module` and `test` require a project (`project.lisp`);
+`lib` and `package` are standalone.
 
 | Type | What it creates | Requires project? |
 |------|-----------------|-------------------|
-| `module` | `modules/<name>.lisp` — module skeleton | yes |
-| `lib` | `lib/<name>/` with `package.lisp` + `mod.lisp` + test | yes |
+| `module` | `modules/<name>.lisp` — `(module ...)` skeleton | yes |
 | `test` | `tests/<name>_test.lisp` | yes |
-| `package` | `./<name>/` — standalone installable package | no |
+| `lib` | `<name>/<name>.lisp` — `(lib ...)` skeleton | no |
+| `package` | `<name>/src/main.lisp` — `(package ...)` container | no |
 
 ```sh
 # Inside a project:
 zepo new module utils
-zepo new lib parser
-zepo new test parser
+zepo new test utils
 
-# Anywhere — creates a self-contained installable package:
-zepo new package mylib
+# Anywhere — standalone distributable artifacts:
+zepo new lib parser
+zepo new package myapp
+```
+
+`zepo new lib <name>` creates:
+
+```
+parser/
+  parser.lisp    ← (lib parser :version "0.1.0" :docstring "" (export))
 ```
 
 `zepo new package <name>` creates:
 
 ```
-mylib/
-  mylib.lisp     ← module skeleton with (module mylib (export))
+myapp/
+  src/
+    main.lisp    ← (package myapp :version "0.1.0" :docstring "")
 ```
 
-Edit `mylib.lisp`, add your definitions to the `export` list, then:
+Add sub-modules in `src/` and import them from `main.lisp`:
 
-```sh
-zepo install ./mylib
+```lisp
+(import :modules (myapp.core myapp.utils))
 ```
 
-### Installing packages
+### Installing libs and packages
 
 ```sh
-zepo install <path-to-package>
+zepo install <path>
 ```
 
-Copies a package directory into `~/.local/lib/zepo/<package-name>/` and
-pre-compiles every `.lisp` file in the tree to a sibling `.zbc` (Zepo
-bytecode) file. The source files are kept alongside for debugging and
-reference. Installed packages are immediately available to `import` without
-setting `ZEPO_PATH`.
+Copies the directory to `~/.local/lib/zepo/<name>/` and pre-compiles `.lisp`
+files to `.zbc` bytecode. The install command detects the structure:
+
+- **Package** (`src/main.lisp` present) — compiles `src/` subtree only
+- **Lib** (`<name>.lisp` at root) — compiles root `.lisp` files
 
 ```sh
-zepo install ~/projects/mylib
-# installs to ~/.local/lib/zepo/mylib/
-# compiles mylib.lisp → mylib.zbc  (and any subdirectory .lisp files)
+zepo install ./parser    # lib:     compiles parser/parser.lisp → parser.zbc
+zepo install ./myapp     # package: compiles myapp/src/*.lisp → *.zbc
 ```
 
 Output on success:
 
 ```
-installed 'mylib' → /Users/you/.local/lib/zepo/mylib
+installed lib 'parser' → /Users/you/.local/lib/zepo/parser
+  1 file(s) compiled, 0 skipped
+
+installed package 'myapp' → /Users/you/.local/lib/zepo/myapp
   3 file(s) compiled, 0 skipped
 ```
 
 **Compiled vs. source loading.** When a `.zbc` file exists alongside a
 `.lisp` file, `import` loads the bytecode directly — skipping parsing,
 macro expansion, and code generation. This makes installed libraries
-significantly faster to load than source files. The `.lisp` source is
-preserved for human reading and debugging; it is never loaded at runtime
-when a matching `.zbc` exists.
+significantly faster to load than source files.
 
 ### Startup and module search path
 
 On startup the runtime evaluates the built-in **stdlib** (`lib/stdlib.lisp` —
 embedded at compile time). No other files are auto-loaded.
 
-Additional libraries are loaded **on demand** via `(import name)`. When
-`import` is evaluated, the runtime searches for `<name>.lisp` (or the
-pre-compiled `<name>.zbc`) in order:
+`EvalContext` maintains three separate path tiers populated at startup:
 
-1. `<exe-dir>/../../lib/` — the project's own `lib/` directory
-2. `~/.local/lib/zepo/` — packages installed with `zepo install`
-3. Each entry in `ZEPO_PATH` (colon-separated)
+| Field | Contents |
+|-------|----------|
+| `module_path` | Project-local dirs (project.lisp, `ZEPO_PATH`) |
+| `lib_path` | `~/.local/lib/zepo/<pkg>/` per installed lib |
+| `package_path` | `~/.local/lib/zepo/` root |
 
-For each directory the runtime tries the following patterns in order,
-preferring `.zbc` over `.lisp` within each pattern:
-
-| Pattern | Example |
-|---------|---------|
-| `<dir>/<name>.zbc` / `<dir>/<name>.lisp` | `~/.local/lib/zepo/utils.zbc` |
-| `<dir>/<pkg>/<mod>.zbc` / `<dir>/<pkg>/<mod>.lisp` | for slash names like `math/core` |
-| `<dir>/<name>/mod.zbc` / `<dir>/<name>/mod.lisp` | package entry point |
-
-If no match is found in any directory, `ModuleNotFound` is raised.
+The `:modules`/`:libs`/`:packages` import tiers search the matching field.
+The legacy bare `(import name)` searches `module_path` (the combined path).
 
 ```sh
 ZEPO_PATH=~/.zepo/lib zepo myscript.lisp
