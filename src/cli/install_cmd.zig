@@ -71,6 +71,7 @@ fn compileTree(
         switch (entry.kind) {
             .file => {
                 if (!std.mem.endsWith(u8, entry.name, ".lisp")) continue;
+                if (std.mem.eql(u8, entry.name, "package.lisp")) continue;
                 const lisp_path = std.fs.path.join(alloc, &.{ dir_path, entry.name }) catch continue;
                 defer alloc.free(lisp_path);
                 const stem = entry.name[0 .. entry.name.len - ".lisp".len];

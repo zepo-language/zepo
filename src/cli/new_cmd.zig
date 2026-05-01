@@ -162,20 +162,6 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
     guardExists(cwd, name, stderr);
     try cwd.makePath(name);
 
-    // <name>/package.lisp — metadata
-    const manifest_path = try std.fs.path.join(alloc, &.{ name, "package.lisp" });
-    defer alloc.free(manifest_path);
-    {
-        const f = try cwd.createFile(manifest_path, .{ .truncate = true });
-        defer f.close();
-        var buf: [256]u8 = undefined;
-        try f.writeAll(try std.fmt.bufPrint(&buf,
-            \\(package {s}
-            \\  (version "0.1.0"))
-            \\
-        , .{name}));
-    }
-
     // <name>/<name>.lisp — main module file
     const mod_filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
     defer alloc.free(mod_filename);
@@ -198,7 +184,6 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
     try stdout.writeAll(try std.fmt.bufPrint(&msg_buf,
         \\created  {s}/
         \\         {s}
-        \\         {s}
         \\
         \\Next steps:
         \\  1. Add your definitions to {s}
@@ -206,7 +191,7 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
         \\  3. zepo install ./{s}
         \\  4. (import {s}) in your program
         \\
-    , .{ name, manifest_path, mod_path, mod_path, name, name, name }));
+    , .{ name, mod_path, mod_path, name, name, name }));
 }
 
 fn guardExists(cwd: std.fs.Dir, path: []const u8, stderr: std.fs.File) void {
