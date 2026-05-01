@@ -597,11 +597,118 @@ pub fn doImportByName(
 }
 
 /// Evaluate an `(import <name>)` or `(import <name> (only <sym>+))` form.
-/// Import a single module name using an explicit path list.
+/// Load a lib by name from installed lib dirs.
+/// Prefers .zbc over .lisp; searches <dir>/<name>.zbc, <dir>/<name>.lisp,
+/// <dir>/<name>/mod.zbc, <dir>/<name>/mod.lisp.
+pub fn tryImportLib(ctx: *EvalContext, name: []const u8, paths: []const []const u8) anyerror!void {
+    if (ctx.gc.trace.module) {
+        std.debug.print("[lib] loading '{s}' ({d} lib paths)\n", .{ name, paths.len });
+    }
+    const saved_module = ctx.current_module;
+    ctx.current_module = null;
+    defer ctx.current_module = saved_module;
+
+    for (paths) |dir| {
+        // Prefer .zbc
+        const zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.zbc", .{ dir, name }) catch continue;
+        defer ctx.allocator.free(zbc);
+        if (tryLoadZbc(ctx, name, zbc)) { logModuleFile(ctx, name, zbc); break; }
+
+        const lisp = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch continue;
+        defer ctx.allocator.free(lisp);
+        if (readModuleFile(ctx.allocator, lisp)) |src| {
+            defer ctx.allocator.free(src);
+            _ = try ctx.evalString(src, lisp);
+            logModuleFile(ctx, name, lisp);
+            break;
+        }
+
+        const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch continue;
+        defer ctx.allocator.free(mod_zbc);
+        if (tryLoadZbc(ctx, name, mod_zbc)) { logModuleFile(ctx, name, mod_zbc); break; }
+
+        const mod_lisp = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch continue;
+        defer ctx.allocator.free(mod_lisp);
+        if (readModuleFile(ctx.allocator, mod_lisp)) |src| {
+            defer ctx.allocator.free(src);
+            _ = try ctx.evalString(src, mod_lisp);
+            logModuleFile(ctx, name, mod_lisp);
+            break;
+        }
+    }
+    if (ctx.gc.trace.module and ctx.registry.get(name) == null) {
+        std.debug.print("[lib] '{s}' not found in {d} lib path(s)\n", .{ name, paths.len });
+    }
+}
+
+/// Load a package by name from installed package roots.
+/// Searches <base>/<name>/src/main.zbc then <base>/<name>/src/main.lisp.
+/// Adds <base>/<name>/src/ to ctx.module_path so sub-modules resolve.
+pub fn tryImportPackage(ctx: *EvalContext, name: []const u8, roots: []const []const u8) anyerror!void {
+    if (ctx.gc.trace.module) {
+        std.debug.print("[pkg] loading '{s}' ({d} package roots)\n", .{ name, roots.len });
+    }
+    const saved_module = ctx.current_module;
+    ctx.current_module = null;
+    defer ctx.current_module = saved_module;
+
+    for (roots) |base| {
+        const src_dir = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/src", .{ base, name }) catch continue;
+        // src_dir ownership transferred to module_path; don't defer-free here.
+
+        const main_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/main.zbc", .{src_dir}) catch {
+            ctx.allocator.free(src_dir);
+            continue;
+        };
+        defer ctx.allocator.free(main_zbc);
+
+        const loaded = blk: {
+            if (tryLoadZbc(ctx, name, main_zbc)) { logModuleFile(ctx, name, main_zbc); break :blk true; }
+            const main_lisp = std.fmt.allocPrint(ctx.allocator, "{s}/main.lisp", .{src_dir}) catch { break :blk false; };
+            defer ctx.allocator.free(main_lisp);
+            if (readModuleFile(ctx.allocator, main_lisp)) |src| {
+                defer ctx.allocator.free(src);
+                _ = ctx.evalString(src, main_lisp) catch { break :blk false; };
+                logModuleFile(ctx, name, main_lisp);
+                break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (loaded) {
+            // Mount src/ on module_path so (import :modules (name.submod)) resolves.
+            // We append to a heap-allocated extended slice so the slice outlives ctx.
+            const old_len = ctx.module_path.len;
+            const new_path = ctx.allocator.alloc([]const u8, old_len + 1) catch { ctx.allocator.free(src_dir); break; };
+            @memcpy(new_path[0..old_len], ctx.module_path);
+            new_path[old_len] = src_dir; // takes ownership of src_dir
+            // Free the previous extended path if it was heap-allocated by us.
+            // We track this with the zbc_name_bufs list repurposed — or simpler:
+            // store the old slice as a [][]const u8 in a dedicated list.
+            // For now: leak the old path slice (it was stack/arena owned before, not
+            // heap-allocated by us). Only the new extended slices are heap-owned.
+            ctx.module_path = new_path;
+            break;
+        } else {
+            ctx.allocator.free(src_dir);
+        }
+    }
+    if (ctx.gc.trace.module and ctx.registry.get(name) == null) {
+        std.debug.print("[pkg] '{s}' not found in {d} package root(s)\n", .{ name, roots.len });
+    }
+}
+
+/// Import a single module name using an explicit path list and tier.
 /// Auto-loads if needed, then imports all exported names into the active env.
-fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const u8) !void {
+fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const u8, tier: []const u8) !void {
     if (ctx.registry.get(mod_name) == null) {
-        try tryAutoLoadFromPaths(ctx, mod_name, paths);
+        if (std.mem.eql(u8, tier, "libs")) {
+            try tryImportLib(ctx, mod_name, paths);
+        } else if (std.mem.eql(u8, tier, "packages")) {
+            try tryImportPackage(ctx, mod_name, paths);
+        } else {
+            try tryAutoLoadFromPaths(ctx, mod_name, paths);
+        }
     }
     const target = ctx.registry.get(mod_name) orelse {
         const stderr = std.fs.File.stderr();
@@ -657,7 +764,7 @@ fn evalImportKeyword(ctx: *EvalContext, args: Value) !Value {
             name_slot.* = objects.pairCdr(name_slot.*).*;
             if (!objects.isSymbol(nm_v)) return error.InvalidSpecialForm;
             const nm = objects.symbolName(nm_v);
-            try importOneName(ctx, nm, paths);
+            try importOneName(ctx, nm, paths, tier);
         }
     }
     return value_mod.NIL;
