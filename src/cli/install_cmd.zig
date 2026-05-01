@@ -43,17 +43,47 @@ pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     // Copy source tree first.
     try copyDirAll(alloc, src_dir, dest_dir);
 
-    // Compile each .lisp file to .zbc in the destination tree.
+    // Detect structure: package (has src/main.lisp) or lib (<name>.lisp at root).
+    const has_src_main = blk: {
+        const check = std.fs.path.join(alloc, &.{ dest, "src", "main.lisp" }) catch break :blk false;
+        defer alloc.free(check);
+        std.fs.cwd().access(check, .{}) catch break :blk false;
+        break :blk true;
+    };
+    const has_lib_file = blk: {
+        const lib_name = try std.fmt.allocPrint(alloc, "{s}.lisp", .{pkg_name});
+        defer alloc.free(lib_name);
+        const check = std.fs.path.join(alloc, &.{ dest, lib_name }) catch break :blk false;
+        defer alloc.free(check);
+        std.fs.cwd().access(check, .{}) catch break :blk false;
+        break :blk true;
+    };
+
+    // Compile the appropriate subtree.
     var compiled: usize = 0;
     var failed: usize = 0;
-    compileTree(alloc, dest, dest_dir, &compiled, &failed);
+    if (has_src_main) {
+        // Package structure: compile src/ only.
+        const src_compile_path = std.fs.path.join(alloc, &.{ dest, "src" }) catch dest;
+        defer if (src_compile_path.ptr != dest.ptr) alloc.free(src_compile_path);
+        var src_compile_dir = std.fs.cwd().openDir(src_compile_path, .{ .iterate = true }) catch dest_dir;
+        defer if (src_compile_dir.fd != dest_dir.fd) src_compile_dir.close();
+        compileTree(alloc, src_compile_path, src_compile_dir, &compiled, &failed);
+    } else if (has_lib_file) {
+        // Lib structure: compile root .lisp files only.
+        compileTree(alloc, dest, dest_dir, &compiled, &failed);
+    } else {
+        // Unknown structure: compile everything.
+        compileTree(alloc, dest, dest_dir, &compiled, &failed);
+    }
 
     project_config.registerGlobalPackage(alloc, pkg_name) catch {};
 
+    const kind_str: []const u8 = if (has_src_main) "package" else "lib";
     var msg_buf: [512]u8 = undefined;
     const msg = try std.fmt.bufPrint(&msg_buf,
-        "installed '{s}' → {s}\n  {d} file(s) compiled, {d} skipped\n",
-        .{ pkg_name, dest, compiled, failed },
+        "installed {s} '{s}' → {s}\n  {d} file(s) compiled, {d} skipped\n",
+        .{ kind_str, pkg_name, dest, compiled, failed },
     );
     try stdout.writeAll(msg);
 }
