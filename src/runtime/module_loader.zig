@@ -701,16 +701,13 @@ pub fn tryImportPackage(ctx: *EvalContext, name: []const u8, roots: []const []co
 
         if (loaded) {
             // Mount src/ on module_path so (import :modules (name.submod)) resolves.
-            // We append to a heap-allocated extended slice so the slice outlives ctx.
             const old_len = ctx.module_path.len;
             const new_path = ctx.allocator.alloc([]const u8, old_len + 1) catch { ctx.allocator.free(src_dir); break; };
             @memcpy(new_path[0..old_len], ctx.module_path);
-            new_path[old_len] = src_dir; // takes ownership of src_dir
-            // Free the previous extended path if it was heap-allocated by us.
-            // We track this with the zbc_name_bufs list repurposed — or simpler:
-            // store the old slice as a [][]const u8 in a dedicated list.
-            // For now: leak the old path slice (it was stack/arena owned before, not
-            // heap-allocated by us). Only the new extended slices are heap-owned.
+            new_path[old_len] = src_dir;
+            // Register for cleanup in EvalContext.deinit.
+            ctx.owned_module_path_dirs.append(ctx.allocator, src_dir) catch {};
+            ctx.owned_module_path_slices.append(ctx.allocator, new_path) catch {};
             ctx.module_path = new_path;
             break;
         } else {

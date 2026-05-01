@@ -93,6 +93,10 @@ pub const EvalContext = struct {
     // Owns the name-string buffers deserialized from .zbc files. Each entry
     // is a contiguous block that backs CompiledFn.names slices.
     zbc_name_bufs: std.ArrayListUnmanaged([]u8) = .{},
+    /// Heap-allocated module_path slice headers (from tryImportPackage extensions).
+    owned_module_path_slices: std.ArrayListUnmanaged([][]const u8) = .{},
+    /// Individual strings owned by tryImportPackage (src_dir allocations).
+    owned_module_path_dirs: std.ArrayListUnmanaged([]const u8) = .{},
 
     // Error diagnostics — populated on the first error, used by CLI formatters.
     last_error_span: ?errs.Span = null,
@@ -170,6 +174,10 @@ pub const EvalContext = struct {
         ctx.source_map.deinit();
         for (ctx.zbc_name_bufs.items) |buf| ctx.allocator.free(buf);
         ctx.zbc_name_bufs.deinit(ctx.allocator);
+        for (ctx.owned_module_path_dirs.items) |d| ctx.allocator.free(d);
+        ctx.owned_module_path_dirs.deinit(ctx.allocator);
+        for (ctx.owned_module_path_slices.items) |s| ctx.allocator.free(s);
+        ctx.owned_module_path_slices.deinit(ctx.allocator);
     }
 
     /// Returns the currently-active global environment: the current module's
