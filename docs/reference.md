@@ -102,7 +102,6 @@ zepo new package mylib
 
 ```
 mylib/
-  package.lisp   ← metadata (name, version)
   mylib.lisp     ← module skeleton with (module mylib (export))
 ```
 
