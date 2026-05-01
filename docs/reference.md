@@ -31,7 +31,7 @@ Options:
   --help        Show this help message
 
 Commands:
-  install <path>       Install a package to ~/.local/lib/zepo/
+  install <path>       Copy package to ~/.local/lib/zepo/ and compile .lisp → .zbc
   build [file.lisp]    Compile to a standalone native binary
     -o <name>          Output binary name (default: input stem or project name)
 
@@ -66,18 +66,61 @@ automatically.
 
 Press **Ctrl-D** or type `.quit` to exit.
 
+### Installing packages
+
+```sh
+zepo install <path-to-package>
+```
+
+Copies a package directory into `~/.local/lib/zepo/<package-name>/` and
+pre-compiles every `.lisp` file in the tree to a sibling `.zbc` (Zepo
+bytecode) file. The source files are kept alongside for debugging and
+reference. Installed packages are immediately available to `import` without
+setting `ZEPO_PATH`.
+
+```sh
+zepo install ~/projects/mylib
+# installs to ~/.local/lib/zepo/mylib/
+# compiles mylib.lisp → mylib.zbc  (and any subdirectory .lisp files)
+```
+
+Output on success:
+
+```
+installed 'mylib' → /Users/you/.local/lib/zepo/mylib
+  3 file(s) compiled, 0 skipped
+```
+
+**Compiled vs. source loading.** When a `.zbc` file exists alongside a
+`.lisp` file, `import` loads the bytecode directly — skipping parsing,
+macro expansion, and code generation. This makes installed libraries
+significantly faster to load than source files. The `.lisp` source is
+preserved for human reading and debugging; it is never loaded at runtime
+when a matching `.zbc` exists.
+
 ### Startup and module search path
 
 On startup the runtime evaluates the built-in **stdlib** (`lib/stdlib.lisp` —
 embedded at compile time). No other files are auto-loaded.
 
 Additional libraries are loaded **on demand** via `(import name)`. When
-`import` is evaluated, the runtime searches for `<name>.lisp` in order:
+`import` is evaluated, the runtime searches for `<name>.lisp` (or the
+pre-compiled `<name>.zbc`) in order:
 
 1. `<exe-dir>/../../lib/` — the project's own `lib/` directory
-2. Each entry in `ZEPO_PATH` (colon-separated)
+2. `~/.local/lib/zepo/` — packages installed with `zepo install`
+3. Each entry in `ZEPO_PATH` (colon-separated)
 
-If not found, `ModuleNotFound` is raised.
+For each directory the runtime tries the following patterns in order,
+preferring `.zbc` over `.lisp` within each pattern:
+
+| Pattern | Example |
+|---------|---------|
+| `<dir>/<name>.zbc` / `<dir>/<name>.lisp` | `~/.local/lib/zepo/utils.zbc` |
+| `<dir>/<pkg>/<mod>.zbc` / `<dir>/<pkg>/<mod>.lisp` | for slash names like `math/core` |
+| `<dir>/<name>/mod.zbc` / `<dir>/<name>/mod.lisp` | package entry point |
+
+If no match is found in any directory, `ModuleNotFound` is raised.
 
 ```sh
 ZEPO_PATH=~/.zepo/lib zepo myscript.lisp
@@ -1414,8 +1457,16 @@ Convert between representations.
 
 ## Module System
 
-Modules provide namespacing. A module declaration must appear at the top level
-of a file (not inside another module or procedure).
+Modules provide namespacing and access control. A module declaration must
+appear at the top level of a file (not inside another module or procedure).
+
+**Modules vs. libraries.** Use modules for namespacing and encapsulation —
+they hide internal names behind an `export` list. Use `zepo install` when you
+want a reusable package that loads at bytecode speed: installed packages are
+pre-compiled to `.zbc` and skip the source-compile pipeline entirely at
+runtime. A single package can (and usually should) declare a `(module ...)`
+inside its `.lisp` source; the installer compiles both the source and the
+bytecode, so you get namespacing *and* fast loading.
 
 ### Defining a module
 
