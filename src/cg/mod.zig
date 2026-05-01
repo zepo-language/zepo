@@ -2,6 +2,7 @@
 
 pub const bytecode = @import("bytecode.zig");
 pub const emit = @import("emit.zig");
+pub const serialize = @import("serialize.zig");
 
 pub const Opcode = bytecode.Opcode;
 pub const Instr = bytecode.Instr;

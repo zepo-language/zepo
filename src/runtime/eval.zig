@@ -86,6 +86,12 @@ pub const EvalContext = struct {
     module_file_log: ?*std.StringHashMap([]const u8) = null,
     // Insertion-ordered list of module names (parallel to module_file_log map).
     module_file_order: ?*std.ArrayListUnmanaged([]const u8) = null,
+    // When non-null, each top-level fn_id is appended here before the VM runs
+    // it. Used by `zepo install` to record which fns are top-level thunks.
+    toplevel_fn_ids: ?*std.ArrayListUnmanaged(u32) = null,
+    // Owns the name-string buffers deserialized from .zbc files. Each entry
+    // is a contiguous block that backs CompiledFn.names slices.
+    zbc_name_bufs: std.ArrayListUnmanaged([]u8) = .{},
 
     // Error diagnostics — populated on the first error, used by CLI formatters.
     last_error_span: ?errs.Span = null,
@@ -163,6 +169,8 @@ pub const EvalContext = struct {
             ctx.allocator.free(e.value_ptr.*);
         }
         ctx.source_map.deinit();
+        for (ctx.zbc_name_bufs.items) |buf| ctx.allocator.free(buf);
+        ctx.zbc_name_bufs.deinit(ctx.allocator);
     }
 
     /// Returns the currently-active global environment: the current module's
@@ -371,6 +379,13 @@ pub const EvalContext = struct {
             v.deinit();
             ctx.vm = null;
         }
+        // Save positions before emitAppend so we can compute the actual
+        // ctx.compiled index for fn_id. When .zbc fns have been appended
+        // directly to ctx.compiled (bypassing the IR program), ctx.compiled
+        // is ahead of emitter.emitted_count, so the emitted fn lands at a
+        // higher position than fn_id alone would suggest.
+        const compiled_base = ctx.compiled.items.len;
+        const emitted_base = ctx.emitter.emitted_count;
         try ctx.emitter.emitAppend(&ctx.program, &ctx.compiled);
         no_gc.release(); // AST/IR pipeline done; VM may now allocate freely.
         // The VM always sees the currently-active env — if we're inside a
@@ -384,11 +399,18 @@ pub const EvalContext = struct {
         ctx.vm.?.do_import_ctx = ctx;
         ctx.vm.?.installAsRoot();
 
-        return ctx.vm.?.run(fn_id, &.{});
+        // Actual index in ctx.compiled where the thunk was emitted.
+        const actual_fn_id: u32 = @intCast(compiled_base + (fn_id - emitted_base));
+
+        if (ctx.toplevel_fn_ids) |log| {
+            log.append(ctx.allocator, actual_fn_id) catch {};
+        }
+
+        return ctx.vm.?.run(actual_fn_id, &.{});
     }
 };
 
-fn vmImportCallback(ctx_opaque: *anyopaque, name: []const u8, alias: ?[]const u8, only: ?[]const []const u8) errs.LispError!void {
+pub fn vmImportCallback(ctx_opaque: *anyopaque, name: []const u8, alias: ?[]const u8, only: ?[]const []const u8) errs.LispError!void {
     const ctx: *EvalContext = @ptrCast(@alignCast(ctx_opaque));
     return mod_loader.doImportByName(ctx, name, alias, only);
 }

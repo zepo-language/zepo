@@ -1,18 +1,19 @@
 const std = @import("std");
+const zepo = @import("zepo");
 const project_config = @import("project_config.zig");
+const build_cmd = @import("build_cmd.zig");
+const cg_serialize = zepo.cg.serialize;
 
 pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     const stderr = std.fs.File.stderr();
     const stdout = std.fs.File.stdout();
 
-    // Resolve the package name from the last path component.
     const pkg_name = std.fs.path.basename(pkg_path);
     if (pkg_name.len == 0) {
         try stderr.writeAll("error: invalid package path\n");
         std.process.exit(1);
     }
 
-    // Destination: ~/.local/lib/zepo/<pkg_name>
     const home = std.process.getEnvVarOwned(alloc, "HOME") catch {
         try stderr.writeAll("error: HOME not set\n");
         std.process.exit(1);
@@ -24,10 +25,10 @@ pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     const dest = try std.fs.path.join(alloc, &.{ dest_base, pkg_name });
     defer alloc.free(dest);
 
-    // Ensure destination base exists.
     std.fs.cwd().makePath(dest_base) catch {};
+    std.fs.cwd().deleteTree(dest) catch {};
+    try std.fs.cwd().makePath(dest);
 
-    // Copy the directory tree.
     var src_dir = std.fs.cwd().openDir(pkg_path, .{ .iterate = true }) catch |e| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "error: cannot open '{s}': {}\n", .{ pkg_path, e }) catch "error: cannot open source\n";
@@ -36,18 +37,148 @@ pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     };
     defer src_dir.close();
 
-    std.fs.cwd().deleteTree(dest) catch {};
-    try std.fs.cwd().makePath(dest);
     var dest_dir = try std.fs.cwd().openDir(dest, .{});
     defer dest_dir.close();
 
+    // Copy source tree first.
     try copyDirAll(alloc, src_dir, dest_dir);
+
+    // Compile each .lisp file to .zbc in the destination tree.
+    var compiled: usize = 0;
+    var failed: usize = 0;
+    compileTree(alloc, dest, dest_dir, &compiled, &failed);
 
     project_config.registerGlobalPackage(alloc, pkg_name) catch {};
 
     var msg_buf: [512]u8 = undefined;
-    const msg = try std.fmt.bufPrint(&msg_buf, "installed '{s}' → {s}\n", .{ pkg_name, dest });
+    const msg = try std.fmt.bufPrint(&msg_buf,
+        "installed '{s}' → {s}\n  {d} file(s) compiled, {d} skipped\n",
+        .{ pkg_name, dest, compiled, failed },
+    );
     try stdout.writeAll(msg);
+}
+
+/// Walk dest_dir and compile every .lisp to a sibling .zbc.
+fn compileTree(
+    alloc: std.mem.Allocator,
+    dir_path: []const u8,
+    dir: std.fs.Dir,
+    compiled: *usize,
+    failed: *usize,
+) void {
+    var it = dir.iterate();
+    while (it.next() catch return) |entry| {
+        switch (entry.kind) {
+            .file => {
+                if (!std.mem.endsWith(u8, entry.name, ".lisp")) continue;
+                const lisp_path = std.fs.path.join(alloc, &.{ dir_path, entry.name }) catch continue;
+                defer alloc.free(lisp_path);
+                const stem = entry.name[0 .. entry.name.len - ".lisp".len];
+                const zbc_name = std.fmt.allocPrint(alloc, "{s}.zbc", .{stem}) catch continue;
+                defer alloc.free(zbc_name);
+                const zbc_path = std.fs.path.join(alloc, &.{ dir_path, zbc_name }) catch continue;
+                defer alloc.free(zbc_path);
+                if (compileLibFile(alloc, lisp_path, zbc_path)) {
+                    compiled.* += 1;
+                } else |_| {
+                    failed.* += 1;
+                }
+            },
+            .directory => {
+                const sub_path = std.fs.path.join(alloc, &.{ dir_path, entry.name }) catch continue;
+                defer alloc.free(sub_path);
+                var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
+                defer sub_dir.close();
+                compileTree(alloc, sub_path, sub_dir, compiled, failed);
+            },
+            else => {},
+        }
+    }
+}
+
+/// Compile one .lisp file to a .zbc file.
+fn compileLibFile(alloc: std.mem.Allocator, lisp_path: []const u8, zbc_path: []const u8) !void {
+    const src = try std.fs.cwd().readFileAlloc(alloc, lisp_path, 4 * 1024 * 1024);
+    defer alloc.free(src);
+
+    // Build a fresh interpreter context.
+    var gc = try zepo.GC.init(alloc);
+    defer gc.deinit();
+    var syms = try zepo.runtime.SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var globals = try zepo.runtime.GlobalEnv.init(&gc, alloc);
+    defer globals.deinit();
+    try zepo.prims.registerAll(&gc, &globals, &syms);
+    var ctx = try zepo.runtime.EvalContext.init(&gc, &syms, &globals, alloc);
+    defer ctx.deinit();
+    ctx.installRootVisitor();
+    try zepo.runtime.loadStdlib(&ctx);
+
+    // Set up module search path (installed libs + ZEPO_PATH).
+    var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
+    defer { for (path_dirs.items) |d| alloc.free(d); path_dirs.deinit(alloc); }
+    try build_cmd.setupModulePath(alloc, &path_dirs, @import("main_opts").zepo_src_dir);
+    ctx.module_path = path_dirs.items;
+
+    // Record the fn_id base before evaluating.
+    const fn_base: u32 = @intCast(ctx.compiled.items.len);
+
+    // Track top-level thunk fn_ids.
+    var toplevel_ids: std.ArrayListUnmanaged(u32) = .{};
+    defer toplevel_ids.deinit(alloc);
+    ctx.toplevel_fn_ids = &toplevel_ids;
+
+    // Evaluate the library source.
+    _ = try ctx.evalString(src, lisp_path);
+
+    // Collect only the fns produced by this library.
+    const lib_fns = ctx.compiled.items[fn_base..];
+
+    // Adjust stored fn_ids to be 0-based within this library for portability.
+    // The serializer writes them relative to zero; the loader adds base_offset.
+    const adjusted = try alloc.alloc(zepo.cg.CompiledFn, lib_fns.len);
+    defer alloc.free(adjusted);
+    @memcpy(adjusted, lib_fns);
+    for (adjusted, 0..) |*f, i| f.id = @intCast(i);
+
+    // Adjust MAKE_CLOSURE operands to be relative to fn_base = 0.
+    for (adjusted) |*f| {
+        const BC_MAKE_CLOSURE = @intFromEnum(zepo.cg.Opcode.MAKE_CLOSURE);
+        for (f.code) |*ins| {
+            const op_byte = ins.* & 0xFF;
+            if (op_byte == BC_MAKE_CLOSURE) {
+                const a = zepo.cg.bytecode.decodeA(ins.*);
+                const bc_val = zepo.cg.bytecode.decodeBC(ins.*);
+                if (bc_val >= fn_base and bc_val < fn_base + lib_fns.len) {
+                    ins.* = zepo.cg.bytecode.encodeBC(.MAKE_CLOSURE, a, @intCast(bc_val - fn_base));
+                }
+            }
+        }
+    }
+
+    // Adjust toplevel_ids to be relative to zero.
+    var rel_toplevel = try alloc.alloc(u32, toplevel_ids.items.len);
+    defer alloc.free(rel_toplevel);
+    for (toplevel_ids.items, 0..) |id, i| {
+        rel_toplevel[i] = id - fn_base;
+    }
+
+    // Capture module name and exports from the registry (at most one module per file).
+    var module_name: []const u8 = "";
+    var exports: std.ArrayListUnmanaged([]const u8) = .{};
+    defer exports.deinit(alloc);
+    var reg_it = ctx.registry.table.iterator();
+    if (reg_it.next()) |entry| {
+        module_name = entry.key_ptr.*;
+        var ex_it = entry.value_ptr.*.exports.keyIterator();
+        while (ex_it.next()) |k| try exports.append(alloc, k.*);
+    }
+
+    // Write .zbc file: serialize into a buffer then write atomically.
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(alloc);
+    try cg_serialize.write(buf.writer(alloc), adjusted, rel_toplevel, module_name, exports.items);
+    try std.fs.cwd().writeFile(.{ .sub_path = zbc_path, .data = buf.items });
 }
 
 fn copyDirAll(alloc: std.mem.Allocator, src: std.fs.Dir, dest: std.fs.Dir) !void {

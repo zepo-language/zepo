@@ -17,6 +17,10 @@ const eval = @import("eval.zig");
 const EvalContext = eval.EvalContext;
 const isHeadSymbol = eval.isHeadSymbol;
 
+const cg_mod = @import("../cg/mod.zig");
+const serialize = cg_mod.serialize;
+const VM = @import("../vm/mod.zig").VM;
+
 pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     if (ctx.current_module != null) return error.ModuleNotAtTopLevel;
 
@@ -225,33 +229,50 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
             const pkg = name[0..idx];
             const mod = name[idx + 1 ..];
 
-            // Try <dir>/<pkg>/<mod>.lisp directly — no package.lisp required for
-            // user project modules. Installed lib packages also match this path.
-            const full_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.lisp", .{ dir, pkg, mod }) catch continue;
-            defer ctx.allocator.free(full_path);
-            const src = readModuleFile(ctx.allocator, full_path) orelse continue;
-            defer ctx.allocator.free(src);
-            _ = try ctx.evalString(src, full_path);
-            logModuleFile(ctx, name, full_path);
-        } else {
-            // Try <dir>/<name>.lisp
-            const file_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch continue;
-            defer ctx.allocator.free(file_path);
-            if (readModuleFile(ctx.allocator, file_path)) |src| {
-                defer ctx.allocator.free(src);
-                _ = try ctx.evalString(src, file_path);
-                logModuleFile(ctx, name, file_path);
+            // Try compiled .zbc first, then fall back to .lisp source.
+            const zbc_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.zbc", .{ dir, pkg, mod }) catch continue;
+            defer ctx.allocator.free(zbc_path);
+            if (tryLoadZbc(ctx, name, zbc_path)) {
+                logModuleFile(ctx, name, zbc_path);
             } else {
-                // Try <dir>/<name>/mod.lisp (package entry point)
-                const manifest = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/package.lisp", .{ dir, name }) catch continue;
-                defer ctx.allocator.free(manifest);
-                std.fs.cwd().access(manifest, .{}) catch continue;
-                const mod_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch continue;
-                defer ctx.allocator.free(mod_path);
-                const src = readModuleFile(ctx.allocator, mod_path) orelse continue;
+                const full_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.lisp", .{ dir, pkg, mod }) catch continue;
+                defer ctx.allocator.free(full_path);
+                const src = readModuleFile(ctx.allocator, full_path) orelse continue;
                 defer ctx.allocator.free(src);
-                _ = try ctx.evalString(src, mod_path);
-                logModuleFile(ctx, name, mod_path);
+                _ = try ctx.evalString(src, full_path);
+                logModuleFile(ctx, name, full_path);
+            }
+        } else {
+            // Try <dir>/<name>.zbc first.
+            const zbc_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.zbc", .{ dir, name }) catch continue;
+            defer ctx.allocator.free(zbc_path);
+            if (tryLoadZbc(ctx, name, zbc_path)) {
+                logModuleFile(ctx, name, zbc_path);
+            } else {
+                // Try <dir>/<name>.lisp
+                const file_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch continue;
+                defer ctx.allocator.free(file_path);
+                if (readModuleFile(ctx.allocator, file_path)) |src| {
+                    defer ctx.allocator.free(src);
+                    _ = try ctx.evalString(src, file_path);
+                    logModuleFile(ctx, name, file_path);
+                } else {
+                    // Try <dir>/<name>/mod.lisp (package entry point).
+                    const manifest = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/package.lisp", .{ dir, name }) catch continue;
+                    defer ctx.allocator.free(manifest);
+                    std.fs.cwd().access(manifest, .{}) catch continue;
+                    // Try compiled mod.zbc first.
+                    const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch continue;
+                    defer ctx.allocator.free(mod_zbc);
+                    if (!tryLoadZbc(ctx, name, mod_zbc)) {
+                        const mod_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch continue;
+                        defer ctx.allocator.free(mod_path);
+                        const src = readModuleFile(ctx.allocator, mod_path) orelse continue;
+                        defer ctx.allocator.free(src);
+                        _ = try ctx.evalString(src, mod_path);
+                    }
+                    logModuleFile(ctx, name, mod_zbc);
+                }
             }
         }
         if (ctx.registry.get(name) != null) {
@@ -264,6 +285,106 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
     }
     if (ctx.gc.trace.module) {
         std.debug.print("[module] '{s}' not found in {d} search path(s)\n", .{ name, ctx.module_path.len });
+    }
+}
+
+/// Try to load a .zbc file for `name`. Returns true on success, false if the
+/// file doesn't exist or fails to parse (falls back to source loading).
+fn tryLoadZbc(ctx: *EvalContext, name: []const u8, zbc_path: []const u8) bool {
+    loadZbc(ctx, name, zbc_path) catch return false;
+    return true;
+}
+
+/// Load a pre-compiled .zbc library file into ctx.
+pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
+    const data = std.fs.cwd().readFileAlloc(ctx.allocator, zbc_path, 32 * 1024 * 1024) catch return error.FileNotFound;
+    defer ctx.allocator.free(data);
+
+    const base_offset: u32 = @intCast(ctx.compiled.items.len);
+
+    // Name store: scratch buffer for deserialized name strings.
+    // Appended during read; slices stay valid as long as name_store lives.
+    // We move ownership into the context after loading.
+    var name_store: std.ArrayListUnmanaged(u8) = .{};
+    errdefer name_store.deinit(ctx.allocator);
+
+    var fbs = std.io.fixedBufferStream(data);
+    var result = try serialize.read(
+        fbs.reader(),
+        ctx.allocator,
+        ctx.gc,
+        ctx.symbols,
+        base_offset,
+        &name_store,
+    );
+    errdefer result.deinit();
+
+    // Transfer name_store ownership to a heap allocation so the slices in
+    // CompiledFn.names remain valid after this function returns.
+    const ns_buf = try ctx.allocator.dupe(u8, name_store.items);
+    name_store.deinit(ctx.allocator);
+    // Patch all names slices to point into ns_buf.
+    var ns_offset: usize = 0;
+    for (result.fns) |*f| {
+        for (f.names) |*n| {
+            n.* = ns_buf[ns_offset .. ns_offset + n.len];
+            ns_offset += n.len;
+        }
+        for (f.keyword_params) |*kp| {
+            kp.name = ns_buf[ns_offset .. ns_offset + kp.name.len];
+            ns_offset += kp.name.len;
+        }
+    }
+    // Append the name buffer to context's owned list so it's freed on deinit.
+    try ctx.zbc_name_bufs.append(ctx.allocator, ns_buf);
+
+    // Append deserialized fns to ctx.compiled.
+    try ctx.compiled.appendSlice(ctx.allocator, result.fns);
+    ctx.allocator.free(result.fns); // slice itself freed; items now owned by ctx.compiled
+
+    // Rebuild VM with updated compiled_fns.
+    if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }
+    ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator);
+    if (ctx.current_module != null) ctx.vm.?.fallback_globals = ctx.globals;
+    ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
+    ctx.vm.?.do_import_ctx = ctx;
+    ctx.vm.?.installAsRoot();
+
+    // If this library declared a module, set up the registry entry and run
+    // thunks inside the module environment — same as evalModuleDecl does.
+    const module_name = result.module_name;
+    defer ctx.allocator.free(module_name);
+    const exports = result.exports;
+    defer {
+        for (exports) |ex| ctx.allocator.free(ex);
+        ctx.allocator.free(exports);
+    }
+
+    const saved_module = ctx.current_module;
+    defer ctx.current_module = saved_module;
+
+    if (module_name.len > 0) {
+        const m = try ctx.registry.create(module_name);
+        ctx.current_module = m;
+        // Rebuild VM so it targets the module env.
+        if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }
+        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator);
+        ctx.vm.?.fallback_globals = ctx.globals;
+        ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
+        ctx.vm.?.do_import_ctx = ctx;
+        ctx.vm.?.installAsRoot();
+    }
+
+    // Run each top-level thunk.
+    for (result.toplevel_ids) |fn_id| {
+        _ = try ctx.vm.?.run(fn_id, &.{});
+    }
+    ctx.allocator.free(result.toplevel_ids);
+
+    // Mark exports and finalize the module.
+    if (ctx.current_module) |m| {
+        for (exports) |ex| try m.markExport(ex);
+        m.initialized = true;
     }
 }
 
