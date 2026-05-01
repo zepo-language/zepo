@@ -9,8 +9,6 @@ const value_mod = abi.value;
 const gc_collector = @import("../gc/collector.zig");
 const HandleScope = gc_collector.HandleScope;
 
-const package_mod = @import("package.zig");
-const PackageInfo = package_mod.PackageInfo;
 const module_mod = @import("module.zig");
 const ContainerMeta = module_mod.ContainerMeta;
 
@@ -195,42 +193,68 @@ pub fn evalModuleDecl(ctx: *EvalContext, form: Value) !Value {
     return last;
 }
 
-/// Evaluate `(package name :version "x" :description "y" :depends (a b ...))`.
-/// Registers package metadata; does not load any modules.
+/// Evaluate `(package name :keyword value... body...)`.
+/// A package is a distribution container — registers in the module registry
+/// (so `(import :packages (name))` can find it) and stores ContainerMeta.
+/// Body forms are evaluated in the package's module environment.
 pub fn evalPackageDecl(ctx: *EvalContext, form: Value) !Value {
-    const objs = runtime_objects;
-    const rest = objs.pairCdr(form).*;
-    if (!objs.isPair(rest)) return error.InvalidSpecialForm;
-    const name_v = objs.pairCar(rest).*;
-    if (!objs.isSymbol(name_v)) return error.InvalidSpecialForm;
-    const name = try ctx.allocator.dupe(u8, objs.symbolName(name_v));
-    errdefer ctx.allocator.free(name);
+    if (ctx.current_module != null) return error.ModuleNotAtTopLevel;
+
+    const objects = runtime_objects;
+    const rest = objects.pairCdr(form).*;
+    if (!objects.isPair(rest)) return error.InvalidSpecialForm;
+    const name_v = objects.pairCar(rest).*;
+    if (!objects.isSymbol(name_v)) return error.InvalidSpecialForm;
+    const name = objects.symbolName(name_v);
+
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
 
     var meta = ContainerMeta.init(ctx.allocator);
     errdefer meta.deinit();
-    const after_name = objs.pairCdr(rest).*;
-    _ = try parseContainerKeywords(ctx.allocator, objs, after_name, &meta);
+    const after_name = objects.pairCdr(rest).*;
+    const after_meta = try parseContainerKeywords(ctx.allocator, objects, after_name, &meta);
 
-    // Take ownership of fields PackageInfo uses; deinit remaining meta fields.
-    const version = meta.version orelse try ctx.allocator.dupe(u8, "");
-    meta.version = null;
-    const description = meta.docstring orelse try ctx.allocator.dupe(u8, "");
-    meta.docstring = null;
-    const depends_owned = meta.depends;
-    meta.depends = &.{};
-    // author and license not stored in PackageInfo; deinit frees them.
-    meta.deinit();
-    meta = ContainerMeta.init(ctx.allocator); // reset so errdefer is a no-op
+    const iter_slot = scope.push(after_meta);
 
-    const info = PackageInfo{
-        .name = name,
-        .version = version,
-        .description = description,
-        .depends = depends_owned,
-        .allocator = ctx.allocator,
-    };
-    try ctx.packages.register(info);
-    return value_mod.NIL;
+    const m = try ctx.registry.create(name);
+    m.meta = meta;
+    meta = ContainerMeta.init(ctx.allocator);
+
+    ctx.enterModule(m);
+
+    const form_slot = scope.push(value_mod.NIL);
+    var last: Value = value_mod.NIL;
+    while (!value_mod.isNil(iter_slot.*)) {
+        if (!objects.isPair(iter_slot.*)) {
+            ctx.leaveModule();
+            return error.InvalidSpecialForm;
+        }
+        form_slot.* = objects.pairCar(iter_slot.*).*;
+        iter_slot.* = objects.pairCdr(iter_slot.*).*;
+        const body_form = form_slot.*;
+        if (isHeadSymbol(body_form, "module") or isHeadSymbol(body_form, "lib") or isHeadSymbol(body_form, "package")) {
+            ctx.leaveModule();
+            return error.ModuleNotAtTopLevel;
+        }
+        if (isHeadSymbol(body_form, "import")) {
+            last = evalImport(ctx, body_form) catch |e| {
+                if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(body_form);
+                ctx.leaveModule();
+                return e;
+            };
+            continue;
+        }
+        last = ctx.evalForm(body_form) catch |e| {
+            if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(body_form);
+            ctx.leaveModule();
+            return e;
+        };
+    }
+
+    ctx.leaveModule();
+    return last;
 }
 
 /// Evaluate `(lib name :keyword value... (export ...) body...)`.

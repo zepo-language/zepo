@@ -6,7 +6,7 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
     const cwd = std.fs.cwd();
 
     if (new_args.len == 0) {
-        try stderr.writeAll("Usage: zepo new <type> [name]\n  Types: module, lib, test, package\n  module  → modules/<name>.lisp  (requires project)\n  lib     → lib/<name>/           (requires project)\n  test    → tests/<name>_test.lisp (requires project)\n  package → ./<name>/              (standalone installable package)\n");
+        try stderr.writeAll("Usage: zepo new <type> [name]\n  Types: module, lib, test, package\n  module  → modules/<name>.lisp         (requires project)\n  test    → tests/<name>_test.lisp      (requires project)\n  lib     → <name>/<name>.lisp          (standalone, single-file library)\n  package → <name>/src/main.lisp        (standalone, multi-module package)\n");
         std.process.exit(1);
     }
 
@@ -17,9 +17,13 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
         try promptName(alloc, kind);
     defer if (new_args.len <= 1) alloc.free(name);
 
-    // 'package' creates a standalone directory — no project.lisp required.
+    // 'package' and 'lib' are standalone — no project.lisp required.
     if (std.mem.eql(u8, kind, "package")) {
         try newPackage(alloc, cwd, name, stdout, stderr);
+        return;
+    }
+    if (std.mem.eql(u8, kind, "lib")) {
+        try newLib(alloc, cwd, name, stdout, stderr);
         return;
     }
 
@@ -31,8 +35,6 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
 
     if (std.mem.eql(u8, kind, "module")) {
         try newModule(alloc, cwd, name, stdout, stderr);
-    } else if (std.mem.eql(u8, kind, "lib")) {
-        try newLib(alloc, cwd, name, stdout, stderr);
     } else if (std.mem.eql(u8, kind, "test")) {
         try newTest(alloc, cwd, name, stdout, stderr);
     } else {
@@ -92,34 +94,23 @@ fn newModule(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout
 }
 
 fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
-    // Package directory: lib/<name>/package.lisp + lib/<name>/mod.lisp
-    const pkg_dir_path = try std.fs.path.join(alloc, &.{ "lib", name });
-    defer alloc.free(pkg_dir_path);
-    try cwd.makePath(pkg_dir_path);
+    // Standalone single-file library: <name>/<name>.lisp with (lib ...) container.
+    guardExists(cwd, name, stderr);
+    try cwd.makePath(name);
 
-    const pkg_manifest = try std.fs.path.join(alloc, &.{ pkg_dir_path, "package.lisp" });
-    defer alloc.free(pkg_manifest);
-    guardExists(cwd, pkg_manifest, stderr);
-
-    const mod_path = try std.fs.path.join(alloc, &.{ pkg_dir_path, "mod.lisp" });
-    defer alloc.free(mod_path);
+    const lib_filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
+    defer alloc.free(lib_filename);
+    const lib_path = try std.fs.path.join(alloc, &.{ name, lib_filename });
+    defer alloc.free(lib_path);
 
     {
-        const f = try cwd.createFile(pkg_manifest, .{ .truncate = true });
+        const f = try cwd.createFile(lib_path, .{ .truncate = true });
         defer f.close();
-        var buf: [256]u8 = undefined;
+        var buf: [512]u8 = undefined;
         try f.writeAll(try std.fmt.bufPrint(&buf,
-            \\(package {s}
-            \\  (version "0.1.0"))
-            \\
-        , .{name}));
-    }
-    {
-        const f = try cwd.createFile(mod_path, .{ .truncate = true });
-        defer f.close();
-        var buf: [256]u8 = undefined;
-        try f.writeAll(try std.fmt.bufPrint(&buf,
-            \\(module {s}
+            \\(lib {s}
+            \\  :version "0.1.0"
+            \\  :docstring ""
             \\  (export))
             \\
             \\; Add your exported definitions here.
@@ -127,9 +118,18 @@ fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: s
         , .{name}));
     }
 
-    var msg_buf: [256]u8 = undefined;
-    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf, "created  {s}/\n", .{pkg_dir_path}));
-    try newTest(alloc, cwd, name, stdout, stderr);
+    var msg_buf: [1024]u8 = undefined;
+    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf,
+        \\created  {s}/
+        \\         {s}
+        \\
+        \\Next steps:
+        \\  1. Add definitions to {s}
+        \\  2. List exported names in (lib {s} ... (export ...))
+        \\  3. zepo install ./{s}
+        \\  4. (import :libs ({s})) in your program
+        \\
+    , .{ name, lib_path, lib_path, name, name, name }));
 }
 
 fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
@@ -158,26 +158,27 @@ fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: 
 }
 
 fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
-    // Create <name>/ directory in cwd.
+    // Layout: <name>/src/main.lisp — package entry point with (package ...) container.
     guardExists(cwd, name, stderr);
-    try cwd.makePath(name);
+    const src_dir_path = try std.fs.path.join(alloc, &.{ name, "src" });
+    defer alloc.free(src_dir_path);
+    try cwd.makePath(src_dir_path);
 
-    // <name>/<name>.lisp — main module file
-    const mod_filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
-    defer alloc.free(mod_filename);
-    const mod_path = try std.fs.path.join(alloc, &.{ name, mod_filename });
-    defer alloc.free(mod_path);
+    const main_path = try std.fs.path.join(alloc, &.{ src_dir_path, "main.lisp" });
+    defer alloc.free(main_path);
     {
-        const f = try cwd.createFile(mod_path, .{ .truncate = true });
+        const f = try cwd.createFile(main_path, .{ .truncate = true });
         defer f.close();
         var buf: [512]u8 = undefined;
         try f.writeAll(try std.fmt.bufPrint(&buf,
-            \\(module {s}
-            \\  (export))
+            \\(package {s}
+            \\  :version "0.1.0"
+            \\  :docstring "")
             \\
-            \\; Add your exported definitions here.
+            \\; Add modules to src/ and import them here.
+            \\; (import :modules ({s}.core))
             \\
-        , .{name}));
+        , .{ name, name }));
     }
 
     var msg_buf: [1024]u8 = undefined;
@@ -186,12 +187,12 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
         \\         {s}
         \\
         \\Next steps:
-        \\  1. Add your definitions to {s}
-        \\  2. List exported names in (module {s} (export ...))
+        \\  1. Edit {s} — set version, docstring, add modules
+        \\  2. Add source files to {s}/
         \\  3. zepo install ./{s}
-        \\  4. (import {s}) in your program
+        \\  4. (import :packages ({s})) in your program
         \\
-    , .{ name, mod_path, mod_path, name, name, name }));
+    , .{ name, main_path, main_path, src_dir_path, name, name }));
 }
 
 fn guardExists(cwd: std.fs.Dir, path: []const u8, stderr: std.fs.File) void {

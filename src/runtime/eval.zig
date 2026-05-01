@@ -19,13 +19,10 @@ const objects_mod = @import("objects.zig");
 const symbols_mod = @import("symbols.zig");
 const globals_mod = @import("globals.zig");
 const module_mod = @import("module.zig");
-const package_mod = @import("package.zig");
 const SymbolTable = symbols_mod.SymbolTable;
 const GlobalEnv = globals_mod.GlobalEnv;
 const Module = module_mod.Module;
 const ModuleRegistry = module_mod.ModuleRegistry;
-const PackageRegistry = package_mod.PackageRegistry;
-const PackageInfo = package_mod.PackageInfo;
 
 const reader_mod = @import("../reader/mod.zig");
 const Parser = reader_mod.Parser;
@@ -63,7 +60,6 @@ pub const EvalContext = struct {
 
     // Module system.
     registry: ModuleRegistry,
-    packages: PackageRegistry,
     current_module: ?*Module = null,
     /// Project-local module search paths (project.lisp dirs, ZEPO_PATH).
     module_path: []const []const u8 = &.{},
@@ -122,7 +118,6 @@ pub const EvalContext = struct {
             .globals = globals,
             .allocator = allocator,
             .registry = ModuleRegistry.init(allocator, gc),
-            .packages = PackageRegistry.init(allocator),
             .current_module = null,
             .arena = NodeArena.init(allocator),
             .program = Program.init(allocator),
@@ -164,7 +159,6 @@ pub const EvalContext = struct {
         ctx.arena.deinit();
         ctx.spans.deinit();
         ctx.registry.deinit();
-        ctx.packages.deinit();
         var kit = ctx.macro_names.keyIterator();
         while (kit.next()) |k| ctx.allocator.free(k.*);
         ctx.macro_names.deinit();
