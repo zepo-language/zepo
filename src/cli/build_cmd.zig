@@ -34,7 +34,9 @@ pub const BUILD_ZIG_TEMPLATE =
     \\
 ;
 
-pub fn setupModulePath(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([]const u8), src_dir: []const u8) !void {
+/// Append installed search paths (stdlib, ~/.local/lib/zepo/, dev lib/) to dirs.
+/// These become lib_path / the installed tier in the split-path model.
+pub fn appendInstalledPaths(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([]const u8), src_dir: []const u8) !void {
     if (std.fs.selfExePathAlloc(alloc)) |exe| {
         defer alloc.free(exe);
         if (std.fs.path.dirname(exe)) |exe_dir| {
@@ -43,17 +45,44 @@ pub fn setupModulePath(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([
             else |_| {}
         }
     } else |_| {}
-    // ~/.local/lib/zepo/ + packages listed in packages.lisp manifest
     try project_config.appendGlobalPaths(alloc, dirs);
-    // During development: project lib/ is next to src_dir
     if (std.fs.path.join(alloc, &.{ src_dir, "lib" })) |p|
         try dirs.append(alloc, p)
     else |_| {}
+}
+
+/// Legacy single-list path setup used by install_cmd and other non-split callers.
+pub fn setupModulePath(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([]const u8), src_dir: []const u8) !void {
+    try appendInstalledPaths(alloc, dirs, src_dir);
     if (std.process.getEnvVarOwned(alloc, "ZEPO_PATH")) |zpath| {
         defer alloc.free(zpath);
         var it = std.mem.splitScalar(u8, zpath, ':');
         while (it.next()) |seg|
             if (seg.len > 0) try dirs.append(alloc, try alloc.dupe(u8, seg));
+    } else |_| {}
+}
+
+/// Populate ctx.lib_path and ctx.package_path from installed dirs.
+/// ctx.module_path is set separately by the caller (after project.lisp dirs).
+/// `installed_dirs` is owned by the caller and must outlive ctx.
+pub fn setupInstalledPaths(
+    alloc: std.mem.Allocator,
+    ctx: *zepo.runtime.EvalContext,
+    src_dir: []const u8,
+    installed_dirs: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    const base_len = installed_dirs.items.len;
+    try appendInstalledPaths(alloc, installed_dirs, src_dir);
+    ctx.lib_path = installed_dirs.items[base_len..];
+    // package_path: ~/.local/lib/zepo/ only (first entry from appendGlobalPaths,
+    // which is index base_len+1 since exe-dir/../../lib comes first).
+    // Derive directly from HOME to avoid fragile index arithmetic.
+    if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
+        defer alloc.free(home);
+        if (std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" })) |p|
+            try installed_dirs.append(alloc, p)
+        else |_| {}
+        ctx.package_path = installed_dirs.items[installed_dirs.items.len - 1 ..];
     } else |_| {}
 }
 
@@ -98,6 +127,11 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         defer ctx.deinit();
         ctx.installRootVisitor();
         try zepo.runtime.loadStdlib(&ctx);
+        // installed_dirs holds lib_path + package_path entries.
+        var installed_dirs: std.ArrayListUnmanaged([]const u8) = .{};
+        defer { for (installed_dirs.items) |d| alloc.free(d); installed_dirs.deinit(alloc); }
+        try setupInstalledPaths(alloc, &ctx, src_dir, &installed_dirs);
+
         var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
         defer { for (path_dirs.items) |d| alloc.free(d); path_dirs.deinit(alloc); }
         try setupModulePath(alloc, &path_dirs, src_dir);

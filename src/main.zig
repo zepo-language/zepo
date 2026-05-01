@@ -155,7 +155,12 @@ pub fn main() !void {
         }
     } else |_| {}
     // ~/.local/lib/zepo/ + packages listed in packages.lisp manifest
+    const installed_start = path_dirs.items.len;
     try project_config.appendGlobalPaths(alloc, &path_dirs);
+    const installed_end = path_dirs.items.len;
+    ctx.lib_path = path_dirs.items[installed_start..installed_end];
+    // package_path: just the base ~/.local/lib/zepo/ (first entry added by appendGlobalPaths)
+    ctx.package_path = if (installed_end > installed_start) path_dirs.items[installed_start .. installed_start + 1] else &.{};
     // ZEPO_PATH — override/extra paths (colon-separated)
     if (std.process.getEnvVarOwned(alloc, "ZEPO_PATH")) |env| {
         defer alloc.free(env);

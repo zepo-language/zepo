@@ -65,7 +65,12 @@ pub const EvalContext = struct {
     registry: ModuleRegistry,
     packages: PackageRegistry,
     current_module: ?*Module = null,
+    /// Project-local module search paths (project.lisp dirs, ZEPO_PATH).
     module_path: []const []const u8 = &.{},
+    /// Installed library search paths (~/.local/lib/zepo/<pkg>/).
+    lib_path: []const []const u8 = &.{},
+    /// Installed package root paths (~/.local/lib/zepo/).
+    package_path: []const []const u8 = &.{},
 
     // Persistent across calls: AST arena and IR program accumulate.
     arena: NodeArena,
