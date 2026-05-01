@@ -5,14 +5,8 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
     const stderr = std.fs.File.stderr();
     const cwd = std.fs.cwd();
 
-    // Must be inside a project.
-    cwd.access("project.lisp", .{}) catch {
-        try stderr.writeAll("error: not inside a zepo project — run 'zepo init' first\n");
-        std.process.exit(1);
-    };
-
     if (new_args.len == 0) {
-        try stderr.writeAll("Usage: zepo new <type> [name]\n  Types: module, lib, test\n  module → modules/<name>.lisp\n  lib    → lib/<name>/  (package)\n  test   → tests/<name>_test.lisp\n");
+        try stderr.writeAll("Usage: zepo new <type> [name]\n  Types: module, lib, test, package\n  module  → modules/<name>.lisp  (requires project)\n  lib     → lib/<name>/           (requires project)\n  test    → tests/<name>_test.lisp (requires project)\n  package → ./<name>/              (standalone installable package)\n");
         std.process.exit(1);
     }
 
@@ -23,6 +17,18 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
         try promptName(alloc, kind);
     defer if (new_args.len <= 1) alloc.free(name);
 
+    // 'package' creates a standalone directory — no project.lisp required.
+    if (std.mem.eql(u8, kind, "package")) {
+        try newPackage(alloc, cwd, name, stdout, stderr);
+        return;
+    }
+
+    // All other types must be run inside a project.
+    cwd.access("project.lisp", .{}) catch {
+        try stderr.writeAll("error: not inside a zepo project — run 'zepo init' first\n");
+        std.process.exit(1);
+    };
+
     if (std.mem.eql(u8, kind, "module")) {
         try newModule(alloc, cwd, name, stdout, stderr);
     } else if (std.mem.eql(u8, kind, "lib")) {
@@ -31,7 +37,7 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
         try newTest(alloc, cwd, name, stdout, stderr);
     } else {
         var buf: [128]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&buf, "error: unknown type '{s}' — expected: module, lib, test\n", .{kind});
+        const msg = try std.fmt.bufPrint(&buf, "error: unknown type '{s}' — expected: module, lib, test, package\n", .{kind});
         try stderr.writeAll(msg);
         std.process.exit(1);
     }
@@ -149,6 +155,58 @@ fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: 
 
     var msg_buf: [128]u8 = undefined;
     try stdout.writeAll(try std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}));
+}
+
+fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
+    // Create <name>/ directory in cwd.
+    guardExists(cwd, name, stderr);
+    try cwd.makePath(name);
+
+    // <name>/package.lisp — metadata
+    const manifest_path = try std.fs.path.join(alloc, &.{ name, "package.lisp" });
+    defer alloc.free(manifest_path);
+    {
+        const f = try cwd.createFile(manifest_path, .{ .truncate = true });
+        defer f.close();
+        var buf: [256]u8 = undefined;
+        try f.writeAll(try std.fmt.bufPrint(&buf,
+            \\(package {s}
+            \\  (version "0.1.0"))
+            \\
+        , .{name}));
+    }
+
+    // <name>/<name>.lisp — main module file
+    const mod_filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
+    defer alloc.free(mod_filename);
+    const mod_path = try std.fs.path.join(alloc, &.{ name, mod_filename });
+    defer alloc.free(mod_path);
+    {
+        const f = try cwd.createFile(mod_path, .{ .truncate = true });
+        defer f.close();
+        var buf: [512]u8 = undefined;
+        try f.writeAll(try std.fmt.bufPrint(&buf,
+            \\(module {s}
+            \\  (export))
+            \\
+            \\; Add your exported definitions here.
+            \\
+        , .{name}));
+    }
+
+    var msg_buf: [1024]u8 = undefined;
+    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf,
+        \\created  {s}/
+        \\         {s}
+        \\         {s}
+        \\
+        \\Next steps:
+        \\  1. Add your definitions to {s}
+        \\  2. List exported names in (module {s} (export ...))
+        \\  3. zepo install ./{s}
+        \\  4. (import {s}) in your program
+        \\
+    , .{ name, manifest_path, mod_path, mod_path, name, name, name }));
 }
 
 fn guardExists(cwd: std.fs.Dir, path: []const u8, stderr: std.fs.File) void {

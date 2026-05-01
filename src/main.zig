@@ -32,7 +32,7 @@ const HELP =
     \\  init                 Scaffold a new project in the current directory
     \\  lint [file...]       Run diagnostics on source files
     \\  lsp                  Start the LSP server (stdio JSON-RPC)
-    \\  new <type> [name]    Generate a component (module, lib, test)
+    \\  new <type> [name]    Generate a component (module, lib, test, package)
     \\  run [file.lisp]      Run a file or the project entry point
     \\  test [file.lisp]     Run a test file or discover tests/**/*_test.lisp
     \\  install <path>       Install a package to ~/.local/lib/zepo/
