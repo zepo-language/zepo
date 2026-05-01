@@ -364,9 +364,10 @@ fn readModuleFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     return std.fs.cwd().readFileAlloc(alloc, path, 4 * 1024 * 1024) catch null;
 }
 
-pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
+/// Load `name` from an explicit path list — the core of auto-loading.
+pub fn tryAutoLoadFromPaths(ctx: *EvalContext, name: []const u8, paths: []const []const u8) anyerror!void {
     if (ctx.gc.trace.module) {
-        std.debug.print("[module] loading '{s}' ({d} search paths)\n", .{ name, ctx.module_path.len });
+        std.debug.print("[module] loading '{s}' ({d} search paths)\n", .{ name, paths.len });
     }
     const saved_module = ctx.current_module;
     ctx.current_module = null;
@@ -374,7 +375,7 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
 
     const slash = std.mem.indexOfScalar(u8, name, '/');
 
-    for (ctx.module_path) |dir| {
+    for (paths) |dir| {
         if (slash) |idx| {
             const pkg = name[0..idx];
             const mod = name[idx + 1 ..];
@@ -434,8 +435,13 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
         }
     }
     if (ctx.gc.trace.module) {
-        std.debug.print("[module] '{s}' not found in {d} search path(s)\n", .{ name, ctx.module_path.len });
+        std.debug.print("[module] '{s}' not found in {d} search path(s)\n", .{ name, paths.len });
     }
+}
+
+/// Auto-load `name` using ctx.module_path (legacy / bare-import path).
+pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
+    return tryAutoLoadFromPaths(ctx, name, ctx.module_path);
 }
 
 /// Try to load a .zbc file for `name`. Returns true on success, false if the
@@ -591,6 +597,72 @@ pub fn doImportByName(
 }
 
 /// Evaluate an `(import <name>)` or `(import <name> (only <sym>+))` form.
+/// Import a single module name using an explicit path list.
+/// Auto-loads if needed, then imports all exported names into the active env.
+fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const u8) !void {
+    if (ctx.registry.get(mod_name) == null) {
+        try tryAutoLoadFromPaths(ctx, mod_name, paths);
+    }
+    const target = ctx.registry.get(mod_name) orelse {
+        const stderr = std.fs.File.stderr();
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "note: '{s}' not found in search paths\n", .{mod_name}) catch "";
+        stderr.writeAll(msg) catch {};
+        return error.ModuleNotFound;
+    };
+    if (!target.initialized) return error.ImportBeforeInitialization;
+    const active = ctx.currentEnv();
+    for (target.env.entries.items) |entry| {
+        active.importEntry(entry) catch |e| switch (e) {
+            error.ImportNameConflict => {},
+            else => return e,
+        };
+    }
+}
+
+/// Handle `(import :modules (...) :libs (...) :packages (...))`.
+/// Parses keyword/list pairs and loads each name from the matching path tier.
+fn evalImportKeyword(ctx: *EvalContext, args: Value) !Value {
+    const objects = runtime_objects;
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+
+    const cur_slot = scope.push(args);
+    while (!value_mod.isNil(cur_slot.*)) {
+        if (!objects.isPair(cur_slot.*)) return error.InvalidSpecialForm;
+        const kw_v = objects.pairCar(cur_slot.*).*;
+        if (!objects.isSymbol(kw_v)) return error.InvalidSpecialForm;
+        const kw_name = objects.symbolName(kw_v);
+        if (kw_name.len == 0 or kw_name[0] != ':') return error.InvalidSpecialForm;
+        const tier = kw_name[1..];
+
+        cur_slot.* = objects.pairCdr(cur_slot.*).*;
+        if (!objects.isPair(cur_slot.*)) return error.InvalidSpecialForm;
+        const list_v = objects.pairCar(cur_slot.*).*;
+        cur_slot.* = objects.pairCdr(cur_slot.*).*;
+
+        const paths: []const []const u8 = if (std.mem.eql(u8, tier, "libs"))
+            ctx.lib_path
+        else if (std.mem.eql(u8, tier, "packages"))
+            ctx.package_path
+        else // "modules" or anything else falls back to module_path
+            ctx.module_path;
+
+        // Walk the name list.
+        const name_slot = scope.push(list_v);
+        while (!value_mod.isNil(name_slot.*)) {
+            if (!objects.isPair(name_slot.*)) return error.InvalidSpecialForm;
+            const nm_v = objects.pairCar(name_slot.*).*;
+            name_slot.* = objects.pairCdr(name_slot.*).*;
+            if (!objects.isSymbol(nm_v)) return error.InvalidSpecialForm;
+            const nm = objects.symbolName(nm_v);
+            try importOneName(ctx, nm, paths);
+        }
+    }
+    return value_mod.NIL;
+}
+
 pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     const objects = runtime_objects;
 
@@ -606,7 +678,14 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     if (!objects.isPair(rest_slot.*)) return error.InvalidSpecialForm;
     const name_v = objects.pairCar(rest_slot.*).*;
     if (!objects.isSymbol(name_v)) return error.ImportNameMustBeSymbol;
-    const mod_name = objects.symbolName(name_v); // symbol is old-gen, stable across GC
+
+    // Keyword dispatch: (import :modules (...) :libs (...) :packages (...))
+    const name_str = objects.symbolName(name_v);
+    if (name_str.len > 0 and name_str[0] == ':') {
+        return evalImportKeyword(ctx, rest_slot.*);
+    }
+
+    const mod_name = name_str; // symbol is old-gen, stable across GC
 
     // Auto-load from search path if not yet registered.
     if (ctx.registry.get(mod_name) == null) {
