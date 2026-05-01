@@ -23,7 +23,11 @@ Key properties:
 
 ```
 Usage: zepo [options] [file]
+       zepo init
+       zepo new <type> [name]
        zepo install <path>
+       zepo run [file.lisp]
+       zepo test [file.lisp]
        zepo build [file.lisp] [-o outname]
 
 Options:
@@ -31,6 +35,12 @@ Options:
   --help        Show this help message
 
 Commands:
+  fmt [file...]        Format source files in place (--check for CI)
+  init                 Scaffold a new project in the current directory
+  lint [file...]       Run diagnostics on source files
+  new <type> [name]    Generate a component (module, lib, test, package)
+  run [file.lisp]      Run a file or the project entry point
+  test [file.lisp]     Run a test file or discover tests/**/*_test.lisp
   install <path>       Copy package to ~/.local/lib/zepo/ and compile .lisp → .zbc
   build [file.lisp]    Compile to a standalone native binary
     -o <name>          Output binary name (default: input stem or project name)
@@ -65,6 +75,42 @@ automatically.
 ```
 
 Press **Ctrl-D** or type `.quit` to exit.
+
+### Scaffolding with `zepo new`
+
+Generate boilerplate for common component types. Requires being inside a
+project (`project.lisp`) except for `package`.
+
+| Type | What it creates | Requires project? |
+|------|-----------------|-------------------|
+| `module` | `modules/<name>.lisp` — module skeleton | yes |
+| `lib` | `lib/<name>/` with `package.lisp` + `mod.lisp` + test | yes |
+| `test` | `tests/<name>_test.lisp` | yes |
+| `package` | `./<name>/` — standalone installable package | no |
+
+```sh
+# Inside a project:
+zepo new module utils
+zepo new lib parser
+zepo new test parser
+
+# Anywhere — creates a self-contained installable package:
+zepo new package mylib
+```
+
+`zepo new package <name>` creates:
+
+```
+mylib/
+  package.lisp   ← metadata (name, version)
+  mylib.lisp     ← module skeleton with (module mylib (export))
+```
+
+Edit `mylib.lisp`, add your definitions to the `export` list, then:
+
+```sh
+zepo install ./mylib
+```
 
 ### Installing packages
 
