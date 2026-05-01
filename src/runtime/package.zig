@@ -27,8 +27,11 @@ pub const PackageRegistry = struct {
     }
 
     pub fn deinit(self: *PackageRegistry) void {
-        var it = self.map.valueIterator();
-        while (it.next()) |info| info.deinit();
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit();
+        }
         self.map.deinit();
     }
 
