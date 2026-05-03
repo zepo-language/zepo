@@ -253,13 +253,13 @@ The `build` command performs module discovery, embeds all imports as data, gener
 
 ## Module System
 
-Modules live in `modules/` inside a project, in `lib/` for installed packages,
-or anywhere on `ZEPO_PATH`. The search order is: project paths (from
-`project.lisp`), then `~/.local/lib/zepo/`, then `ZEPO_PATH`:
+Zepo has three container forms:
 
-```sh
-export ZEPO_PATH=~/.zepo/lib:./modules
-```
+| Form | Purpose |
+|------|---------|
+| `(module ...)` | In-project namespace with `export` list |
+| `(lib ...)` | Single-file distributable library |
+| `(package ...)` | Multi-file distributable — entry at `src/main.lisp` |
 
 A module file declares what it exports:
 
@@ -273,7 +273,18 @@ A module file declares what it exports:
   (define (greet name) (helper name)))                  ; exported
 ```
 
-Import it on demand — full import brings all exports into scope:
+**Importing — keyword tier dispatch (preferred):**
+
+```lisp
+(import :modules  (mymod utils))      ; project-local files
+(import :libs     (parser json))      ; installed single-file libs
+(import :packages (myapp framework))  ; installed multi-module packages
+
+; Mix tiers in one form:
+(import :modules (mymod) :libs (json))
+```
+
+**Legacy bare form** (still supported — searches all project paths):
 
 ```lisp
 (import mymod)
@@ -301,6 +312,14 @@ Import can also appear inside function bodies, executing at runtime:
   (sqrt 16))
 
 (use-math)    ; => 4
+```
+
+Scaffold new components with `zepo new`:
+
+```sh
+zepo new module utils    ; modules/utils.lisp  — (module ...) skeleton
+zepo new lib parser      ; parser/parser.lisp  — (lib ...) skeleton
+zepo new package myapp   ; myapp/src/main.lisp — (package ...) skeleton
 ```
 
 Only exported names are visible. Private helpers stay hidden inside the module.

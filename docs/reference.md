@@ -1580,16 +1580,18 @@ Convert between representations.
 
 ## Module System
 
-Modules provide namespacing and access control. A module declaration must
-appear at the top level of a file (not inside another module or procedure).
+Zepo has three container forms — `module`, `lib`, and `package` — plus an
+`import` form with legacy bare syntax and a tier-dispatch keyword syntax. See
+[Container forms](#container-forms) at the top of this document for the full
+container reference including metadata keywords and `zepo new` scaffolding.
 
-**Modules vs. libraries.** Use modules for namespacing and encapsulation —
-they hide internal names behind an `export` list. Use `zepo install` when you
-want a reusable package that loads at bytecode speed: installed packages are
-pre-compiled to `.zbc` and skip the source-compile pipeline entirely at
-runtime. A single package can (and usually should) declare a `(module ...)`
-inside its `.lisp` source; the installer compiles both the source and the
-bytecode, so you get namespacing *and* fast loading.
+**When to use each:**
+
+| Form | Use case |
+|------|----------|
+| `(module ...)` | In-project namespacing — groups definitions, hides internals |
+| `(lib ...)` | Single-file distributable library installed with `zepo install` |
+| `(package ...)` | Multi-file distributable — entry in `src/main.lisp` |
 
 ### Defining a module
 
@@ -1605,10 +1607,63 @@ bytecode, so you get namespacing *and* fast loading.
 `export` lists the names that become part of the module's public interface.
 All other definitions are private to the module.
 
-### Importing a module
+### Defining a lib (distributable single-file library)
 
 ```scheme
-; Full import — brings all exported names into the current environment
+; parser/parser.lisp
+(lib parser
+  :version "1.0.0"
+  :docstring "A simple parser"
+  (export parse-tokens)
+
+  (define (parse-tokens src) ...))
+```
+
+Install with `zepo install ./parser`. Import with `(import :libs (parser))`.
+
+### Defining a package (distributable multi-file container)
+
+```scheme
+; myapp/src/main.lisp
+(package myapp
+  :version "1.0.0"
+  :depends (parser))
+```
+
+Sub-modules live in `src/` and are imported from `main.lisp`:
+
+```scheme
+(import :modules (myapp.core myapp.utils))
+```
+
+Install with `zepo install ./myapp`. Import with `(import :packages (myapp))`.
+
+### Importing — keyword tier dispatch (preferred)
+
+The keyword form makes the search tier explicit:
+
+```scheme
+(import :modules  (utils math))       ; project-local .lisp/.zbc files
+(import :libs     (parser json))      ; installed single-file libs
+(import :packages (myapp framework))  ; installed multi-module packages
+
+; Mix tiers in one form:
+(import :modules (utils) :libs (json) :packages (framework))
+```
+
+Each tier searches a different path:
+
+| Tier | Paths searched |
+|------|----------------|
+| `:modules` | Project-local paths (project.lisp paths, `ZEPO_PATH`) |
+| `:libs` | `~/.local/lib/zepo/<name>/` per installed lib |
+| `:packages` | `~/.local/lib/zepo/` root — loads `<name>/src/main.lisp` |
+
+### Importing — legacy bare form
+
+The bare form is still supported and searches the combined module path:
+
+```scheme
 (import my-math)
 (square 5)   ; => 25
 
@@ -1643,27 +1698,43 @@ Import with an alias to create a namespace:
 
 ### Rules
 
-- Modules are not first-class values; `module`/`import`/`export` are
+- Modules are not first-class values; `module`/`lib`/`package`/`import`/`export` are
   syntactic forms. `import` can appear at top level or inside function bodies.
 - `import` inside a module body imports into that module's environment.
 - Exporting a name that is never defined raises `ExportNameUndefined`.
 - Importing a name that conflicts with an existing binding: existing bindings
   silently win. No `ImportNameConflict` error is raised (re-exports of
   primitives into modules are silently skipped).
-- Nested modules are not allowed.
+- Nested modules/libs/packages are not allowed.
 
-### Example — two-file program
+### Example — project module
 
 ```scheme
-; lib/utils.lisp
+; modules/utils.lisp
 (module utils
   (export greet)
   (define (greet name)
     (string-append "Hello, " name "!")))
 
-; main.lisp
+; main.lisp — bare import (searches module path)
 (import utils)
 (println (greet "world"))   ; prints: Hello, world!
+```
+
+### Example — installed lib
+
+```scheme
+; parser/parser.lisp
+(lib parser
+  :version "0.1.0"
+  (export parse))
+
+; Install once:
+; zepo install ./parser
+
+; Any program:
+(import :libs (parser))
+(parse some-source)
 ```
 
 ---
