@@ -292,6 +292,10 @@ fn readFn(
     const name_syms = try alloc.alloc(Value, names.len);
     errdefer alloc.free(name_syms);
     for (names, 0..) |n, i| name_syms[i] = try syms.intern(n);
+    // zepo-5qc: parallel inline-cache slots, populated lazily by LOAD_GLOBAL.
+    const name_caches = try alloc.alloc(?*Value, names.len);
+    errdefer alloc.free(name_caches);
+    @memset(name_caches, null);
 
     return CompiledFn{
         .id = id,
@@ -302,6 +306,7 @@ fn readFn(
         .consts = consts,
         .names = names,
         .name_syms = name_syms,
+        .name_caches = name_caches,
         .safepoint_maps = safepoints,
         .keyword_params = kw_params,
         .src_name = src_name,

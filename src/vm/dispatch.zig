@@ -325,30 +325,38 @@ pub const VM = struct {
                 .LOAD_GLOBAL => {
                     const a = bytecode.decodeA(instr);
                     const ni = bytecode.decodeBC(instr);
-                    // zepo-aer: use pre-interned symbol from CompiledFn.
+                    // zepo-5qc: inline-cache fast path — once a slot is resolved
+                    // we just deref it. val_slot pointers are heap-stable.
+                    if (func.name_caches[ni]) |slot| {
+                        vm.call_stack.reg(a).* = slot.*;
+                        continue;
+                    }
+                    // Slow path: resolve and populate cache.
                     const sym = func.name_syms[ni];
                     const name = func.names[ni];
                     // Keyword symbols (starting with ':') are self-evaluating.
-                    const val = if (name.len > 0 and name[0] == ':') sym else vm.globals.lookup(sym) orelse blk: {
+                    if (name.len > 0 and name[0] == ':') {
+                        vm.call_stack.reg(a).* = sym;
+                        continue;
+                    }
+                    const slot: *Value = blk: {
+                        if (vm.globals.findEntry(sym)) |e| break :blk e.val_slot;
                         if (vm.fallback_globals) |fb| {
-                            if (fb.lookup(sym)) |v| break :blk v;
+                            if (fb.findEntry(sym)) |e| break :blk e.val_slot;
                         }
-                        // Last resort: the closure's home env (the module env
-                        // where this function was compiled). Allows module-defined
-                        // functions to resolve their imports when called outside
-                        // their original module context.
                         const frame_closure = vm.call_stack.currentFrame().closure_val;
                         if (objects.isClosure(frame_closure)) {
                             const home_ptr = objects.closureHomeEnvPtr(frame_closure);
                             if (home_ptr != 0 and home_ptr != @intFromPtr(vm.globals)) {
                                 const home: *GlobalEnv = @ptrFromInt(home_ptr);
-                                if (home.lookup(sym)) |v| break :blk v;
+                                if (home.findEntry(sym)) |e| break :blk e.val_slot;
                             }
                         }
                         std.debug.print("error: unbound variable: {s}\n", .{name});
                         return error.UnboundVariable;
                     };
-                    vm.call_stack.reg(a).* = val;
+                    func.name_caches[ni] = slot;
+                    vm.call_stack.reg(a).* = slot.*;
                 },
                 .STORE_GLOBAL => {
                     const a = bytecode.decodeA(instr);

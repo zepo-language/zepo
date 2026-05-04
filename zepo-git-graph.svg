@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -4 152 2984" width="152" height="2984" role="img">
+<defs>
+<marker id="marker-triangle-6b7280" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#6b7280"/></marker>
+<marker id="marker-triangle-1d4ed8" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#1d4ed8"/></marker>
+</defs>
+<g class="graph" id="zepo-git-graph">
+<g id="e1" class="edge">
+  <path d="M72,60 L72,100" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e10" class="edge">
+  <path d="M72,852 L72,892" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e11" class="edge">
+  <path d="M72,940 L72,980" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e12" class="edge">
+  <path d="M72,1028 L72,1068" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e13" class="edge">
+  <path d="M72,1116 L72,1156" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e14" class="edge">
+  <path d="M72,1204 L72,1244" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e15" class="edge">
+  <path d="M72,1292 L72,1332" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e16" class="edge">
+  <path d="M72,1380 L72,1420" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e17" class="edge">
+  <path d="M72,1468 L72,1508" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e18" class="edge">
+  <path d="M72,1556 L72,1596" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e19" class="edge">
+  <path d="M72,1644 L72,1684" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e2" class="edge">
+  <path d="M72,148 L72,188" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e20" class="edge">
+  <path d="M72,1732 L72,1772" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e21" class="edge">
+  <path d="M72,1820 L72,1860" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e22" class="edge">
+  <path d="M72,1908 L72,1948" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e23" class="edge">
+  <path d="M72,1996 L72,2036" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e24" class="edge">
+  <path d="M72,2084 L72,2124" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e25" class="edge">
+  <path d="M72,2172 L72,2212" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e26" class="edge">
+  <path d="M72,2260 L72,2300" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e27" class="edge">
+  <path d="M72,2348 L72,2388" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e28" class="edge">
+  <path d="M72,2436 L72,2476" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e29" class="edge">
+  <path d="M72,2524 L72,2564" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e3" class="edge">
+  <path d="M72,236 L72,276" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e30" class="edge">
+  <path d="M72,2612 L72,2652" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e31" class="edge">
+  <path d="M72,2700 L72,2740" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e32" class="edge">
+  <path d="M72,2788 L72,2828" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e33" class="edge">
+  <path d="M72,2876 L72,2916" fill="none" stroke="#1d4ed8" stroke-width="2" marker-end="url(#marker-triangle-1d4ed8)"/>
+</g>
+<g id="e4" class="edge">
+  <path d="M72,324 L72,364" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e5" class="edge">
+  <path d="M72,412 L72,452" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e6" class="edge">
+  <path d="M72,500 L72,540" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e7" class="edge">
+  <path d="M72,588 L72,628" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e8" class="edge">
+  <path d="M72,676 L72,716" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="e9" class="edge">
+  <path d="M72,764 L72,804" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#marker-triangle-6b7280)"/>
+</g>
+<g id="04efae6" class="node">
+  <rect x="12" y="2652" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2676" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">04efae6
+feat: container scaffold + package cleanup</text>
+</g>
+<g id="053a825" class="node">
+  <rect x="12" y="1772" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="1796" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">053a825
+makePair GC-safe against mid-alloc</text>
+</g>
+<g id="07c4d9c" class="node">
+  <rect x="12" y="804" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="828" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">07c4d9c
+Fix GC corruption across reserveNursery</text>
+</g>
+<g id="1742294" class="node">
+  <rect x="12" y="1684" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="1708" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">1742294
+Fix GC bugs + tally.lisp example</text>
+</g>
+<g id="2767ff1" class="node">
+  <rect x="12" y="1068" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="1092" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">2767ff1
+add ZEPO_TRACE structured tracing</text>
+</g>
+<g id="2ac36b3" class="node">
+  <rect x="12" y="2036" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2060" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">2ac36b3
+stdlib: map/for-each multi-list</text>
+</g>
+<g id="42fde72" class="node">
+  <rect x="12" y="188" width="120" height="48" rx="4" ry="4" fill="#0891b2" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="72" y="212" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">42fde72
+build: load project.lisp module paths</text>
+</g>
+<g id="456f2f4" class="node">
+  <rect x="12" y="100" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="124" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">456f2f4
+Fix TooManyRegisters</text>
+</g>
+<g id="4e4bdd5" class="node">
+  <rect x="12" y="452" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="476" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">4e4bdd5
+Fix error diagnostics source line</text>
+</g>
+<g id="53ba5cb" class="node">
+  <rect x="12" y="2388" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2412" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">53ba5cb
+feat: keyword-dispatch import form</text>
+</g>
+<g id="54ab81f" class="node">
+  <rect x="12" y="2124" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="2148" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">54ab81f
+Fix fn_id mismatch for .zbc modules</text>
+</g>
+<g id="561fdae" class="node">
+  <rect x="12" y="2916" width="120" height="48" rx="24" ry="24" fill="#1d4ed8" stroke="#1e40af" stroke-width="1.5"/>
+  <text x="72" y="2940" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="12" font-weight="normal">561fdae ← HEAD
+fix: plug module_path leak</text>
+</g>
+<g id="5b23ebe" class="node">
+  <rect x="12" y="980" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="1004" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">5b23ebe
+add zepo/debug-value, zepo/gc-stats</text>
+</g>
+<g id="682a22d" class="node">
+  <rect x="12" y="12" width="120" height="48" rx="4" ry="4" fill="#374151" stroke="#1f2937" stroke-width="1.5"/>
+  <text x="72" y="36" text-anchor="middle" dominant-baseline="middle" fill="#f9fafb" font-family="sans-serif" font-size="11" font-weight="normal">682a22d
+clean up</text>
+</g>
+<g id="7726d21" class="node">
+  <rect x="12" y="2828" width="120" height="48" rx="4" ry="4" fill="#059669" stroke="#047857" stroke-width="1.5"/>
+  <text x="72" y="2852" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">7726d21
+docs+tests: containers/import coverage</text>
+</g>
+<g id="888cf3b" class="node">
+  <rect x="12" y="276" width="120" height="48" rx="4" ry="4" fill="#0891b2" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="72" y="300" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">888cf3b
+build: discovery no longer executes user code</text>
+</g>
+<g id="8b6b0a0" class="node">
+  <rect x="12" y="2300" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2324" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">8b6b0a0
+feat: split module paths project/installed</text>
+</g>
+<g id="966722d" class="node">
+  <rect x="12" y="2564" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2588" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">966722d
+feat: tier-specific import loaders</text>
+</g>
+<g id="9b61e56" class="node">
+  <rect x="12" y="2740" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2764" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">9b61e56
+feat: install detects lib vs package</text>
+</g>
+<g id="9f0fe84" class="node">
+  <rect x="12" y="1860" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="1884" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">9f0fe84
+Fix GC bugs: macro, loader, reader</text>
+</g>
+<g id="9f1918f" class="node">
+  <rect x="12" y="716" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="740" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">9f1918f
+Fix GC corruption of quoted list constants</text>
+</g>
+<g id="a999fb6" class="node">
+  <rect x="12" y="1596" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="1620" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">a999fb6
+zepo-pkg: XDG paths + installed.json</text>
+</g>
+<g id="bc6d5f7" class="node">
+  <rect x="12" y="1332" width="120" height="48" rx="4" ry="4" fill="#059669" stroke="#047857" stroke-width="1.5"/>
+  <text x="72" y="1356" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">bc6d5f7
+docs: build, ZEPO_TRACE, JSON, exceptions</text>
+</g>
+<g id="bdcc7e8" class="node">
+  <rect x="12" y="628" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="652" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">bdcc7e8
+Show function names in call stack traces</text>
+</g>
+<g id="c127e3e" class="node">
+  <rect x="12" y="364" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="388" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">c127e3e
+Fix module discovery for standalone builds</text>
+</g>
+<g id="c3096e6" class="node">
+  <rect x="12" y="892" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="916" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">c3096e6
+add gc.assertLive / gc.noCollect</text>
+</g>
+<g id="c912a6b" class="node">
+  <rect x="12" y="540" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="564" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">c912a6b
+Fix standalone binary error reporting</text>
+</g>
+<g id="ccaf44d" class="node">
+  <rect x="12" y="1244" width="120" height="48" rx="4" ry="4" fill="#0891b2" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="72" y="1268" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">ccaf44d
+build: discover entry from project.lisp</text>
+</g>
+<g id="clap_group" class="node">
+  <rect x="12" y="1420" width="120" height="48" rx="4" fill="#d97706" stroke="#b45309" stroke-width="1.5"/>
+  <text x="72" y="1444" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="12" font-weight="normal">clap 2.0
+bce6c47 → 67ed384
+DSL · env vars · middleware · help</text>
+</g>
+<g id="d2b3bb3" class="node">
+  <rect x="12" y="2476" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="2500" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">d2b3bb3
+feat: ContainerMeta, (lib ...), :keywords</text>
+</g>
+<g id="daed41a" class="node">
+  <rect x="12" y="1156" width="120" height="48" rx="4" ry="4" fill="#dc2626" stroke="#991b1b" stroke-width="1.5"/>
+  <text x="72" y="1180" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">daed41a
+Fix with-exception-handler stale frames</text>
+</g>
+<g id="e8888fe" class="node">
+  <rect x="12" y="1948" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="1972" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">e8888fe
+reader: block comments #|...|#</text>
+</g>
+<g id="ee28a03" class="node">
+  <rect x="12" y="2212" width="120" height="48" rx="4" ry="4" fill="#0891b2" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="72" y="2236" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">ee28a03
+cli: zepo new package scaffold</text>
+</g>
+<g id="fbdf51a" class="node">
+  <rect x="12" y="1508" width="120" height="48" rx="4" ry="4" fill="#7c3aed" stroke="#5b21b6" stroke-width="1.5"/>
+  <text x="72" y="1532" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif" font-size="11" font-weight="normal">fbdf51a
+add zepo-pkg package manager</text>
+</g>
+</g>
+</svg>

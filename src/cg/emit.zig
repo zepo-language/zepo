@@ -133,6 +133,10 @@ pub const Emitter = struct {
         errdefer e.allocator.free(names);
         const name_syms = try ctx.name_syms.toOwnedSlice(e.allocator);
         errdefer e.allocator.free(name_syms);
+        // zepo-5qc: parallel cache, all slots null initially.
+        const name_caches = try e.allocator.alloc(?*Value, name_syms.len);
+        errdefer e.allocator.free(name_caches);
+        @memset(name_caches, null);
         const safepoints = try ctx.safepoint_maps.toOwnedSlice(e.allocator);
 
         // Build compiled keyword param table.
@@ -164,6 +168,7 @@ pub const Emitter = struct {
             .consts = consts,
             .names = names,
             .name_syms = name_syms,
+            .name_caches = name_caches,
             .safepoint_maps = safepoints,
             .keyword_params = kw_compiled,
             .src_name = src_name,

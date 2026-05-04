@@ -1,0 +1,219 @@
+{
+  "version": "1.0",
+  "id": "zepo-git-graph",
+  "kind": "graph",
+  "layout": {
+    "algorithm": "layered",
+    "direction": "down",
+    "edgeRouting": "orthogonal",
+    "spacing": 20,
+    "layerSpacing": 40
+  },
+  "nodes": [
+    {
+      "id": "682a22d",
+      "label": "682a22d\nclean up",
+      "style": { "shape": "rounded-rect", "fill": "#374151", "stroke": "#1f2937", "color": "#f9fafb", "fontSize": 11 }
+    },
+    {
+      "id": "456f2f4",
+      "label": "456f2f4\nFix TooManyRegisters",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "42fde72",
+      "label": "42fde72\nbuild: load project.lisp module paths",
+      "style": { "shape": "rounded-rect", "fill": "#0891b2", "stroke": "#0e7490", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "888cf3b",
+      "label": "888cf3b\nbuild: discovery no longer executes user code",
+      "style": { "shape": "rounded-rect", "fill": "#0891b2", "stroke": "#0e7490", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "c127e3e",
+      "label": "c127e3e\nFix module discovery for standalone builds",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "4e4bdd5",
+      "label": "4e4bdd5\nFix error diagnostics source line",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "c912a6b",
+      "label": "c912a6b\nFix standalone binary error reporting",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "bdcc7e8",
+      "label": "bdcc7e8\nShow function names in call stack traces",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "9f1918f",
+      "label": "9f1918f\nFix GC corruption of quoted list constants",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "07c4d9c",
+      "label": "07c4d9c\nFix GC corruption across reserveNursery",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "c3096e6",
+      "label": "c3096e6\nadd gc.assertLive / gc.noCollect",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "5b23ebe",
+      "label": "5b23ebe\nadd zepo/debug-value, zepo/gc-stats",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "2767ff1",
+      "label": "2767ff1\nadd ZEPO_TRACE structured tracing",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "daed41a",
+      "label": "daed41a\nFix with-exception-handler stale frames",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "ccaf44d",
+      "label": "ccaf44d\nbuild: discover entry from project.lisp",
+      "style": { "shape": "rounded-rect", "fill": "#0891b2", "stroke": "#0e7490", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "bc6d5f7",
+      "label": "bc6d5f7\ndocs: build, ZEPO_TRACE, JSON, exceptions",
+      "style": { "shape": "rounded-rect", "fill": "#059669", "stroke": "#047857", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "clap_group",
+      "label": "clap 2.0\nbce6c47 → 67ed384\nDSL · env vars · middleware · help",
+      "style": { "shape": "hexagon", "fill": "#d97706", "stroke": "#b45309", "color": "#fff", "fontSize": 12 }
+    },
+    {
+      "id": "fbdf51a",
+      "label": "fbdf51a\nadd zepo-pkg package manager",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "a999fb6",
+      "label": "a999fb6\nzepo-pkg: XDG paths + installed.json",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "1742294",
+      "label": "1742294\nFix GC bugs + tally.lisp example",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "053a825",
+      "label": "053a825\nmakePair GC-safe against mid-alloc",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "9f0fe84",
+      "label": "9f0fe84\nFix GC bugs: macro, loader, reader",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "e8888fe",
+      "label": "e8888fe\nreader: block comments #|...|#",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "2ac36b3",
+      "label": "2ac36b3\nstdlib: map/for-each multi-list",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "54ab81f",
+      "label": "54ab81f\nFix fn_id mismatch for .zbc modules",
+      "style": { "shape": "rounded-rect", "fill": "#dc2626", "stroke": "#991b1b", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "ee28a03",
+      "label": "ee28a03\ncli: zepo new package scaffold",
+      "style": { "shape": "rounded-rect", "fill": "#0891b2", "stroke": "#0e7490", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "8b6b0a0",
+      "label": "8b6b0a0\nfeat: split module paths project/installed",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "53ba5cb",
+      "label": "53ba5cb\nfeat: keyword-dispatch import form",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "d2b3bb3",
+      "label": "d2b3bb3\nfeat: ContainerMeta, (lib ...), :keywords",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "966722d",
+      "label": "966722d\nfeat: tier-specific import loaders",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "04efae6",
+      "label": "04efae6\nfeat: container scaffold + package cleanup",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "9b61e56",
+      "label": "9b61e56\nfeat: install detects lib vs package",
+      "style": { "shape": "rounded-rect", "fill": "#7c3aed", "stroke": "#5b21b6", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "7726d21",
+      "label": "7726d21\ndocs+tests: containers/import coverage",
+      "style": { "shape": "rounded-rect", "fill": "#059669", "stroke": "#047857", "color": "#fff", "fontSize": 11 }
+    },
+    {
+      "id": "561fdae",
+      "label": "561fdae ← HEAD\nfix: plug module_path leak",
+      "style": { "shape": "pill", "fill": "#1d4ed8", "stroke": "#1e40af", "color": "#fff", "fontSize": 12 }
+    }
+  ],
+  "edges": [
+    { "id": "e1",  "source": "682a22d",  "target": "456f2f4",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e2",  "source": "456f2f4",  "target": "42fde72",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e3",  "source": "42fde72",  "target": "888cf3b",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e4",  "source": "888cf3b",  "target": "c127e3e",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e5",  "source": "c127e3e",  "target": "4e4bdd5",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e6",  "source": "4e4bdd5",  "target": "c912a6b",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e7",  "source": "c912a6b",  "target": "bdcc7e8",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e8",  "source": "bdcc7e8",  "target": "9f1918f",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e9",  "source": "9f1918f",  "target": "07c4d9c",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e10", "source": "07c4d9c",  "target": "c3096e6",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e11", "source": "c3096e6",  "target": "5b23ebe",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e12", "source": "5b23ebe",  "target": "2767ff1",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e13", "source": "2767ff1",  "target": "daed41a",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e14", "source": "daed41a",  "target": "ccaf44d",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e15", "source": "ccaf44d",  "target": "bc6d5f7",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e16", "source": "bc6d5f7",  "target": "clap_group", "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e17", "source": "clap_group","target": "fbdf51a",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e18", "source": "fbdf51a",  "target": "a999fb6",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e19", "source": "a999fb6",  "target": "1742294",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e20", "source": "1742294",  "target": "053a825",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e21", "source": "053a825",  "target": "9f0fe84",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e22", "source": "9f0fe84",  "target": "e8888fe",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e23", "source": "e8888fe",  "target": "2ac36b3",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e24", "source": "2ac36b3",  "target": "54ab81f",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e25", "source": "54ab81f",  "target": "ee28a03",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e26", "source": "ee28a03",  "target": "8b6b0a0",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e27", "source": "8b6b0a0",  "target": "53ba5cb",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e28", "source": "53ba5cb",  "target": "d2b3bb3",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e29", "source": "d2b3bb3",  "target": "966722d",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e30", "source": "966722d",  "target": "04efae6",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e31", "source": "04efae6",  "target": "9b61e56",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e32", "source": "9b61e56",  "target": "7726d21",  "style": { "stroke": "#6b7280", "targetMarker": "arrow" } },
+    { "id": "e33", "source": "7726d21",  "target": "561fdae",  "style": { "stroke": "#1d4ed8", "strokeWidth": 2, "targetMarker": "arrow" } }
+  ]
+}

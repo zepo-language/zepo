@@ -107,6 +107,11 @@ pub const CompiledFn = struct {
     // can avoid a hash lookup per instruction. Symbols live in old-gen which
     // never moves — these Values stay valid for the lifetime of the CompiledFn.
     name_syms: []Value,
+    // zepo-5qc: inline cache of resolved val_slot pointers parallel to `names`.
+    // Initialised to null; populated lazily by LOAD_GLOBAL on first lookup.
+    // val_slot pointers are heap-stable (GlobalEnv allocates and never moves
+    // them), so once cached the slow path is skipped permanently.
+    name_caches: []?*Value,
     safepoint_maps: []SafepointMap,
     keyword_params: []KeywordParam = &.{},
     src_name: []const u8 = "",  // function name for stack traces
@@ -120,6 +125,7 @@ pub const CompiledFn = struct {
         // not free the underlying bytes here. We only own the outer slice.
         allocator.free(f.names);
         allocator.free(f.name_syms);
+        allocator.free(f.name_caches);
         allocator.free(f.safepoint_maps);
         // Keyword param `name` slices owned by emitter; only free outer slice.
         if (f.keyword_params.len > 0) allocator.free(f.keyword_params);
