@@ -5,6 +5,7 @@
 //! to become the new `from`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
@@ -21,7 +22,7 @@ const CardTable = cards_mod.CardTable;
 const roots_mod = @import("roots.zig");
 const RootSet = roots_mod.RootSet;
 
-pub const NURSERY_SIZE: usize = 512 * 1024;
+pub const NURSERY_SIZE: usize = 4 * 1024 * 1024; // zepo-299
 pub const PROMOTE_AGE: u4 = 3;
 pub const WORD: usize = 8;
 
@@ -273,9 +274,8 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     n.to_start = old_from;
     n.to_end = old_from_end;
 
-    // Zero the new to-space so dangling pointers into it (from prior from-space
-    // forwarding words) fail fast on deref rather than silently seeing garbage.
-    @memset(n.to_start[0..NURSERY_SIZE], 0);
+    // zepo-299: only zero to-space in debug builds for dangling-pointer detection.
+    if (builtin.mode == .Debug) @memset(n.to_start[0..NURSERY_SIZE], 0);
 
     // 5. Clear dirty cards (they've been scanned). New old->young edges from
     //    surviving young ptrs are re-inserted by the write barrier as needed,

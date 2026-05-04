@@ -263,6 +263,9 @@ pub fn build(b: *std.Build) void {
     }
 
     // --- install-global step ---
+    // zepo-299: always build the installed binary with ReleaseFast regardless
+    // of the -Doptimize flag, so `zig build install-global` never installs a
+    // slow debug binary.
     {
         const install_global = b.step("install-global", "Install zepo binary and libs to ~/.local/{bin,lib/zepo}");
         const home = std.process.getEnvVarOwned(b.allocator, "HOME") catch @panic("HOME not set");
@@ -271,10 +274,31 @@ pub fn build(b: *std.Build) void {
         const bin_dest = std.fs.path.join(b.allocator, &.{ bin_dir, "zepo" }) catch @panic("OOM");
         const lib_src = std.fs.path.join(b.allocator, &.{ zepo_src_dir, "lib" }) catch @panic("OOM");
 
+        const release_mod = b.addModule("zepo-release", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        });
+        release_mod.addOptions("lib_opts", lib_opts);
+        const release_exe_mod = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zepo", .module = release_mod },
+            },
+        });
+        release_exe_mod.addOptions("main_opts", main_opts);
+        const release_exe = b.addExecutable(.{
+            .name = "zepo",
+            .root_module = release_exe_mod,
+        });
+
         const mk = b.addSystemCommand(&.{ "mkdir", "-p", bin_dir, lib_dir });
 
         const cp_bin = b.addSystemCommand(&.{ "cp" });
-        cp_bin.addFileArg(exe.getEmittedBin());
+        cp_bin.addFileArg(release_exe.getEmittedBin());
         cp_bin.addArg(bin_dest);
         cp_bin.step.dependOn(&mk.step);
 
