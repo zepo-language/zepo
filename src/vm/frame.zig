@@ -78,6 +78,7 @@ test "push/pop" {
     var fake_code = [_]bytecode.Instr{};
     var fake_consts = [_]Value{};
     var fake_names = [_][]const u8{};
+    var fake_name_syms = [_]Value{};
     var fake_sps = [_]bytecode.SafepointMap{};
     var cf = CompiledFn{
         .id = 0,
@@ -87,6 +88,7 @@ test "push/pop" {
         .code = &fake_code,
         .consts = &fake_consts,
         .names = &fake_names,
+        .name_syms = &fake_name_syms,
         .safepoint_maps = &fake_sps,
         .allocator = alloc,
     };

@@ -103,6 +103,10 @@ pub const CompiledFn = struct {
     code: []Instr,
     consts: []Value,
     names: [][]const u8,
+    // zepo-aer: pre-interned symbol Values parallel to `names`, so LOAD_GLOBAL
+    // can avoid a hash lookup per instruction. Symbols live in old-gen which
+    // never moves — these Values stay valid for the lifetime of the CompiledFn.
+    name_syms: []Value,
     safepoint_maps: []SafepointMap,
     keyword_params: []KeywordParam = &.{},
     src_name: []const u8 = "",  // function name for stack traces
@@ -115,6 +119,7 @@ pub const CompiledFn = struct {
         // `names` slices are owned by the emitter's global_names store; do
         // not free the underlying bytes here. We only own the outer slice.
         allocator.free(f.names);
+        allocator.free(f.name_syms);
         allocator.free(f.safepoint_maps);
         // Keyword param `name` slices owned by emitter; only free outer slice.
         if (f.keyword_params.len > 0) allocator.free(f.keyword_params);

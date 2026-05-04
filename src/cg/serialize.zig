@@ -288,6 +288,11 @@ fn readFn(
         break :blk "";
     };
 
+    // zepo-aer: pre-intern symbols parallel to names for fast LOAD_GLOBAL.
+    const name_syms = try alloc.alloc(Value, names.len);
+    errdefer alloc.free(name_syms);
+    for (names, 0..) |n, i| name_syms[i] = try syms.intern(n);
+
     return CompiledFn{
         .id = id,
         .arity = arity,
@@ -296,6 +301,7 @@ fn readFn(
         .code = code,
         .consts = consts,
         .names = names,
+        .name_syms = name_syms,
         .safepoint_maps = safepoints,
         .keyword_params = kw_params,
         .src_name = src_name,

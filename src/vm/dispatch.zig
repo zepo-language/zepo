@@ -325,8 +325,9 @@ pub const VM = struct {
                 .LOAD_GLOBAL => {
                     const a = bytecode.decodeA(instr);
                     const ni = bytecode.decodeBC(instr);
+                    // zepo-aer: use pre-interned symbol from CompiledFn.
+                    const sym = func.name_syms[ni];
                     const name = func.names[ni];
-                    const sym = vm.symbols.intern(name) catch return error.OutOfMemory;
                     // Keyword symbols (starting with ':') are self-evaluating.
                     const val = if (name.len > 0 and name[0] == ':') sym else vm.globals.lookup(sym) orelse blk: {
                         if (vm.fallback_globals) |fb| {
@@ -352,8 +353,8 @@ pub const VM = struct {
                 .STORE_GLOBAL => {
                     const a = bytecode.decodeA(instr);
                     const ni = bytecode.decodeBC(instr);
-                    const name = func.names[ni];
-                    const sym = vm.symbols.intern(name) catch return error.OutOfMemory;
+                    // zepo-aer: use pre-interned symbol from CompiledFn.
+                    const sym = func.name_syms[ni];
                     const v = vm.call_stack.reg(a).*;
                     vm.globals.define(sym, v) catch return error.OutOfMemory;
                 },

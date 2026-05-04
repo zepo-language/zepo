@@ -131,6 +131,8 @@ pub const Emitter = struct {
         errdefer e.allocator.free(consts);
         const names = try ctx.names.toOwnedSlice(e.allocator);
         errdefer e.allocator.free(names);
+        const name_syms = try ctx.name_syms.toOwnedSlice(e.allocator);
+        errdefer e.allocator.free(name_syms);
         const safepoints = try ctx.safepoint_maps.toOwnedSlice(e.allocator);
 
         // Build compiled keyword param table.
@@ -161,6 +163,7 @@ pub const Emitter = struct {
             .code = code,
             .consts = consts,
             .names = names,
+            .name_syms = name_syms,
             .safepoint_maps = safepoints,
             .keyword_params = kw_compiled,
             .src_name = src_name,
@@ -261,6 +264,8 @@ const FnEmit = struct {
     code: std.ArrayList(Instr),
     consts: std.ArrayList(Value),
     names: std.ArrayList([]const u8),
+    // zepo-aer: parallel to `names`, holds pre-interned symbol Values.
+    name_syms: std.ArrayList(Value),
     safepoint_maps: std.ArrayList(SafepointMap),
     label_positions: std.AutoHashMap(Label, u32),
     fixups: std.ArrayList(JumpFixup),
@@ -279,6 +284,7 @@ const FnEmit = struct {
             .code = std.ArrayList(Instr){},
             .consts = std.ArrayList(Value){},
             .names = std.ArrayList([]const u8){},
+            .name_syms = std.ArrayList(Value){},
             .safepoint_maps = std.ArrayList(SafepointMap){},
             .label_positions = std.AutoHashMap(Label, u32).init(e.allocator),
             .fixups = std.ArrayList(JumpFixup){},
@@ -290,6 +296,7 @@ const FnEmit = struct {
         c.code.deinit(c.e.allocator);
         c.consts.deinit(c.e.allocator);
         c.names.deinit(c.e.allocator);
+        c.name_syms.deinit(c.e.allocator);
         c.safepoint_maps.deinit(c.e.allocator);
         c.label_positions.deinit();
         c.fixups.deinit(c.e.allocator);
@@ -361,7 +368,10 @@ const FnEmit = struct {
         }
         const idx = c.names.items.len;
         if (idx >= 0xFFFF) return error.TooManyNames;
+        // zepo-aer: pre-intern the symbol so dispatch can skip the hash lookup.
+        const sym = try c.e.symbols.intern(name);
         try c.names.append(c.e.allocator, interned);
+        try c.name_syms.append(c.e.allocator, sym);
         return @intCast(idx);
     }
 

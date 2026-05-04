@@ -34,6 +34,7 @@ test "minor GC preserves VM registers" {
     var code_buf = [_]bytecode.Instr{};
     var consts_buf = [_]Value{};
     var names_buf = [_][]const u8{};
+    var name_syms_buf = [_]Value{};
     var sps_buf = [_]bytecode.SafepointMap{};
     var cf = bytecode.CompiledFn{
         .id = 0,
@@ -43,6 +44,7 @@ test "minor GC preserves VM registers" {
         .code = &code_buf,
         .consts = &consts_buf,
         .names = &names_buf,
+        .name_syms = &name_syms_buf,
         .safepoint_maps = &sps_buf,
         .allocator = alloc,
     };
