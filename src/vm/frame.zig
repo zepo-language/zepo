@@ -48,6 +48,20 @@ pub const CallStack = struct {
         try cs.frames.append(cs.allocator, frame);
     }
 
+    /// zepo-dv2: fast push that assumes regs has pre-reserved capacity (VM
+    /// init reserves MAX_REGS, so num_regs<=MAX_REGS-current never reallocates).
+    /// Frames are grown explicitly only on the rare overflow path so the
+    /// common case is just appendAssumeCapacity.
+    pub fn pushFast(cs: *CallStack, frame: Frame, num_regs: u16) !void {
+        if (cs.frames.items.len == cs.frames.capacity) {
+            const new_cap = if (cs.frames.capacity == 0) 4096 else cs.frames.capacity * 2;
+            try cs.frames.ensureTotalCapacity(cs.allocator, new_cap);
+        }
+        const slice = cs.regs.addManyAsSliceAssumeCapacity(num_regs);
+        @memset(slice, value_mod.NIL);
+        cs.frames.appendAssumeCapacity(frame);
+    }
+
     pub fn pop(cs: *CallStack) Frame {
         const f = cs.frames.pop().?;
         // Shrink regs back to the frame's base.

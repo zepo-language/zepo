@@ -75,6 +75,8 @@ pub const VM = struct {
     ) !VM {
         var cs = CallStack.init(allocator);
         try cs.regs.ensureTotalCapacity(allocator, MAX_REGS);
+        // zepo-dv2: pre-reserve frames so push hot path can use appendAssumeCapacity.
+        try cs.frames.ensureTotalCapacity(allocator, 4096);
         return .{
             .gc = gc,
             .globals = globals,
@@ -179,7 +181,9 @@ pub const VM = struct {
 
             // Push frame.
             const base: u32 = @intCast(vm.call_stack.regs.items.len);
-            vm.call_stack.push(.{
+            // zepo-dv2: regs has MAX_REGS pre-reserved capacity; skip the
+            // ensureUnusedCapacity call in the hot path.
+            vm.call_stack.pushFast(.{
                 .func = func,
                 .pc = 0,
                 .base = base,
@@ -498,7 +502,23 @@ pub const VM = struct {
                     const args_end = args_start + @as(u32, c);
                     const args_slice = vm.call_stack.regs.items[args_start..args_end];
 
-                    const result = try vm.callValue(fn_val, args_slice);
+                    // zepo-dv2: inline callValue dispatch — saves a function
+                    // call per CALL. Prim path goes direct to the function
+                    // pointer; closure path still recurses via execFn.
+                    const result = blk: {
+                        if (objects.isPrim(fn_val)) {
+                            const raw = objects.primFnPtr(fn_val);
+                            const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
+                            break :blk try pfn(vm, args_slice);
+                        }
+                        if (objects.isClosure(fn_val)) {
+                            const fn_id = objects.closureCodePtr(fn_val);
+                            if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
+                            const tgt = &vm.compiled_fns[@intCast(fn_id)];
+                            break :blk try vm.execFn(tgt, fn_val, args_slice);
+                        }
+                        return error.TypeError;
+                    };
                     vm.call_stack.reg(a).* = result;
                 },
                 .TAIL_CALL => {
