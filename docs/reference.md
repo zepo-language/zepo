@@ -686,6 +686,13 @@ Arity `-1` means variadic (zero or more arguments).
 (inexact->exact 3.9) ; => 3
 ```
 
+> **Specialization note:** the compiler emits dedicated bytecode opcodes for
+> 2-arg calls to `+`, `-`, `*`, `=`, `<`, `>`, `eq?`, `cons`, `car`, `cdr`,
+> `null?`, `pair?`, and `modulo`. These take an inline fixnum fast path and
+> only fall back to the prim on non-fixnum operands. Consequence: rebinding
+> these names at runtime via `define` or `set!` will not take effect inside
+> already-compiled call sites. Same trade-off as Chez/Racket.
+
 ### Comparison
 
 All accept two or more arguments and return `#t` if the relation holds for
