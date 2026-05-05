@@ -75,6 +75,15 @@ pub const Opcode = enum(u8) {
     BR_IF_NUM_NLT, // branch to next_instr.BC if NOT (src1 <  src2)
     BR_IF_NUM_NGT, // branch to next_instr.BC if NOT (src1 >  src2)
     BR_IF_NEQP,    // branch to next_instr.BC if NOT (src1 eq? src2)
+    // zepo-i3b: const-operand specialized arithmetic. C is signed i8 imm.
+    // (op src imm) with imm in [-128..127]. Falls back to corresponding prim.
+    ADDI,      // A=dst, B=src, C=imm_i8 — dst = src + imm
+    SUBI,      // A=dst, B=src, C=imm_i8 — dst = src - imm
+    NUM_EQ_I,  // A=dst, B=src, C=imm_i8 — dst = (src == imm) ? TRUE : FALSE
+    NUM_LT_I,  // A=dst, B=src, C=imm_i8 — dst = (src <  imm) ? TRUE : FALSE
+    // zepo-i3b: 2-word fused branch with imm. Word2 is JUMP w/ else target.
+    BR_IF_NUM_NEQ_I, // branch to next_instr.BC if NOT (src == imm)
+    BR_IF_NUM_NLT_I, // branch to next_instr.BC if NOT (src <  imm)
 };
 
 pub const Instr = u32;

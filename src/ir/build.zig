@@ -182,6 +182,16 @@ pub const Compiler = struct {
         };
     }
 
+    // zepo-i3b: returns the literal's i63 fixnum value if it fits in i8.
+    fn smallFixnumLit(c: *Compiler, id: NodeId) ?i8 {
+        const node = c.arena.get(id).*;
+        if (node != .literal) return null;
+        if (node.literal.val != .fixnum) return null;
+        const n = node.literal.val.fixnum;
+        if (n < -128 or n > 127) return null;
+        return @intCast(n);
+    }
+
     fn lowerLiteral(_: *Compiler, ctx: *FnCtx, lit: LiteralKind) anyerror!Reg {
         const r = ctx.freshReg();
         switch (lit) {
@@ -321,14 +331,28 @@ pub const Compiler = struct {
                     try ctx.func.emit(.{ .branch_if_not_pair = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } });
                 },
                 .num_eq => {
-                    const r1 = try c.lowerNode(ctx, fused_arg1);
-                    const r2 = try c.lowerNode(ctx, fused_arg2);
-                    try ctx.func.emit(.{ .branch_if_num_neq = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    // zepo-i3b: fused branch with imm second arg.
+                    if (c.smallFixnumLit(fused_arg2)) |imm| {
+                        const r1 = try c.lowerNode(ctx, fused_arg1);
+                        try ctx.func.emit(.{ .branch_if_num_neq_i = .{ .src = r1, .imm = imm, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    } else if (c.smallFixnumLit(fused_arg1)) |imm| {
+                        const r1 = try c.lowerNode(ctx, fused_arg2);
+                        try ctx.func.emit(.{ .branch_if_num_neq_i = .{ .src = r1, .imm = imm, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    } else {
+                        const r1 = try c.lowerNode(ctx, fused_arg1);
+                        const r2 = try c.lowerNode(ctx, fused_arg2);
+                        try ctx.func.emit(.{ .branch_if_num_neq = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    }
                 },
                 .num_lt => {
-                    const r1 = try c.lowerNode(ctx, fused_arg1);
-                    const r2 = try c.lowerNode(ctx, fused_arg2);
-                    try ctx.func.emit(.{ .branch_if_num_nlt = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    if (c.smallFixnumLit(fused_arg2)) |imm| {
+                        const r1 = try c.lowerNode(ctx, fused_arg1);
+                        try ctx.func.emit(.{ .branch_if_num_nlt_i = .{ .src = r1, .imm = imm, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    } else {
+                        const r1 = try c.lowerNode(ctx, fused_arg1);
+                        const r2 = try c.lowerNode(ctx, fused_arg2);
+                        try ctx.func.emit(.{ .branch_if_num_nlt = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                    }
                 },
                 .num_gt => {
                     const r1 = try c.lowerNode(ctx, fused_arg1);
@@ -505,6 +529,38 @@ pub const Compiler = struct {
                     else if (std.mem.eql(u8, name, "cons")) .cons
                     else if (std.mem.eql(u8, name, "eq?")) .eq_p
                     else null;
+                // zepo-i3b: try imm-operand specialization first.
+                if (which) |w| if (w == .add or w == .sub or w == .num_eq or w == .num_lt) {
+                    // Right-side literal: (op reg imm)
+                    if (smallFixnumLit(c, arg_ids[1])) |imm| {
+                        const saved = ctx.next_reg;
+                        const r1 = try c.lowerNode(ctx, arg_ids[0]);
+                        ctx.next_reg = saved;
+                        const dst = ctx.freshReg();
+                        switch (w) {
+                            .add => try ctx.func.emit(.{ .addi = .{ .dst = dst, .src = r1, .imm = imm } }),
+                            .sub => try ctx.func.emit(.{ .subi = .{ .dst = dst, .src = r1, .imm = imm } }),
+                            .num_eq => try ctx.func.emit(.{ .num_eq_i = .{ .dst = dst, .src = r1, .imm = imm } }),
+                            .num_lt => try ctx.func.emit(.{ .num_lt_i = .{ .dst = dst, .src = r1, .imm = imm } }),
+                            else => unreachable,
+                        }
+                        return dst;
+                    }
+                    // Left-side literal for commutative add or num_eq: (op imm reg) → (op reg imm)
+                    if ((w == .add or w == .num_eq) and smallFixnumLit(c, arg_ids[0]) != null) {
+                        const imm = smallFixnumLit(c, arg_ids[0]).?;
+                        const saved = ctx.next_reg;
+                        const r1 = try c.lowerNode(ctx, arg_ids[1]);
+                        ctx.next_reg = saved;
+                        const dst = ctx.freshReg();
+                        switch (w) {
+                            .add => try ctx.func.emit(.{ .addi = .{ .dst = dst, .src = r1, .imm = imm } }),
+                            .num_eq => try ctx.func.emit(.{ .num_eq_i = .{ .dst = dst, .src = r1, .imm = imm } }),
+                            else => unreachable,
+                        }
+                        return dst;
+                    }
+                };
                 if (which) |w| {
                     const saved = ctx.next_reg;
                     const r1 = try c.lowerNode(ctx, arg_ids[0]);

@@ -243,6 +243,12 @@ fn computeMaxReg(f: *Function) Reg {
             .branch_if_num_nlt => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .branch_if_num_ngt => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .branch_if_neqp => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .addi => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
+            .subi => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
+            .num_eq_i => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
+            .num_lt_i => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
+            .branch_if_num_neq_i => |x| upd.go(x.src, &max_r),
+            .branch_if_num_nlt_i => |x| upd.go(x.src, &max_r),
             .call => |x| {
                 upd.go(x.dst, &max_r);
                 upd.go(x.func, &max_r);
@@ -497,6 +503,19 @@ const FnEmit = struct {
             },
             .branch_if_neqp => |x| {
                 try c.emitInstr(bytecode.encode(.BR_IF_NEQP, c.phys(x.src1), c.phys(x.src2), 0));
+                try c.emitJumpFixup(.JUMP, 0, x.else_label);
+            },
+            // zepo-i3b: imm-operand arithmetic + branches. Encode i8 → u8.
+            .addi => |x| try c.emitInstr(bytecode.encode(.ADDI, c.phys(x.dst), c.phys(x.src), @bitCast(x.imm))),
+            .subi => |x| try c.emitInstr(bytecode.encode(.SUBI, c.phys(x.dst), c.phys(x.src), @bitCast(x.imm))),
+            .num_eq_i => |x| try c.emitInstr(bytecode.encode(.NUM_EQ_I, c.phys(x.dst), c.phys(x.src), @bitCast(x.imm))),
+            .num_lt_i => |x| try c.emitInstr(bytecode.encode(.NUM_LT_I, c.phys(x.dst), c.phys(x.src), @bitCast(x.imm))),
+            .branch_if_num_neq_i => |x| {
+                try c.emitInstr(bytecode.encode(.BR_IF_NUM_NEQ_I, c.phys(x.src), @bitCast(x.imm), 0));
+                try c.emitJumpFixup(.JUMP, 0, x.else_label);
+            },
+            .branch_if_num_nlt_i => |x| {
+                try c.emitInstr(bytecode.encode(.BR_IF_NUM_NLT_I, c.phys(x.src), @bitCast(x.imm), 0));
                 try c.emitJumpFixup(.JUMP, 0, x.else_label);
             },
             .label => |x| {

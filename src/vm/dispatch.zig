@@ -817,6 +817,117 @@ pub const VM = struct {
                     pc += 1;
                     if (va != vb) pc = bytecode.decodeBC(next_instr);
                 },
+                // zepo-i3b: const-operand arithmetic & comparisons.
+                .ADDI => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c_raw = bytecode.decodeC(instr);
+                    const imm: i8 = @bitCast(c_raw);
+                    const v = vm.call_stack.reg(b).*;
+                    if ((v & 7) == 1) {
+                        const sv = value_mod.fixnumVal(v);
+                        const r = std.math.add(i64, @as(i64, sv), @as(i64, imm)) catch {
+                            var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                            vm.call_stack.reg(a).* = try arith_prims.primAdd(vm, args[0..]);
+                            continue;
+                        };
+                        const max_i63: i64 = (@as(i64, 1) << 62) - 1;
+                        const min_i63: i64 = -(@as(i64, 1) << 62);
+                        if (r <= max_i63 and r >= min_i63) {
+                            vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(r));
+                            continue;
+                        }
+                    }
+                    var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                    vm.call_stack.reg(a).* = try arith_prims.primAdd(vm, args[0..]);
+                },
+                .SUBI => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c_raw = bytecode.decodeC(instr);
+                    const imm: i8 = @bitCast(c_raw);
+                    const v = vm.call_stack.reg(b).*;
+                    if ((v & 7) == 1) {
+                        const sv = value_mod.fixnumVal(v);
+                        const r = std.math.sub(i64, @as(i64, sv), @as(i64, imm)) catch {
+                            var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                            vm.call_stack.reg(a).* = try arith_prims.primSub(vm, args[0..]);
+                            continue;
+                        };
+                        const max_i63: i64 = (@as(i64, 1) << 62) - 1;
+                        const min_i63: i64 = -(@as(i64, 1) << 62);
+                        if (r <= max_i63 and r >= min_i63) {
+                            vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(r));
+                            continue;
+                        }
+                    }
+                    var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                    vm.call_stack.reg(a).* = try arith_prims.primSub(vm, args[0..]);
+                },
+                .NUM_EQ_I => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c_raw = bytecode.decodeC(instr);
+                    const imm: i8 = @bitCast(c_raw);
+                    const v = vm.call_stack.reg(b).*;
+                    if ((v & 7) == 1) {
+                        const enc_imm = value_mod.fixnum(@intCast(imm));
+                        vm.call_stack.reg(a).* = if (v == enc_imm) value_mod.TRUE else value_mod.FALSE;
+                        continue;
+                    }
+                    var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                    vm.call_stack.reg(a).* = try arith_prims.primNumEq(vm, args[0..]);
+                },
+                .NUM_LT_I => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c_raw = bytecode.decodeC(instr);
+                    const imm: i8 = @bitCast(c_raw);
+                    const v = vm.call_stack.reg(b).*;
+                    if ((v & 7) == 1) {
+                        const sv = value_mod.fixnumVal(v);
+                        vm.call_stack.reg(a).* = if (@as(i64, sv) < @as(i64, imm)) value_mod.TRUE else value_mod.FALSE;
+                        continue;
+                    }
+                    var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                    vm.call_stack.reg(a).* = try arith_prims.primLt(vm, args[0..]);
+                },
+                .BR_IF_NUM_NEQ_I => {
+                    const a_reg = bytecode.decodeA(instr);
+                    const b_raw = bytecode.decodeB(instr);
+                    const imm: i8 = @bitCast(b_raw);
+                    const v = vm.call_stack.reg(a_reg).*;
+                    const next_instr = code[pc];
+                    pc += 1;
+                    var pred_true: bool = undefined;
+                    if ((v & 7) == 1) {
+                        const enc_imm = value_mod.fixnum(@intCast(imm));
+                        pred_true = (v == enc_imm);
+                    } else {
+                        var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                        const r = try arith_prims.primNumEq(vm, args[0..]);
+                        pred_true = !value_mod.isFalsy(r);
+                    }
+                    if (!pred_true) pc = bytecode.decodeBC(next_instr);
+                },
+                .BR_IF_NUM_NLT_I => {
+                    const a_reg = bytecode.decodeA(instr);
+                    const b_raw = bytecode.decodeB(instr);
+                    const imm: i8 = @bitCast(b_raw);
+                    const v = vm.call_stack.reg(a_reg).*;
+                    const next_instr = code[pc];
+                    pc += 1;
+                    var pred_true: bool = undefined;
+                    if ((v & 7) == 1) {
+                        const sv = value_mod.fixnumVal(v);
+                        pred_true = (@as(i64, sv) < @as(i64, imm));
+                    } else {
+                        var args = [_]Value{ v, value_mod.fixnum(@intCast(imm)) };
+                        const r = try arith_prims.primLt(vm, args[0..]);
+                        pred_true = !value_mod.isFalsy(r);
+                    }
+                    if (!pred_true) pc = bytecode.decodeBC(next_instr);
+                },
             }
         }
     }

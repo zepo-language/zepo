@@ -117,6 +117,13 @@ pub const Op = union(enum) {
     branch_if_num_nlt: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
     branch_if_num_ngt: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
     branch_if_neqp: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
+    // zepo-i3b: const-operand variants. imm fits in signed i8.
+    addi: struct { dst: Reg, src: Reg, imm: i8 },
+    subi: struct { dst: Reg, src: Reg, imm: i8 },
+    num_eq_i: struct { dst: Reg, src: Reg, imm: i8 },
+    num_lt_i: struct { dst: Reg, src: Reg, imm: i8 },
+    branch_if_num_neq_i: struct { src: Reg, imm: i8, then_label: Label, else_label: Label },
+    branch_if_num_nlt_i: struct { src: Reg, imm: i8, then_label: Label, else_label: Label },
 };
 
 pub const Function = struct {
