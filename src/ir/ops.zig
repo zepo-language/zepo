@@ -111,6 +111,12 @@ pub const Op = union(enum) {
     // zepo-28f: fused branches. Branch to else_label when predicate is FALSE.
     branch_if_not_null: struct { src: Reg, then_label: Label, else_label: Label },
     branch_if_not_pair: struct { src: Reg, then_label: Label, else_label: Label },
+    // zepo-lpj: 2-arg fused compare+branch. Branches to else_label when the
+    // predicate is FALSE.
+    branch_if_num_neq: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
+    branch_if_num_nlt: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
+    branch_if_num_ngt: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
+    branch_if_neqp: struct { src1: Reg, src2: Reg, then_label: Label, else_label: Label },
 };
 
 pub const Function = struct {

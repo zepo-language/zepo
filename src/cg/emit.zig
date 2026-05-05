@@ -239,6 +239,10 @@ fn computeMaxReg(f: *Function) Reg {
             .branch_if => |x| upd.go(x.cond, &max_r),
             .branch_if_not_null => |x| upd.go(x.src, &max_r),
             .branch_if_not_pair => |x| upd.go(x.src, &max_r),
+            .branch_if_num_neq => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .branch_if_num_nlt => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .branch_if_num_ngt => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .branch_if_neqp => |x| { upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .call => |x| {
                 upd.go(x.dst, &max_r);
                 upd.go(x.func, &max_r);
@@ -474,6 +478,26 @@ const FnEmit = struct {
             .branch_if_not_pair => |x| {
                 try c.emitJumpFixup(.BR_IF_NOT_PAIR, c.phys(x.src), x.else_label);
                 try c.emitJumpFixup(.JUMP, 0, x.then_label);
+            },
+            // zepo-lpj: 2-arg fused. Emits the predicate opcode (with both
+            // source regs in A and B) followed by a JUMP carrying the else
+            // target in BC. Dispatch reads both words. The IR builder places
+            // then_label immediately after.
+            .branch_if_num_neq => |x| {
+                try c.emitInstr(bytecode.encode(.BR_IF_NUM_NEQ, c.phys(x.src1), c.phys(x.src2), 0));
+                try c.emitJumpFixup(.JUMP, 0, x.else_label);
+            },
+            .branch_if_num_nlt => |x| {
+                try c.emitInstr(bytecode.encode(.BR_IF_NUM_NLT, c.phys(x.src1), c.phys(x.src2), 0));
+                try c.emitJumpFixup(.JUMP, 0, x.else_label);
+            },
+            .branch_if_num_ngt => |x| {
+                try c.emitInstr(bytecode.encode(.BR_IF_NUM_NGT, c.phys(x.src1), c.phys(x.src2), 0));
+                try c.emitJumpFixup(.JUMP, 0, x.else_label);
+            },
+            .branch_if_neqp => |x| {
+                try c.emitInstr(bytecode.encode(.BR_IF_NEQP, c.phys(x.src1), c.phys(x.src2), 0));
+                try c.emitJumpFixup(.JUMP, 0, x.else_label);
             },
             .label => |x| {
                 try c.label_positions.put(x.id, c.currentPc());

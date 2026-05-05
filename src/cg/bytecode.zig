@@ -66,6 +66,15 @@ pub const Opcode = enum(u8) {
     // mirroring JUMP_IF_FALSE semantics. Encoding: A=src, BC=target.
     BR_IF_NOT_NULL, // branch to BC if src is NOT nil
     BR_IF_NOT_PAIR, // branch to BC if src is NOT pair
+    // zepo-lpj: 2-arg compare+branch fusion. Emitted as a 2-word pair: the
+    // BR opcode (A=src1, B=src2) followed immediately by a regular JUMP whose
+    // BC field carries the else target. Dispatch reads BOTH words atomically:
+    // when the predicate fails, jumps to that target; otherwise falls through
+    // past the JUMP to the THEN code.
+    BR_IF_NUM_NEQ, // branch to next_instr.BC if NOT (src1 == src2)
+    BR_IF_NUM_NLT, // branch to next_instr.BC if NOT (src1 <  src2)
+    BR_IF_NUM_NGT, // branch to next_instr.BC if NOT (src1 >  src2)
+    BR_IF_NEQP,    // branch to next_instr.BC if NOT (src1 eq? src2)
 };
 
 pub const Instr = u32;

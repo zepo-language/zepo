@@ -273,33 +273,73 @@ pub const Compiler = struct {
     fn lowerIfTail(c: *Compiler, ctx: *FnCtx, cond_id: NodeId, then_id: NodeId, else_id: ?NodeId, tail: bool) anyerror!Reg {
         const saved_reg = ctx.next_reg;
 
-        // zepo-28f: fuse `(if (null? x) ...)` and `(if (pair? x) ...)` —
-        // skip the bool-write/bool-read by branching directly on the predicate.
+        // zepo-28f / zepo-lpj: fuse `(if (PRED ...) ...)` for known
+        // predicates — skip the bool-write/bool-read by branching directly.
         const cond_node = c.arena.get(cond_id).*;
-        const FusedPred = enum { null_p, pair_p };
+        const FusedPred = enum { null_p, pair_p, num_eq, num_lt, num_gt, eq_p };
         var fused: ?FusedPred = null;
-        var fused_arg: NodeId = 0;
-        if (cond_node == .application and cond_node.application.args.len == 1) {
+        var fused_arg1: NodeId = 0;
+        var fused_arg2: NodeId = 0;
+        if (cond_node == .application) {
+            const args = cond_node.application.args;
             const fn_node = c.arena.get(cond_node.application.func).*;
             if (fn_node == .sym_ref) {
                 const name = fn_node.sym_ref.name;
-                if (std.mem.eql(u8, name, "null?")) {
-                    fused = .null_p;
-                    fused_arg = cond_node.application.args[0];
-                } else if (std.mem.eql(u8, name, "pair?")) {
-                    fused = .pair_p;
-                    fused_arg = cond_node.application.args[0];
+                if (args.len == 1) {
+                    if (std.mem.eql(u8, name, "null?")) {
+                        fused = .null_p;
+                        fused_arg1 = args[0];
+                    } else if (std.mem.eql(u8, name, "pair?")) {
+                        fused = .pair_p;
+                        fused_arg1 = args[0];
+                    }
+                } else if (args.len == 2) {
+                    const which: ?FusedPred = if (std.mem.eql(u8, name, "=")) .num_eq
+                        else if (std.mem.eql(u8, name, "<")) .num_lt
+                        else if (std.mem.eql(u8, name, ">")) .num_gt
+                        else if (std.mem.eql(u8, name, "eq?")) .eq_p
+                        else null;
+                    if (which) |w| {
+                        fused = w;
+                        fused_arg1 = args[0];
+                        fused_arg2 = args[1];
+                    }
                 }
             }
         }
         if (fused) |fp| {
-            const r1 = try c.lowerNode(ctx, fused_arg);
             const then_lbl_f = ctx.func.newLabel();
             const else_lbl_f = ctx.func.newLabel();
             const end_lbl_f = ctx.func.newLabel();
             switch (fp) {
-                .null_p => try ctx.func.emit(.{ .branch_if_not_null = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } }),
-                .pair_p => try ctx.func.emit(.{ .branch_if_not_pair = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } }),
+                .null_p => {
+                    const r1 = try c.lowerNode(ctx, fused_arg1);
+                    try ctx.func.emit(.{ .branch_if_not_null = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                },
+                .pair_p => {
+                    const r1 = try c.lowerNode(ctx, fused_arg1);
+                    try ctx.func.emit(.{ .branch_if_not_pair = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                },
+                .num_eq => {
+                    const r1 = try c.lowerNode(ctx, fused_arg1);
+                    const r2 = try c.lowerNode(ctx, fused_arg2);
+                    try ctx.func.emit(.{ .branch_if_num_neq = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                },
+                .num_lt => {
+                    const r1 = try c.lowerNode(ctx, fused_arg1);
+                    const r2 = try c.lowerNode(ctx, fused_arg2);
+                    try ctx.func.emit(.{ .branch_if_num_nlt = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                },
+                .num_gt => {
+                    const r1 = try c.lowerNode(ctx, fused_arg1);
+                    const r2 = try c.lowerNode(ctx, fused_arg2);
+                    try ctx.func.emit(.{ .branch_if_num_ngt = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                },
+                .eq_p => {
+                    const r1 = try c.lowerNode(ctx, fused_arg1);
+                    const r2 = try c.lowerNode(ctx, fused_arg2);
+                    try ctx.func.emit(.{ .branch_if_neqp = .{ .src1 = r1, .src2 = r2, .then_label = then_lbl_f, .else_label = else_lbl_f } });
+                },
             }
             ctx.next_reg = saved_reg;
 

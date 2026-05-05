@@ -751,6 +751,72 @@ pub const VM = struct {
                     const v = vm.call_stack.reg(a).*;
                     if (!objects.isPair(v)) pc = target;
                 },
+                // zepo-lpj: 2-word fused 2-arg compare+branch. Reads the
+                // following JUMP instruction for the else target.
+                .BR_IF_NUM_NEQ => {
+                    const a_reg = bytecode.decodeA(instr);
+                    const b_reg = bytecode.decodeB(instr);
+                    const va = vm.call_stack.reg(a_reg).*;
+                    const vb = vm.call_stack.reg(b_reg).*;
+                    const next_instr = code[pc];
+                    pc += 1;
+                    var pred_true: bool = undefined;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        pred_true = (va == vb);
+                    } else {
+                        var args = [_]Value{ va, vb };
+                        const r = try arith_prims.primNumEq(vm, args[0..]);
+                        pred_true = !value_mod.isFalsy(r);
+                    }
+                    if (!pred_true) pc = bytecode.decodeBC(next_instr);
+                },
+                .BR_IF_NUM_NLT => {
+                    const a_reg = bytecode.decodeA(instr);
+                    const b_reg = bytecode.decodeB(instr);
+                    const va = vm.call_stack.reg(a_reg).*;
+                    const vb = vm.call_stack.reg(b_reg).*;
+                    const next_instr = code[pc];
+                    pc += 1;
+                    var pred_true: bool = undefined;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const ai: i64 = @bitCast(va);
+                        const bi: i64 = @bitCast(vb);
+                        pred_true = (ai < bi);
+                    } else {
+                        var args = [_]Value{ va, vb };
+                        const r = try arith_prims.primLt(vm, args[0..]);
+                        pred_true = !value_mod.isFalsy(r);
+                    }
+                    if (!pred_true) pc = bytecode.decodeBC(next_instr);
+                },
+                .BR_IF_NUM_NGT => {
+                    const a_reg = bytecode.decodeA(instr);
+                    const b_reg = bytecode.decodeB(instr);
+                    const va = vm.call_stack.reg(a_reg).*;
+                    const vb = vm.call_stack.reg(b_reg).*;
+                    const next_instr = code[pc];
+                    pc += 1;
+                    var pred_true: bool = undefined;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const ai: i64 = @bitCast(va);
+                        const bi: i64 = @bitCast(vb);
+                        pred_true = (ai > bi);
+                    } else {
+                        var args = [_]Value{ va, vb };
+                        const r = try arith_prims.primGt(vm, args[0..]);
+                        pred_true = !value_mod.isFalsy(r);
+                    }
+                    if (!pred_true) pc = bytecode.decodeBC(next_instr);
+                },
+                .BR_IF_NEQP => {
+                    const a_reg = bytecode.decodeA(instr);
+                    const b_reg = bytecode.decodeB(instr);
+                    const va = vm.call_stack.reg(a_reg).*;
+                    const vb = vm.call_stack.reg(b_reg).*;
+                    const next_instr = code[pc];
+                    pc += 1;
+                    if (va != vb) pc = bytecode.decodeBC(next_instr);
+                },
             }
         }
     }
