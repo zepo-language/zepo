@@ -272,6 +272,62 @@ pub const Compiler = struct {
 
     fn lowerIfTail(c: *Compiler, ctx: *FnCtx, cond_id: NodeId, then_id: NodeId, else_id: ?NodeId, tail: bool) anyerror!Reg {
         const saved_reg = ctx.next_reg;
+
+        // zepo-28f: fuse `(if (null? x) ...)` and `(if (pair? x) ...)` —
+        // skip the bool-write/bool-read by branching directly on the predicate.
+        const cond_node = c.arena.get(cond_id).*;
+        const FusedPred = enum { null_p, pair_p };
+        var fused: ?FusedPred = null;
+        var fused_arg: NodeId = 0;
+        if (cond_node == .application and cond_node.application.args.len == 1) {
+            const fn_node = c.arena.get(cond_node.application.func).*;
+            if (fn_node == .sym_ref) {
+                const name = fn_node.sym_ref.name;
+                if (std.mem.eql(u8, name, "null?")) {
+                    fused = .null_p;
+                    fused_arg = cond_node.application.args[0];
+                } else if (std.mem.eql(u8, name, "pair?")) {
+                    fused = .pair_p;
+                    fused_arg = cond_node.application.args[0];
+                }
+            }
+        }
+        if (fused) |fp| {
+            const r1 = try c.lowerNode(ctx, fused_arg);
+            const then_lbl_f = ctx.func.newLabel();
+            const else_lbl_f = ctx.func.newLabel();
+            const end_lbl_f = ctx.func.newLabel();
+            switch (fp) {
+                .null_p => try ctx.func.emit(.{ .branch_if_not_null = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } }),
+                .pair_p => try ctx.func.emit(.{ .branch_if_not_pair = .{ .src = r1, .then_label = then_lbl_f, .else_label = else_lbl_f } }),
+            }
+            ctx.next_reg = saved_reg;
+
+            const result_slot_f = ctx.allocSlot();
+            try ctx.func.placeLabel(then_lbl_f);
+            const then_r_f = try c.lowerNodeTail(ctx, then_id, tail);
+            try ctx.func.emit(.{ .store_local = .{ .slot = result_slot_f, .src = then_r_f } });
+            try ctx.func.emit(.{ .branch = .{ .label = end_lbl_f } });
+            ctx.next_reg = saved_reg;
+
+            try ctx.func.placeLabel(else_lbl_f);
+            if (else_id) |eid| {
+                const else_r_f = try c.lowerNodeTail(ctx, eid, tail);
+                try ctx.func.emit(.{ .store_local = .{ .slot = result_slot_f, .src = else_r_f } });
+            } else {
+                const nil_r_f = ctx.freshReg();
+                try ctx.func.emit(.{ .load_nil = .{ .dst = nil_r_f } });
+                try ctx.func.emit(.{ .store_local = .{ .slot = result_slot_f, .src = nil_r_f } });
+            }
+            try ctx.func.emit(.{ .branch = .{ .label = end_lbl_f } });
+            ctx.next_reg = saved_reg;
+
+            try ctx.func.placeLabel(end_lbl_f);
+            const result_r_f = ctx.freshReg();
+            try ctx.func.emit(.{ .load_local = .{ .dst = result_r_f, .slot = result_slot_f } });
+            return result_r_f;
+        }
+
         const cond_r = try c.lowerNode(ctx, cond_id);
         const then_lbl = ctx.func.newLabel();
         const else_lbl = ctx.func.newLabel();

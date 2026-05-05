@@ -237,6 +237,8 @@ fn computeMaxReg(f: *Function) Reg {
             },
             .load_capture => |x| upd.go(x.dst, &max_r),
             .branch_if => |x| upd.go(x.cond, &max_r),
+            .branch_if_not_null => |x| upd.go(x.src, &max_r),
+            .branch_if_not_pair => |x| upd.go(x.src, &max_r),
             .call => |x| {
                 upd.go(x.dst, &max_r);
                 upd.go(x.func, &max_r);
@@ -461,6 +463,16 @@ const FnEmit = struct {
                 // emit JUMP_IF_FALSE with else_label target, then JUMP to
                 // then_label. The IR places the then_label right after.
                 try c.emitJumpFixup(.JUMP_IF_FALSE, c.phys(x.cond), x.else_label);
+                try c.emitJumpFixup(.JUMP, 0, x.then_label);
+            },
+            // zepo-28f: fused predicate-and-branch — A=src, BC=else target,
+            // followed by an unconditional JUMP to then_label.
+            .branch_if_not_null => |x| {
+                try c.emitJumpFixup(.BR_IF_NOT_NULL, c.phys(x.src), x.else_label);
+                try c.emitJumpFixup(.JUMP, 0, x.then_label);
+            },
+            .branch_if_not_pair => |x| {
+                try c.emitJumpFixup(.BR_IF_NOT_PAIR, c.phys(x.src), x.else_label);
                 try c.emitJumpFixup(.JUMP, 0, x.then_label);
             },
             .label => |x| {

@@ -62,6 +62,10 @@ pub const Opcode = enum(u8) {
     NULL_P, // A=dst, B=src
     PAIR_P, // A=dst, B=src
     EQ_P,   // A=dst, B=src1, C=src2
+    // zepo-28f: fused compare+branch — branch to target when predicate is FALSE,
+    // mirroring JUMP_IF_FALSE semantics. Encoding: A=src, BC=target.
+    BR_IF_NOT_NULL, // branch to BC if src is NOT nil
+    BR_IF_NOT_PAIR, // branch to BC if src is NOT pair
 };
 
 pub const Instr = u32;

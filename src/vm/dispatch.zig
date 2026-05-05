@@ -736,6 +736,21 @@ pub const VM = struct {
                     const vb = vm.call_stack.reg(c).*;
                     vm.call_stack.reg(a).* = if (va == vb) value_mod.TRUE else value_mod.FALSE;
                 },
+                // zepo-28f: fused predicate+branch. Branch to BC when predicate
+                // is FALSE — matches JUMP_IF_FALSE so the fall-through JUMP to
+                // the then-label still works.
+                .BR_IF_NOT_NULL => {
+                    const a = bytecode.decodeA(instr);
+                    const target = bytecode.decodeBC(instr);
+                    const v = vm.call_stack.reg(a).*;
+                    if (!value_mod.isNil(v)) pc = target;
+                },
+                .BR_IF_NOT_PAIR => {
+                    const a = bytecode.decodeA(instr);
+                    const target = bytecode.decodeBC(instr);
+                    const v = vm.call_stack.reg(a).*;
+                    if (!objects.isPair(v)) pc = target;
+                },
             }
         }
     }

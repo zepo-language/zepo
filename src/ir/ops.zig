@@ -108,6 +108,9 @@ pub const Op = union(enum) {
     null_p: struct { dst: Reg, src: Reg },
     pair_p: struct { dst: Reg, src: Reg },
     eq_p: struct { dst: Reg, src1: Reg, src2: Reg },
+    // zepo-28f: fused branches. Branch to else_label when predicate is FALSE.
+    branch_if_not_null: struct { src: Reg, then_label: Label, else_label: Label },
+    branch_if_not_pair: struct { src: Reg, then_label: Label, else_label: Label },
 };
 
 pub const Function = struct {
