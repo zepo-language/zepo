@@ -392,19 +392,21 @@ pub const Compiler = struct {
     }
 
     fn lowerApplicationTail(c: *Compiler, ctx: *FnCtx, func_id: NodeId, arg_ids: []const NodeId, tail: bool) anyerror!Reg {
-        // zepo-abd: specialize 2-arg calls to known arithmetic ops directly
-        // into ADD2/SUB2/... bytecode, bypassing the CALL machinery.
-        if (arg_ids.len == 2) {
-            const fn_node = c.arena.get(func_id).*;
-            if (fn_node == .sym_ref) {
-                const name = fn_node.sym_ref.name;
-                const SpecOp = enum { add, sub, mul, num_eq, num_lt, num_gt };
+        // zepo-abd / zepo-1xz: specialize calls to known builtins directly
+        // into dedicated bytecode, bypassing the CALL machinery.
+        const fn_node = c.arena.get(func_id).*;
+        if (fn_node == .sym_ref) {
+            const name = fn_node.sym_ref.name;
+            // 2-arg specializations.
+            if (arg_ids.len == 2) {
+                const SpecOp = enum { add, sub, mul, num_eq, num_lt, num_gt, cons };
                 const which: ?SpecOp = if (std.mem.eql(u8, name, "+")) .add
                     else if (std.mem.eql(u8, name, "-")) .sub
                     else if (std.mem.eql(u8, name, "*")) .mul
                     else if (std.mem.eql(u8, name, "=")) .num_eq
                     else if (std.mem.eql(u8, name, "<")) .num_lt
                     else if (std.mem.eql(u8, name, ">")) .num_gt
+                    else if (std.mem.eql(u8, name, "cons")) .cons
                     else null;
                 if (which) |w| {
                     const saved = ctx.next_reg;
@@ -419,6 +421,25 @@ pub const Compiler = struct {
                         .num_eq => try ctx.func.emit(.{ .num_eq2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
                         .num_lt => try ctx.func.emit(.{ .num_lt2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
                         .num_gt => try ctx.func.emit(.{ .num_gt2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                        .cons => try ctx.func.emit(.{ .cons = .{ .dst = dst, .car = r1, .cdr = r2 } }),
+                    }
+                    return dst;
+                }
+            }
+            // 1-arg specializations: car, cdr.
+            if (arg_ids.len == 1) {
+                const SpecOp1 = enum { car, cdr };
+                const which: ?SpecOp1 = if (std.mem.eql(u8, name, "car")) .car
+                    else if (std.mem.eql(u8, name, "cdr")) .cdr
+                    else null;
+                if (which) |w| {
+                    const saved = ctx.next_reg;
+                    const r1 = try c.lowerNode(ctx, arg_ids[0]);
+                    ctx.next_reg = saved;
+                    const dst = ctx.freshReg();
+                    switch (w) {
+                        .car => try ctx.func.emit(.{ .car = .{ .dst = dst, .src = r1 } }),
+                        .cdr => try ctx.func.emit(.{ .cdr = .{ .dst = dst, .src = r1 } }),
                     }
                     return dst;
                 }
