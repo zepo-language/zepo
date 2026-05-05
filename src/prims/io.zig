@@ -216,6 +216,60 @@ pub fn primWriteToString(vm: *VM, args: []const Value) LispError!Value {
     return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
 }
 
+/// zepo-axm: native (format fmt . args). Mirrors the Lisp module impl
+/// but writes directly into one buffer — no per-char cons, no reverse,
+/// no string-append. Directives:
+///   ~a → display   ~s → write   ~% → newline   ~~ → literal tilde
+pub fn primFormat(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len < 1) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    const fmt = objects.stringBytes(args[0]);
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(vm.allocator);
+    buf.ensureUnusedCapacity(vm.allocator, fmt.len) catch return error.OutOfMemory;
+
+    var ai: usize = 1; // index into args (skip fmt)
+    var i: usize = 0;
+    while (i < fmt.len) : (i += 1) {
+        const c = fmt[i];
+        if (c != '~') {
+            buf.append(vm.allocator, c) catch return error.OutOfMemory;
+            continue;
+        }
+        i += 1;
+        if (i >= fmt.len) {
+            std.debug.print("error: format: incomplete directive at end of string\n", .{});
+            return error.InvalidForm;
+        }
+        switch (fmt[i]) {
+            'a' => {
+                if (ai >= args.len) {
+                    std.debug.print("error: format: not enough arguments for ~a\n", .{});
+                    return error.ArityMismatch;
+                }
+                displayValue(&buf, vm.allocator, args[ai]) catch return error.OutOfMemory;
+                ai += 1;
+            },
+            's' => {
+                if (ai >= args.len) {
+                    std.debug.print("error: format: not enough arguments for ~s\n", .{});
+                    return error.ArityMismatch;
+                }
+                writeValue(&buf, vm.allocator, args[ai]) catch return error.OutOfMemory;
+                ai += 1;
+            },
+            '%' => buf.append(vm.allocator, '\n') catch return error.OutOfMemory,
+            '~' => buf.append(vm.allocator, '~') catch return error.OutOfMemory,
+            else => {
+                std.debug.print("error: format: unknown directive ~{c}\n", .{fmt[i]});
+                return error.InvalidForm;
+            },
+        }
+    }
+    return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
+}
+
 pub fn primExit(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
     const code: u8 = if (args.len >= 1 and value_mod.isFixnum(args[0]))

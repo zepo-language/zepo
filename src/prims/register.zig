@@ -132,6 +132,7 @@ const TABLE: []const Entry = &.{
     make("write", 1, io_mod.primWrite),
     make("display-to-string", 1, io_mod.primDisplayToString),
     make("write-to-string", 1, io_mod.primWriteToString),
+    make("format", -1, io_mod.primFormat),
     make("exit", -1, io_mod.primExit),
     make("argv", 0, io_mod.primArgv),
 
