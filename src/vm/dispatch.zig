@@ -26,6 +26,9 @@ const GlobalEnv = runtime.GlobalEnv;
 const errs = @import("../runtime/errors.zig");
 const LispError = errs.LispError;
 
+// zepo-abd: arith prims used as slow-path fallback for ADD2/SUB2/etc.
+const arith_prims = @import("../prims/arith.zig");
+
 const bytecode = @import("../cg/bytecode.zig");
 const Opcode = bytecode.Opcode;
 const Instr = bytecode.Instr;
@@ -612,6 +615,105 @@ pub const VM = struct {
                         }
                     } else return error.ContractViolation;
                     vm.call_stack.reg(a).* = value_mod.NIL;
+                },
+
+                // zepo-abd: 2-arg specialized arithmetic.
+                .ADD2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const r = @addWithOverflow(va, vb);
+                        if (r[1] == 0) {
+                            vm.call_stack.reg(a).* = r[0] - 1;
+                            continue;
+                        }
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primAdd(vm, args[0..]);
+                },
+                .SUB2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const r = @subWithOverflow(va, vb);
+                        if (r[1] == 0) {
+                            vm.call_stack.reg(a).* = r[0] + 1;
+                            continue;
+                        }
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primSub(vm, args[0..]);
+                },
+                .MUL2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const av: i64 = @as(i64, @bitCast(va)) >> 3;
+                        const bv: i64 = @as(i64, @bitCast(vb)) >> 3;
+                        const r = @mulWithOverflow(av, bv);
+                        if (r[1] == 0) {
+                            const max_i63: i64 = (@as(i64, 1) << 62) - 1;
+                            const min_i63: i64 = -(@as(i64, 1) << 62);
+                            if (r[0] <= max_i63 and r[0] >= min_i63) {
+                                vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(r[0]));
+                                continue;
+                            }
+                        }
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primMul(vm, args[0..]);
+                },
+                .NUM_EQ2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        vm.call_stack.reg(a).* = if (va == vb) value_mod.TRUE else value_mod.FALSE;
+                        continue;
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primNumEq(vm, args[0..]);
+                },
+                .NUM_LT2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const ai: i64 = @bitCast(va);
+                        const bi: i64 = @bitCast(vb);
+                        vm.call_stack.reg(a).* = if (ai < bi) value_mod.TRUE else value_mod.FALSE;
+                        continue;
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primLt(vm, args[0..]);
+                },
+                .NUM_GT2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const ai: i64 = @bitCast(va);
+                        const bi: i64 = @bitCast(vb);
+                        vm.call_stack.reg(a).* = if (ai > bi) value_mod.TRUE else value_mod.FALSE;
+                        continue;
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primGt(vm, args[0..]);
                 },
             }
         }

@@ -94,6 +94,16 @@ pub const Op = union(enum) {
 
     prim_call: PrimCallOp,
     do_import: struct { dst: Reg, name: []const u8, alias: ?[]const u8, only: ?[]const []const u8 },
+
+    // zepo-abd: specialized 2-arg arithmetic. Compiled to dedicated bytecode
+    // opcodes (ADD2/SUB2/...) that bypass CALL machinery — fixnum fast path
+    // inline in dispatch; non-fixnum falls back to the corresponding prim.
+    add2: struct { dst: Reg, src1: Reg, src2: Reg },
+    sub2: struct { dst: Reg, src1: Reg, src2: Reg },
+    mul2: struct { dst: Reg, src1: Reg, src2: Reg },
+    num_eq2: struct { dst: Reg, src1: Reg, src2: Reg },
+    num_lt2: struct { dst: Reg, src1: Reg, src2: Reg },
+    num_gt2: struct { dst: Reg, src1: Reg, src2: Reg },
 };
 
 pub const Function = struct {

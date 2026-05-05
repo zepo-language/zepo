@@ -49,6 +49,15 @@ pub const Opcode = enum(u8) {
     MOVE,
     // Runtime import: IMPORT dst const_idx  (const encodes module spec)
     IMPORT,
+    // zepo-abd: specialized 2-arg arithmetic. A=dst, B=src1, C=src2.
+    // Fixnum fast path inline in dispatch; non-fixnum falls back to the
+    // corresponding prim (primAdd/primSub/...). Bypasses CALL machinery.
+    ADD2,
+    SUB2,
+    MUL2,
+    NUM_EQ2,
+    NUM_LT2,
+    NUM_GT2,
 };
 
 pub const Instr = u32;

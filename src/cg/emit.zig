@@ -253,6 +253,13 @@ fn computeMaxReg(f: *Function) Reg {
                 for (x.args) |a| upd.go(a, &max_r);
             },
             .do_import => |x| upd.go(x.dst, &max_r),
+            // zepo-abd: 2-arg arithmetic register usage.
+            .add2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .sub2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .mul2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .num_eq2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .num_lt2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .num_gt2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .branch, .label, .safepoint => {},
         }
     }
@@ -423,6 +430,14 @@ const FnEmit = struct {
             .cons => |x| try c.emitInstr(bytecode.encode(.CONS, c.phys(x.dst), c.phys(x.car), c.phys(x.cdr))),
             .car => |x| try c.emitInstr(bytecode.encode(.CAR, c.phys(x.dst), c.phys(x.src), 0)),
             .cdr => |x| try c.emitInstr(bytecode.encode(.CDR, c.phys(x.dst), c.phys(x.src), 0)),
+
+            // zepo-abd: 2-arg arithmetic specialized opcodes.
+            .add2 => |x| try c.emitInstr(bytecode.encode(.ADD2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            .sub2 => |x| try c.emitInstr(bytecode.encode(.SUB2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            .mul2 => |x| try c.emitInstr(bytecode.encode(.MUL2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            .num_eq2 => |x| try c.emitInstr(bytecode.encode(.NUM_EQ2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            .num_lt2 => |x| try c.emitInstr(bytecode.encode(.NUM_LT2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            .num_gt2 => |x| try c.emitInstr(bytecode.encode(.NUM_GT2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
 
             .make_closure => |x| {
                 if (x.code_id > 0xFFFF) return error.FnIdTooLarge;

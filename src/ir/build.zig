@@ -392,6 +392,38 @@ pub const Compiler = struct {
     }
 
     fn lowerApplicationTail(c: *Compiler, ctx: *FnCtx, func_id: NodeId, arg_ids: []const NodeId, tail: bool) anyerror!Reg {
+        // zepo-abd: specialize 2-arg calls to known arithmetic ops directly
+        // into ADD2/SUB2/... bytecode, bypassing the CALL machinery.
+        if (arg_ids.len == 2) {
+            const fn_node = c.arena.get(func_id).*;
+            if (fn_node == .sym_ref) {
+                const name = fn_node.sym_ref.name;
+                const SpecOp = enum { add, sub, mul, num_eq, num_lt, num_gt };
+                const which: ?SpecOp = if (std.mem.eql(u8, name, "+")) .add
+                    else if (std.mem.eql(u8, name, "-")) .sub
+                    else if (std.mem.eql(u8, name, "*")) .mul
+                    else if (std.mem.eql(u8, name, "=")) .num_eq
+                    else if (std.mem.eql(u8, name, "<")) .num_lt
+                    else if (std.mem.eql(u8, name, ">")) .num_gt
+                    else null;
+                if (which) |w| {
+                    const saved = ctx.next_reg;
+                    const r1 = try c.lowerNode(ctx, arg_ids[0]);
+                    const r2 = try c.lowerNode(ctx, arg_ids[1]);
+                    ctx.next_reg = saved;
+                    const dst = ctx.freshReg();
+                    switch (w) {
+                        .add => try ctx.func.emit(.{ .add2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                        .sub => try ctx.func.emit(.{ .sub2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                        .mul => try ctx.func.emit(.{ .mul2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                        .num_eq => try ctx.func.emit(.{ .num_eq2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                        .num_lt => try ctx.func.emit(.{ .num_lt2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                        .num_gt => try ctx.func.emit(.{ .num_gt2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
+                    }
+                    return dst;
+                }
+            }
+        }
         const saved_reg = ctx.next_reg;
         const func_r = try c.lowerNode(ctx, func_id);
         var arg_regs = std.ArrayList(Reg){};
