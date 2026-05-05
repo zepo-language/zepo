@@ -249,6 +249,7 @@ fn computeMaxReg(f: *Function) Reg {
             .num_lt_i => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
             .branch_if_num_neq_i => |x| upd.go(x.src, &max_r),
             .branch_if_num_nlt_i => |x| upd.go(x.src, &max_r),
+            .mod2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .call => |x| {
                 upd.go(x.dst, &max_r);
                 upd.go(x.func, &max_r);
@@ -518,6 +519,7 @@ const FnEmit = struct {
                 try c.emitInstr(bytecode.encode(.BR_IF_NUM_NLT_I, c.phys(x.src), @bitCast(x.imm), 0));
                 try c.emitJumpFixup(.JUMP, 0, x.else_label);
             },
+            .mod2 => |x| try c.emitInstr(bytecode.encode(.MOD2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
             .label => |x| {
                 try c.label_positions.put(x.id, c.currentPc());
             },

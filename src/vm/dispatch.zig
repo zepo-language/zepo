@@ -910,6 +910,26 @@ pub const VM = struct {
                     }
                     if (!pred_true) pc = bytecode.decodeBC(next_instr);
                 },
+                // zepo-8tx: 2-arg fixnum modulo with Scheme sign-of-divisor.
+                .MOD2 => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
+                        const av: i64 = value_mod.fixnumVal(va);
+                        const bv: i64 = value_mod.fixnumVal(vb);
+                        if (bv != 0) {
+                            const r = @rem(av, bv);
+                            const result: i64 = if (r == 0) 0 else if ((r > 0) == (bv > 0)) r else r + bv;
+                            vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(result));
+                            continue;
+                        }
+                    }
+                    var args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primModulo(vm, args[0..]);
+                },
                 .BR_IF_NUM_NLT_I => {
                     const a_reg = bytecode.decodeA(instr);
                     const b_raw = bytecode.decodeB(instr);

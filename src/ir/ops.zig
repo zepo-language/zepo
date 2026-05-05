@@ -124,6 +124,8 @@ pub const Op = union(enum) {
     num_lt_i: struct { dst: Reg, src: Reg, imm: i8 },
     branch_if_num_neq_i: struct { src: Reg, imm: i8, then_label: Label, else_label: Label },
     branch_if_num_nlt_i: struct { src: Reg, imm: i8, then_label: Label, else_label: Label },
+    // zepo-8tx: 2-arg fixnum modulo.
+    mod2: struct { dst: Reg, src1: Reg, src2: Reg },
 };
 
 pub const Function = struct {

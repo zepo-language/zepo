@@ -84,6 +84,8 @@ pub const Opcode = enum(u8) {
     // zepo-i3b: 2-word fused branch with imm. Word2 is JUMP w/ else target.
     BR_IF_NUM_NEQ_I, // branch to next_instr.BC if NOT (src == imm)
     BR_IF_NUM_NLT_I, // branch to next_instr.BC if NOT (src <  imm)
+    // zepo-8tx: 2-arg fixnum modulo. A=dst, B=src1, C=src2.
+    MOD2,
 };
 
 pub const Instr = u32;
