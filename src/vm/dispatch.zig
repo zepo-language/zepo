@@ -169,14 +169,16 @@ pub const VM = struct {
         var func = initial_func;
         var closure_val = initial_closure;
 
-        // Budget args into a local buffer so tail-calls can swap the backing.
-        // zepo-op7: shrunk from [256] to [64] to limit C-stack growth per
-        // zepo recursion level. Each non-tail recursion grows the C stack by
-        // the size of this buffer. 64 covers any reasonable call (positional
-        // + keyword args). Hitting the limit returns ArityMismatch.
-        var args_buf: [64]Value = undefined;
-        if (initial_args.len > args_buf.len) return error.ArityMismatch;
-        @memcpy(args_buf[0..initial_args.len], initial_args);
+        // zepo-1p4: skip the initial memcpy. For the first trampoline
+        // iteration `args_src` points at the caller's reg window directly;
+        // on tail-call iterations it points into the file-static tc_args_buf
+        // (already populated by the TAIL_CALL handler). The previous code
+        // copied caller-args → args_buf → callee regs (two copies) and
+        // tc_args_buf → args_buf → callee regs on tail-call (two copies).
+        // Removing both memcpys saves ~134M copies per 24game run.
+        var args_src: []const Value = initial_args;
+        var args_in_regs: bool = true;
+        if (initial_args.len > tc_args_buf.len) return error.ArityMismatch;
         var args_len: usize = initial_args.len;
 
         trampoline: while (true) {
@@ -205,9 +207,11 @@ pub const VM = struct {
 
             // Place arguments into regs[0..arity]. If has_rest, stuff the
             // remaining args into a list in regs[arity].
+            // zepo-1p4: read args from `args_src` (initial: caller's regs;
+            // post-tail-call: args_buf).
             var i: usize = 0;
             while (i < func.arity) : (i += 1) {
-                vm.call_stack.regs.items[base + i] = args_buf[i];
+                vm.call_stack.regs.items[base + i] = args_src[i];
             }
             if (func.keyword_params.len > 0) {
                 // Fill keyword param slots with defaults first.
@@ -217,14 +221,14 @@ pub const VM = struct {
                 // Then override with caller-provided keyword args.
                 var ki: usize = func.arity;
                 while (ki < args_len) : (ki += 2) {
-                    const key_sym = args_buf[ki];
+                    const key_sym = args_src[ki];
                     if (!objects.isSymbol(key_sym)) return error.TypeError;
                     const key_name = objects.symbolName(key_sym);
                     const bare = if (key_name.len > 0 and key_name[0] == ':') key_name[1..] else key_name;
                     var found = false;
                     for (func.keyword_params) |kp| {
                         if (std.mem.eql(u8, bare, kp.name)) {
-                            vm.call_stack.regs.items[base + kp.slot] = args_buf[ki + 1];
+                            vm.call_stack.regs.items[base + kp.slot] = args_src[ki + 1];
                             found = true;
                             break;
                         }
@@ -235,26 +239,32 @@ pub const VM = struct {
                 const rest_count = args_len - func.arity;
                 const pair_bytes: usize = 24; // 8 header + 2 body words
 
-                // args_buf lives on the C stack and is not a GC root.
                 // reserveNursery may call gc.minor(), which moves heap objects.
-                // Root the rest args so GC updates them before we use them in
-                // the makePair loop below. Fixed args are already in registers.
-                const prev_extra = vm.gc.roots.extra.items.len;
-                vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, rest_count) catch return error.OutOfMemory;
-                for (func.arity..args_len) |ri| vm.gc.roots.extra.appendAssumeCapacity(&args_buf[ri]);
-                vm.gc.reserveNursery(pair_bytes * rest_count) catch {
+                // If args_src is in args_buf (C-stack), root the rest entries
+                // so GC updates them. If args_src is in regs, those slots are
+                // already roots via vmRootVisit — no extra rooting needed.
+                if (!args_in_regs) {
+                    // args_src points into tc_args_buf — root those slots.
+                    // @constCast safe: tc_args_buf is mutable file-static.
+                    const mut: [*]Value = @constCast(args_src.ptr);
+                    const prev_extra = vm.gc.roots.extra.items.len;
+                    vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, rest_count) catch return error.OutOfMemory;
+                    for (func.arity..args_len) |ri| vm.gc.roots.extra.appendAssumeCapacity(&mut[ri]);
+                    vm.gc.reserveNursery(pair_bytes * rest_count) catch {
+                        vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                        return error.OutOfMemory;
+                    };
                     vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
-                    return error.OutOfMemory;
-                };
-                // Space is now reserved; no GC will fire in the makePair loop.
-                vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                } else {
+                    vm.gc.reserveNursery(pair_bytes * rest_count) catch return error.OutOfMemory;
+                }
 
-                // Build rest-list from args_buf[func.arity..args_len].
+                // Build rest-list from args_src[func.arity..args_len].
                 var rest: Value = value_mod.NIL;
                 var k: usize = args_len;
                 while (k > func.arity) {
                     k -= 1;
-                    rest = objects.makePair(vm.gc, args_buf[k], rest) catch return error.OutOfMemory;
+                    rest = objects.makePair(vm.gc, args_src[k], rest) catch return error.OutOfMemory;
                 }
                 vm.call_stack.regs.items[base + func.arity] = rest;
             }
@@ -267,12 +277,16 @@ pub const VM = struct {
 
             if (result == .tail_call) {
                 // Pop current frame then restart with new func/args.
+                // zepo-1p4: args already live in tc_args_buf — just point
+                // args_src at it. The next trampoline iteration places them
+                // into the new frame's regs before re-entering dispatch, so
+                // a subsequent TAIL_CALL overwriting tc_args_buf is safe.
                 _ = vm.call_stack.pop();
                 func = result.tail_call.func;
                 closure_val = result.tail_call.closure_val;
-                if (result.tail_call.args.len > args_buf.len) return error.ArityMismatch;
-                args_len = result.tail_call.args.len;
-                @memcpy(args_buf[0..args_len], result.tail_call.args);
+                args_src = result.tail_call.args;
+                args_len = args_src.len;
+                args_in_regs = false;
                 continue :trampoline;
             }
 
