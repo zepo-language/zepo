@@ -50,7 +50,31 @@ fn anyFloat(args: []const Value) LispError!bool {
     return any_f;
 }
 
+// zepo-712: fixnum bit-pattern fast checks. Tag = 001 (Tag.fixnum=1).
+// `((a ^ 1) | (b ^ 1)) & 7 == 0` is true iff BOTH a and b have low-3-bit
+// tag exactly 001 — single XOR/OR/AND/CMP, faster than two isFixnum calls.
+inline fn bothFixnum(a: Value, b: Value) bool {
+    return ((a ^ 1) | (b ^ 1)) & 7 == 0;
+}
+
+// Encode an i64 as fixnum if it fits in i63 range; otherwise return null.
+inline fn tryEncodeFixnum(n: i64) ?Value {
+    const max_i63: i64 = (@as(i64, 1) << 62) - 1;
+    const min_i63: i64 = -(@as(i64, 1) << 62);
+    if (n > max_i63 or n < min_i63) return null;
+    return value_mod.fixnum(@intCast(n));
+}
+
 pub fn primAdd(vm: *VM, args: []const Value) LispError!Value {
+    // zepo-712: 2-arg fixnum fast path.
+    if (args.len == 2 and bothFixnum(args[0], args[1])) {
+        const av = value_mod.fixnumVal(args[0]);
+        const bv = value_mod.fixnumVal(args[1]);
+        const r = std.math.add(i64, @as(i64, av), @as(i64, bv)) catch
+            return makeNum(vm, true, 0, @as(f64, @floatFromInt(av)) + @as(f64, @floatFromInt(bv)));
+        if (tryEncodeFixnum(r)) |fx| return fx;
+        return makeNum(vm, true, 0, @floatFromInt(r));
+    }
     const any_f = try anyFloat(args);
     if (any_f) {
         var acc: f64 = 0;
@@ -68,6 +92,15 @@ pub fn primAdd(vm: *VM, args: []const Value) LispError!Value {
 
 pub fn primSub(vm: *VM, args: []const Value) LispError!Value {
     if (args.len == 0) return error.ArityMismatch;
+    // zepo-712: 2-arg fixnum fast path.
+    if (args.len == 2 and bothFixnum(args[0], args[1])) {
+        const av = value_mod.fixnumVal(args[0]);
+        const bv = value_mod.fixnumVal(args[1]);
+        const r = std.math.sub(i64, @as(i64, av), @as(i64, bv)) catch
+            return makeNum(vm, true, 0, @as(f64, @floatFromInt(av)) - @as(f64, @floatFromInt(bv)));
+        if (tryEncodeFixnum(r)) |fx| return fx;
+        return makeNum(vm, true, 0, @floatFromInt(r));
+    }
     const any_f = try anyFloat(args);
     if (any_f) {
         if (args.len == 1) return makeNum(vm, true, 0, -toFloat(args[0]));
@@ -90,6 +123,15 @@ pub fn primSub(vm: *VM, args: []const Value) LispError!Value {
 }
 
 pub fn primMul(vm: *VM, args: []const Value) LispError!Value {
+    // zepo-712: 2-arg fixnum fast path.
+    if (args.len == 2 and bothFixnum(args[0], args[1])) {
+        const av = value_mod.fixnumVal(args[0]);
+        const bv = value_mod.fixnumVal(args[1]);
+        const r = std.math.mul(i64, @as(i64, av), @as(i64, bv)) catch
+            return makeNum(vm, true, 0, @as(f64, @floatFromInt(av)) * @as(f64, @floatFromInt(bv)));
+        if (tryEncodeFixnum(r)) |fx| return fx;
+        return makeNum(vm, true, 0, @floatFromInt(r));
+    }
     const any_f = try anyFloat(args);
     if (any_f) {
         var acc: f64 = 1;
@@ -107,6 +149,18 @@ pub fn primMul(vm: *VM, args: []const Value) LispError!Value {
 
 pub fn primDiv(vm: *VM, args: []const Value) LispError!Value {
     if (args.len == 0) return error.ArityMismatch;
+    // zepo-712: 2-arg fixnum fast path. Exact divide stays fixnum,
+    // otherwise return float (matches Scheme's int+int → float on inexact).
+    if (args.len == 2 and bothFixnum(args[0], args[1])) {
+        const av = value_mod.fixnumVal(args[0]);
+        const bv = value_mod.fixnumVal(args[1]);
+        if (bv == 0) return error.DivisionByZero;
+        if (@mod(@as(i64, av), @as(i64, bv)) == 0) {
+            const r = @divTrunc(@as(i64, av), @as(i64, bv));
+            if (tryEncodeFixnum(r)) |fx| return fx;
+        }
+        return makeNum(vm, true, 0, @as(f64, @floatFromInt(av)) / @as(f64, @floatFromInt(bv)));
+    }
     // Scheme (/) with all int args still produces an int when divisible; we
     // keep it simple: if all ints and exact divides, return int; otherwise
     // return float.
@@ -168,24 +222,50 @@ fn fGte(a: f64, b: f64) bool {
     return a >= b;
 }
 
+// zepo-712: 2-arg fixnum fast path for comparisons. Bit-equal Values that
+// are both fixnums compare equal/less/greater on raw u64 — but signed
+// comparison needs the i63 view, so we extract and compare as i64. For ==
+// we can compare encoded Values directly (bit equality of fixnum tags).
+inline fn cmpFastFixnum(args: []const Value, comptime op: enum { eq, lt, gt, lte, gte }) ?Value {
+    if (args.len != 2 or !bothFixnum(args[0], args[1])) return null;
+    if (op == .eq) {
+        return if (args[0] == args[1]) value_mod.TRUE else value_mod.FALSE;
+    }
+    const av = value_mod.fixnumVal(args[0]);
+    const bv = value_mod.fixnumVal(args[1]);
+    const result = switch (op) {
+        .eq => av == bv, // unreachable
+        .lt => av < bv,
+        .gt => av > bv,
+        .lte => av <= bv,
+        .gte => av >= bv,
+    };
+    return if (result) value_mod.TRUE else value_mod.FALSE;
+}
+
 pub fn primNumEq(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
+    if (cmpFastFixnum(args, .eq)) |r| return r;
     return compareAdjacent(args, fEq);
 }
 pub fn primLt(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
+    if (cmpFastFixnum(args, .lt)) |r| return r;
     return compareAdjacent(args, fLt);
 }
 pub fn primGt(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
+    if (cmpFastFixnum(args, .gt)) |r| return r;
     return compareAdjacent(args, fGt);
 }
 pub fn primLte(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
+    if (cmpFastFixnum(args, .lte)) |r| return r;
     return compareAdjacent(args, fLte);
 }
 pub fn primGte(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
+    if (cmpFastFixnum(args, .gte)) |r| return r;
     return compareAdjacent(args, fGte);
 }
 
