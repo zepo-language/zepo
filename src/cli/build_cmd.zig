@@ -212,7 +212,22 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     try w.writeAll(
+        \\// zepo-op7: macOS main thread is capped at ~8MB stack which limits
+        \\// zepo non-tail recursion to ~5K levels. Run on a worker thread.
         \\pub fn main() !void {
+        \\    var result: anyerror!void = {};
+        \\    const t = try std.Thread.spawn(
+        \\        .{ .stack_size = 1024 * 1024 * 1024 },
+        \\        workerMain,
+        \\        .{&result},
+        \\    );
+        \\    t.join();
+        \\    return result;
+        \\}
+        \\fn workerMain(out: *anyerror!void) void {
+        \\    out.* = realMain();
+        \\}
+        \\fn realMain() !void {
         \\    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
         \\    defer _ = gpa.deinit();
         \\    const alloc = gpa.allocator();
@@ -250,7 +265,9 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     // ── Run zig build ─────────────────────────────────────────────────────────
     const out_prefix = try std.fs.path.join(alloc, &.{ tmp_path, "out" });
     defer alloc.free(out_prefix);
-    var child = std.process.Child.init(&.{ "zig", "build", "-p", out_prefix }, alloc);
+    // zepo-299/zepo-op7: always build the standalone with ReleaseFast — a
+    // debug native build runs ~18x slower than the interpreted release.
+    var child = std.process.Child.init(&.{ "zig", "build", "-p", out_prefix, "-Doptimize=ReleaseFast" }, alloc);
     child.cwd = tmp_path;
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Inherit;
