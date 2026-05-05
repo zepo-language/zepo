@@ -46,7 +46,25 @@ const HELP =
     \\
 ;
 
+// zepo-op7: macOS main thread is capped at ~8MB stack, which limits zepo
+// recursion depth to ~5–8K non-tail frames. Run the real logic on a worker
+// thread with a large stack so user programs can recurse freely.
 pub fn main() !void {
+    var result: anyerror!void = {};
+    const t = try std.Thread.spawn(
+        .{ .stack_size = 1024 * 1024 * 1024 },
+        workerMain,
+        .{&result},
+    );
+    t.join();
+    return result;
+}
+
+fn workerMain(out: *anyerror!void) void {
+    out.* = realMain();
+}
+
+fn realMain() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();

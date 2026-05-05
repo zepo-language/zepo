@@ -67,7 +67,12 @@ pub const VM = struct {
     /// the active frame windows in `call_stack.regs`. We pre-reserve
     /// MAX_REGS capacity so the ArrayList backing slice never reallocates
     /// during a minor GC, keeping all `*Value` pointers into it stable.
-    pub const MAX_REGS: usize = 64 * 1024;
+    // zepo-op7: pool of register slots shared across all live frames. Each
+    // recursion level consumes num_regs slots (typically 4–16). 64K slots
+    // capped recursion at ~5K levels regardless of C-stack size; bumped
+    // to 4M so deep non-tail recursion works (4M slots × 8B = 32MB virtual,
+    // pages only fault in as the stack grows).
+    pub const MAX_REGS: usize = 4 * 1024 * 1024;
 
     pub fn init(
         gc: *GC,
@@ -165,7 +170,11 @@ pub const VM = struct {
         var closure_val = initial_closure;
 
         // Budget args into a local buffer so tail-calls can swap the backing.
-        var args_buf: [256]Value = undefined;
+        // zepo-op7: shrunk from [256] to [64] to limit C-stack growth per
+        // zepo recursion level. Each non-tail recursion grows the C stack by
+        // the size of this buffer. 64 covers any reasonable call (positional
+        // + keyword args). Hitting the limit returns ArityMismatch.
+        var args_buf: [64]Value = undefined;
         if (initial_args.len > args_buf.len) return error.ArityMismatch;
         @memcpy(args_buf[0..initial_args.len], initial_args);
         var args_len: usize = initial_args.len;
@@ -283,7 +292,8 @@ pub const VM = struct {
 
     /// Tail-call out-buffer. Using a thread-local-ish static buffer would be
     /// simpler but Zig lacks thread locals; we put it on the VM struct.
-    var tc_args_buf: [256]Value = undefined;
+    // zepo-op7: shrunk from [256] to [64] (see args_buf comment in execFn).
+    var tc_args_buf: [64]Value = undefined;
 
     fn dispatch(vm: *VM, func: *CompiledFn) LispError!DispatchResult {
         var pc: u32 = 0;
