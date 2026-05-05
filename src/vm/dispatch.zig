@@ -715,6 +715,27 @@ pub const VM = struct {
                     var args = [_]Value{ va, vb };
                     vm.call_stack.reg(a).* = try arith_prims.primGt(vm, args[0..]);
                 },
+                // zepo-w19: predicate opcodes — direct inline tests.
+                .NULL_P => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const v = vm.call_stack.reg(b).*;
+                    vm.call_stack.reg(a).* = if (value_mod.isNil(v)) value_mod.TRUE else value_mod.FALSE;
+                },
+                .PAIR_P => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const v = vm.call_stack.reg(b).*;
+                    vm.call_stack.reg(a).* = if (objects.isPair(v)) value_mod.TRUE else value_mod.FALSE;
+                },
+                .EQ_P => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    const c = bytecode.decodeC(instr);
+                    const va = vm.call_stack.reg(b).*;
+                    const vb = vm.call_stack.reg(c).*;
+                    vm.call_stack.reg(a).* = if (va == vb) value_mod.TRUE else value_mod.FALSE;
+                },
             }
         }
     }

@@ -104,6 +104,10 @@ pub const Op = union(enum) {
     num_eq2: struct { dst: Reg, src1: Reg, src2: Reg },
     num_lt2: struct { dst: Reg, src1: Reg, src2: Reg },
     num_gt2: struct { dst: Reg, src1: Reg, src2: Reg },
+    // zepo-w19: predicate ops.
+    null_p: struct { dst: Reg, src: Reg },
+    pair_p: struct { dst: Reg, src: Reg },
+    eq_p: struct { dst: Reg, src1: Reg, src2: Reg },
 };
 
 pub const Function = struct {

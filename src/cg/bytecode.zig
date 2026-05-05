@@ -58,6 +58,10 @@ pub const Opcode = enum(u8) {
     NUM_EQ2,
     NUM_LT2,
     NUM_GT2,
+    // zepo-w19: 1-arg / 2-arg predicate opcodes. Result is TRUE/FALSE in dst.
+    NULL_P, // A=dst, B=src
+    PAIR_P, // A=dst, B=src
+    EQ_P,   // A=dst, B=src1, C=src2
 };
 
 pub const Instr = u32;

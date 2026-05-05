@@ -399,7 +399,7 @@ pub const Compiler = struct {
             const name = fn_node.sym_ref.name;
             // 2-arg specializations.
             if (arg_ids.len == 2) {
-                const SpecOp = enum { add, sub, mul, num_eq, num_lt, num_gt, cons };
+                const SpecOp = enum { add, sub, mul, num_eq, num_lt, num_gt, cons, eq_p };
                 const which: ?SpecOp = if (std.mem.eql(u8, name, "+")) .add
                     else if (std.mem.eql(u8, name, "-")) .sub
                     else if (std.mem.eql(u8, name, "*")) .mul
@@ -407,6 +407,7 @@ pub const Compiler = struct {
                     else if (std.mem.eql(u8, name, "<")) .num_lt
                     else if (std.mem.eql(u8, name, ">")) .num_gt
                     else if (std.mem.eql(u8, name, "cons")) .cons
+                    else if (std.mem.eql(u8, name, "eq?")) .eq_p
                     else null;
                 if (which) |w| {
                     const saved = ctx.next_reg;
@@ -422,15 +423,18 @@ pub const Compiler = struct {
                         .num_lt => try ctx.func.emit(.{ .num_lt2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
                         .num_gt => try ctx.func.emit(.{ .num_gt2 = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
                         .cons => try ctx.func.emit(.{ .cons = .{ .dst = dst, .car = r1, .cdr = r2 } }),
+                        .eq_p => try ctx.func.emit(.{ .eq_p = .{ .dst = dst, .src1 = r1, .src2 = r2 } }),
                     }
                     return dst;
                 }
             }
-            // 1-arg specializations: car, cdr.
+            // 1-arg specializations: car, cdr, null?, pair?.
             if (arg_ids.len == 1) {
-                const SpecOp1 = enum { car, cdr };
+                const SpecOp1 = enum { car, cdr, null_p, pair_p };
                 const which: ?SpecOp1 = if (std.mem.eql(u8, name, "car")) .car
                     else if (std.mem.eql(u8, name, "cdr")) .cdr
+                    else if (std.mem.eql(u8, name, "null?")) .null_p
+                    else if (std.mem.eql(u8, name, "pair?")) .pair_p
                     else null;
                 if (which) |w| {
                     const saved = ctx.next_reg;
@@ -440,6 +444,8 @@ pub const Compiler = struct {
                     switch (w) {
                         .car => try ctx.func.emit(.{ .car = .{ .dst = dst, .src = r1 } }),
                         .cdr => try ctx.func.emit(.{ .cdr = .{ .dst = dst, .src = r1 } }),
+                        .null_p => try ctx.func.emit(.{ .null_p = .{ .dst = dst, .src = r1 } }),
+                        .pair_p => try ctx.func.emit(.{ .pair_p = .{ .dst = dst, .src = r1 } }),
                     }
                     return dst;
                 }

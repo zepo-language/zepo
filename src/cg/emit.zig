@@ -260,6 +260,9 @@ fn computeMaxReg(f: *Function) Reg {
             .num_eq2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .num_lt2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .num_gt2 => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .null_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
+            .pair_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
+            .eq_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .branch, .label, .safepoint => {},
         }
     }
@@ -438,6 +441,10 @@ const FnEmit = struct {
             .num_eq2 => |x| try c.emitInstr(bytecode.encode(.NUM_EQ2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
             .num_lt2 => |x| try c.emitInstr(bytecode.encode(.NUM_LT2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
             .num_gt2 => |x| try c.emitInstr(bytecode.encode(.NUM_GT2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            // zepo-w19: predicate opcodes.
+            .null_p => |x| try c.emitInstr(bytecode.encode(.NULL_P, c.phys(x.dst), c.phys(x.src), 0)),
+            .pair_p => |x| try c.emitInstr(bytecode.encode(.PAIR_P, c.phys(x.dst), c.phys(x.src), 0)),
+            .eq_p => |x| try c.emitInstr(bytecode.encode(.EQ_P, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
 
             .make_closure => |x| {
                 if (x.code_id > 0xFFFF) return error.FnIdTooLarge;
