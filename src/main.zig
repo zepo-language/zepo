@@ -233,7 +233,7 @@ fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []con
     };
     defer alloc.free(src);
     _ = ctx.evalString(src, path) catch |e| {
-        ctx.printDiagnostic(e);
+        ctx.printDiagnostic(std.fs.File.stderr(), e);
         std.process.exit(1);
     };
 }

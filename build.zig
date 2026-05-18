@@ -166,6 +166,23 @@ pub fn build(b: *std.Build) void {
     const runtime_errors_tests = b.addTest(.{ .root_module = runtime_errors_mod });
     const run_runtime_errors_tests = b.addRunArtifact(runtime_errors_tests);
 
+    // --- Diagnostic tests (zepo-45l) ---
+    const conformance_helpers_mod = b.createModule(.{
+        .root_source_file = b.path("tests/conformance/helpers.zig"),
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const diagnostic_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/runtime/diagnostic_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zepo", .module = mod },
+            .{ .name = "conformance_helpers", .module = conformance_helpers_mod },
+        },
+    });
+    const diagnostic_tests = b.addTest(.{ .root_module = diagnostic_test_mod });
+    const run_diagnostic_tests = b.addRunArtifact(diagnostic_tests);
+
     // --- Module tests ---
     const module_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/module_test.zig"),
@@ -324,6 +341,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ir_tests.step);
     test_step.dependOn(&run_vm_tests.step);
     test_step.dependOn(&run_runtime_errors_tests.step);
+    test_step.dependOn(&run_diagnostic_tests.step);
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_macros_tests.step);
     test_step.dependOn(&run_result_tests.step);

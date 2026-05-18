@@ -55,7 +55,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
         };
         defer alloc.free(src);
         _ = ctx.evalString(src, path) catch |e| {
-            ctx.printDiagnostic(e);
+            ctx.printDiagnostic(std.fs.File.stderr(), e);
         };
     }
 
@@ -116,7 +116,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
                 continue;
             }
             const result = ctx.evalString(input.items, "<repl>") catch |e| {
-                ctx.printDiagnostic(e);
+                ctx.printDiagnostic(std.fs.File.stderr(), e);
                 input.clearRetainingCapacity();
                 continue;
             };

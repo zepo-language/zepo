@@ -92,7 +92,7 @@ fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []con
     _ = ctx.evalString(src, path) catch |e| {
         const msg = std.fmt.bufPrint(&buf, "FAIL  {s}  ({s})\n", .{ path, @errorName(e) }) catch "FAIL\n";
         stdout.writeAll(msg) catch {};
-        ctx.printDiagnostic(e);
+        ctx.printDiagnostic(std.fs.File.stderr(), e);
         return false;
     };
 

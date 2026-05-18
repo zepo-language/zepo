@@ -284,9 +284,10 @@ pub const EvalContext = struct {
         return ctx.evalNonModuleForm(form);
     }
 
-    /// Print a caught error with file/line/col and source excerpt to stderr.
-    pub fn printDiagnostic(ctx: *const EvalContext, err: anyerror) void {
-        const stderr = std.fs.File.stderr();
+    /// Print a caught error with file/line/col and source excerpt to `writer`.
+    /// Pass `std.fs.File.stderr()` for CLI output; pass a buffer writer in tests.
+    pub fn printDiagnostic(ctx: *const EvalContext, writer: anytype, err: anyerror) void {
+        // zepo-45l
         var buf: [512]u8 = undefined;
         // For UserError, prefer the message stored in the VM over the bare name.
         const err_label: []const u8 = blk: {
@@ -307,28 +308,28 @@ pub const EvalContext = struct {
                 span.start.col,
                 err_label,
             }) catch "";
-            stderr.writeAll(header) catch {};
+            writer.writeAll(header) catch {};
             if (line_text.len > 0) {
                 var line_buf: [1024]u8 = undefined;
                 const line_out = std.fmt.bufPrint(&line_buf, "  {s}\n", .{line_text}) catch "";
-                stderr.writeAll(line_out) catch {};
+                writer.writeAll(line_out) catch {};
                 const col: usize = if (span.start.col > 0) span.start.col - 1 else 0;
                 var caret_buf: [256]u8 = undefined;
                 const spaces = @min(col + 2, caret_buf.len - 2);
                 @memset(caret_buf[0..spaces], ' ');
                 caret_buf[spaces] = '^';
                 caret_buf[spaces + 1] = '\n';
-                stderr.writeAll(caret_buf[0 .. spaces + 2]) catch {};
+                writer.writeAll(caret_buf[0 .. spaces + 2]) catch {};
             }
         } else {
             const msg = std.fmt.bufPrint(&buf, "error: {s}\n", .{err_label}) catch "";
-            stderr.writeAll(msg) catch {};
+            writer.writeAll(msg) catch {};
         }
         // Print call stack from VM frames (innermost first).
         if (ctx.vm) |*vm| {
             const frames = vm.call_stack.frames.items;
             if (frames.len > 0) {
-                stderr.writeAll("call stack (innermost first):\n") catch {};
+                writer.writeAll("call stack (innermost first):\n") catch {};
                 const max_frames: usize = 20;
                 const shown = @min(frames.len, max_frames);
                 var fi: usize = frames.len;
@@ -338,14 +339,13 @@ pub const EvalContext = struct {
                     const fname = if (frame.func.src_name.len > 0) frame.func.src_name else "<anonymous>";
                     var fbuf: [256]u8 = undefined;
                     const fline = std.fmt.bufPrint(&fbuf, "  {s}\n", .{fname}) catch continue;
-                    stderr.writeAll(fline) catch {};
+                    writer.writeAll(fline) catch {};
                 }
                 if (frames.len > max_frames) {
                     var tbuf: [64]u8 = undefined;
                     const tnote = std.fmt.bufPrint(&tbuf, "  ... ({d} more frames)\n", .{frames.len - max_frames}) catch "";
-                    stderr.writeAll(tnote) catch {};
+                    writer.writeAll(tnote) catch {};
                 }
-
             }
         }
     }

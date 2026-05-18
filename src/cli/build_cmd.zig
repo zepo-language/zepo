@@ -245,11 +245,11 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         \\
     );
     for (mod_names.items, 0..) |mod_name, j| {
-        try w.print("    if (ctx.evalString(MODULE_{d}, \"{s}\")) |_| {{}} else |e| ctx.printDiagnostic(e);\n", .{ j, mod_name });
+        try w.print("    if (ctx.evalString(MODULE_{d}, \"{s}\")) |_| {{}} else |e| ctx.printDiagnostic(std.fs.File.stderr(), e);\n", .{ j, mod_name });
     }
     try w.writeAll(
         \\    if (ctx.evalString(PROGRAM, "<program>")) |_| {} else |e| {
-        \\        ctx.printDiagnostic(e);
+        \\        ctx.printDiagnostic(std.fs.File.stderr(), e);
         \\        std.process.exit(1);
         \\    }
         \\}
