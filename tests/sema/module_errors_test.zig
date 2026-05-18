@@ -78,12 +78,22 @@ test "ModuleAlreadyDefined: redefining a module errors" {
     ));
 }
 
-test "ImportBeforeInitialization: forward import" {
+test "ModuleNotFound: import before module is defined in source" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
+    // m is not in the registry when (import m) runs — ModuleNotFound, not ImportBeforeInitialization
     try std.testing.expectError(error.ModuleNotFound, rig.eval(
         \\(import m)
         \\(module m (export x) (define x 1))
+    ));
+}
+
+test "ImportBeforeInitialization: module imports itself (circular)" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    // zepo-ejo: module is in registry (initialized=false) when its own body tries to import it
+    try std.testing.expectError(error.ImportBeforeInitialization, rig.eval(
+        \\(module a (export x) (import a) (define x 1))
     ));
 }
 
