@@ -70,3 +70,42 @@ test "fail: stack overflow via EvalContext vm_max_regs" {
         \\(count-down 100000)
     ));
 }
+
+// zepo-l20: previously untested LispError trigger paths
+
+test "fail: ContractViolation — nil as hash-table key" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try std.testing.expectError(error.ContractViolation,
+        r.eval("(let ((h (make-hash-table))) (hash-set! h '() \"v\"))"));
+}
+
+test "fail: UnknownKeyword — calling with undeclared keyword arg" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    _ = try r.eval("(define (f x :greeting \"hi\") greeting)");
+    try std.testing.expectError(error.UnknownKeyword, r.eval("(f \"Alice\" :unknown \"Hello\")"));
+}
+
+test "fail: IOError — reading a nonexistent file" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try std.testing.expectError(error.IOError,
+        r.eval("(file-read-string \"/no/such/file/zepo-l20-test\")"));
+}
+
+test "fail: ImportNameConflict — (only ...) imports same name twice with different values" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    _ = try r.eval("(module m1 (export x) (define x 1))");
+    _ = try r.eval("(module m2 (export x) (define x 2))");
+    _ = try r.eval("(import m1 (only x))");
+    try std.testing.expectError(error.ImportNameConflict,
+        r.eval("(import m2 (only x))"));
+}
+
+test "fail: ImportNameMustBeSymbol — non-symbol import name" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try std.testing.expectError(error.ImportNameMustBeSymbol, r.eval("(import 42)"));
+}
