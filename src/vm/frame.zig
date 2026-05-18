@@ -19,7 +19,12 @@ pub const Frame = struct {
     base: u32,
     caller_base: u32,
     closure_val: Value,
+    // zepo-5wg: register in caller's frame where result should be stored.
+    // outermost_sentinel means this is the entry frame (execFn returns).
+    dst_reg: u16 = outermost_sentinel,
 };
+
+pub const outermost_sentinel: u16 = std.math.maxInt(u16);
 
 pub const CallStack = struct {
     frames: std.ArrayList(Frame),

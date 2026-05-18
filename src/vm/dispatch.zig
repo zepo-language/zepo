@@ -157,6 +157,67 @@ pub const VM = struct {
         vm.gc.roots.extra.shrinkRetainingCapacity(prev_len);
     }
 
+    // zepo-5wg: place args from args_src into the new frame at `base`.
+    // args_in_regs=true when args_src is a slice into call_stack.regs (already
+    // GC-rooted); false when pointing at tc_args_buf (C-static, needs extra roots).
+    fn setupCallArgs(
+        vm: *VM,
+        tgt: *CompiledFn,
+        args_src: []const Value,
+        base: u32,
+        args_in_regs: bool,
+    ) LispError!void {
+        const args_len = args_src.len;
+        var i: usize = 0;
+        while (i < tgt.arity) : (i += 1) {
+            vm.call_stack.regs.items[base + i] = args_src[i];
+        }
+        if (tgt.keyword_params.len > 0) {
+            for (tgt.keyword_params) |kp| {
+                vm.call_stack.regs.items[base + kp.slot] = kp.default_value;
+            }
+            var ki: usize = tgt.arity;
+            while (ki < args_len) : (ki += 2) {
+                const key_sym = args_src[ki];
+                if (!objects.isSymbol(key_sym)) return error.TypeError;
+                const key_name = objects.symbolName(key_sym);
+                const bare = if (key_name.len > 0 and key_name[0] == ':') key_name[1..] else key_name;
+                var found = false;
+                for (tgt.keyword_params) |kp| {
+                    if (std.mem.eql(u8, bare, kp.name)) {
+                        vm.call_stack.regs.items[base + kp.slot] = args_src[ki + 1];
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return error.UnknownKeyword;
+            }
+        } else if (tgt.has_rest) {
+            const rest_count = args_len - tgt.arity;
+            const pair_bytes: usize = 24;
+            if (!args_in_regs) {
+                const mut: [*]Value = @constCast(args_src.ptr);
+                const prev_extra = vm.gc.roots.extra.items.len;
+                vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, rest_count) catch return error.OutOfMemory;
+                for (tgt.arity..args_len) |ri| vm.gc.roots.extra.appendAssumeCapacity(&mut[ri]);
+                vm.gc.reserveNursery(pair_bytes * rest_count) catch {
+                    vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                    return error.OutOfMemory;
+                };
+                vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+            } else {
+                vm.gc.reserveNursery(pair_bytes * rest_count) catch return error.OutOfMemory;
+            }
+            var rest: Value = value_mod.NIL;
+            var k: usize = args_len;
+            while (k > tgt.arity) {
+                k -= 1;
+                rest = objects.makePair(vm.gc, args_src[k], rest) catch return error.OutOfMemory;
+            }
+            vm.call_stack.regs.items[base + tgt.arity] = rest;
+        }
+    }
+
     /// Entry: run the function with given fn_id, passing `args`.
     pub fn run(vm: *VM, fn_id: u32, args: []const Value) LispError!Value {
         if (fn_id >= vm.compiled_fns.len) return error.InvalidForm;
@@ -197,79 +258,19 @@ pub const VM = struct {
             const base: u32 = @intCast(vm.call_stack.regs.items.len);
             // zepo-dv2: regs has MAX_REGS pre-reserved capacity; skip the
             // ensureUnusedCapacity call in the hot path.
+            // zepo-5wg: outermost_sentinel marks this as the entry frame.
             vm.call_stack.pushFast(.{
                 .func = func,
                 .pc = 0,
                 .base = base,
                 .caller_base = base,
                 .closure_val = closure_val,
+                .dst_reg = frame_mod.outermost_sentinel,
             }, func.num_regs) catch return error.OutOfMemory;
 
-            // Place arguments into regs[0..arity]. If has_rest, stuff the
-            // remaining args into a list in regs[arity].
-            // zepo-1p4: read args from `args_src` (initial: caller's regs;
-            // post-tail-call: args_buf).
-            var i: usize = 0;
-            while (i < func.arity) : (i += 1) {
-                vm.call_stack.regs.items[base + i] = args_src[i];
-            }
-            if (func.keyword_params.len > 0) {
-                // Fill keyword param slots with defaults first.
-                for (func.keyword_params) |kp| {
-                    vm.call_stack.regs.items[base + kp.slot] = kp.default_value;
-                }
-                // Then override with caller-provided keyword args.
-                var ki: usize = func.arity;
-                while (ki < args_len) : (ki += 2) {
-                    const key_sym = args_src[ki];
-                    if (!objects.isSymbol(key_sym)) return error.TypeError;
-                    const key_name = objects.symbolName(key_sym);
-                    const bare = if (key_name.len > 0 and key_name[0] == ':') key_name[1..] else key_name;
-                    var found = false;
-                    for (func.keyword_params) |kp| {
-                        if (std.mem.eql(u8, bare, kp.name)) {
-                            vm.call_stack.regs.items[base + kp.slot] = args_src[ki + 1];
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) return error.UnknownKeyword;
-                }
-            } else if (func.has_rest) {
-                const rest_count = args_len - func.arity;
-                const pair_bytes: usize = 24; // 8 header + 2 body words
+            try vm.setupCallArgs(func, args_src, base, args_in_regs);
 
-                // reserveNursery may call gc.minor(), which moves heap objects.
-                // If args_src is in args_buf (C-stack), root the rest entries
-                // so GC updates them. If args_src is in regs, those slots are
-                // already roots via vmRootVisit — no extra rooting needed.
-                if (!args_in_regs) {
-                    // args_src points into tc_args_buf — root those slots.
-                    // @constCast safe: tc_args_buf is mutable file-static.
-                    const mut: [*]Value = @constCast(args_src.ptr);
-                    const prev_extra = vm.gc.roots.extra.items.len;
-                    vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, rest_count) catch return error.OutOfMemory;
-                    for (func.arity..args_len) |ri| vm.gc.roots.extra.appendAssumeCapacity(&mut[ri]);
-                    vm.gc.reserveNursery(pair_bytes * rest_count) catch {
-                        vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
-                        return error.OutOfMemory;
-                    };
-                    vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
-                } else {
-                    vm.gc.reserveNursery(pair_bytes * rest_count) catch return error.OutOfMemory;
-                }
-
-                // Build rest-list from args_src[func.arity..args_len].
-                var rest: Value = value_mod.NIL;
-                var k: usize = args_len;
-                while (k > func.arity) {
-                    k -= 1;
-                    rest = objects.makePair(vm.gc, args_src[k], rest) catch return error.OutOfMemory;
-                }
-                vm.call_stack.regs.items[base + func.arity] = rest;
-            }
-
-            const result = vm.dispatch(func) catch |e| {
+            const result = vm.dispatch() catch |e| {
                 // Leave frame on stack — printDiagnostic walks them for traces.
                 // VM is always torn down by EvalContext after an error.
                 return e;
@@ -309,9 +310,15 @@ pub const VM = struct {
     // zepo-op7: shrunk from [256] to [64] (see args_buf comment in execFn).
     var tc_args_buf: [64]Value = undefined;
 
-    fn dispatch(vm: *VM, func: *CompiledFn) LispError!DispatchResult {
-        var pc: u32 = 0;
-        const code = func.code;
+    // zepo-5wg: dispatch drives the full multi-frame lifecycle. CALL on a closure
+    // pushes a logical frame and continues in the same C stack frame instead of
+    // recursing via execFn. RETURN and TAIL_CALL at non-outermost frames are
+    // handled here; at the outermost frame they signal execFn via DispatchResult.
+    fn dispatch(vm: *VM) LispError!DispatchResult {
+        const outermost_idx = vm.call_stack.frames.items.len - 1;
+        var func = vm.call_stack.currentFrame().func;
+        var pc: u32 = vm.call_stack.currentFrame().pc;
+        var code = func.code;
         while (true) {
             if (pc >= code.len) return error.ContractViolation;
             const instr = code[pc];
@@ -524,58 +531,103 @@ pub const VM = struct {
                     const b = bytecode.decodeB(instr);
                     const c = bytecode.decodeC(instr);
                     const fn_val = vm.call_stack.reg(b).*;
-                    const base_frame = vm.call_stack.currentFrame().base;
-                    const args_start = base_frame + @as(u32, b) + 1;
+                    const caller_base = vm.call_stack.currentFrame().base;
+                    const args_start = caller_base + @as(u32, b) + 1;
                     const args_end = args_start + @as(u32, c);
                     const args_slice = vm.call_stack.regs.items[args_start..args_end];
 
-                    // zepo-dv2: inline callValue dispatch — saves a function
-                    // call per CALL. Prim path goes direct to the function
-                    // pointer; closure path still recurses via execFn.
-                    const result = blk: {
-                        if (objects.isPrim(fn_val)) {
-                            const raw = objects.primFnPtr(fn_val);
-                            const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
-                            break :blk try pfn(vm, args_slice);
+                    if (objects.isPrim(fn_val)) {
+                        const raw = objects.primFnPtr(fn_val);
+                        const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
+                        vm.call_stack.reg(a).* = try pfn(vm, args_slice);
+                    } else if (objects.isClosure(fn_val)) {
+                        // zepo-5wg: push logical frame, continue in same C frame.
+                        const fn_id = objects.closureCodePtr(fn_val);
+                        if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
+                        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+                        const args_len = args_slice.len;
+                        if (tgt.keyword_params.len > 0) {
+                            if (args_len < tgt.arity) return error.ArityMismatch;
+                            if ((args_len - tgt.arity) % 2 != 0) return error.ArityMismatch;
+                        } else if (tgt.has_rest) {
+                            if (args_len < tgt.arity) return error.ArityMismatch;
+                        } else {
+                            if (args_len != tgt.arity) return error.ArityMismatch;
                         }
-                        if (objects.isClosure(fn_val)) {
-                            const fn_id = objects.closureCodePtr(fn_val);
-                            if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-                            const tgt = &vm.compiled_fns[@intCast(fn_id)];
-                            break :blk try vm.execFn(tgt, fn_val, args_slice);
-                        }
+                        vm.call_stack.currentFrame().pc = pc;
+                        const new_base: u32 = @intCast(vm.call_stack.regs.items.len);
+                        vm.call_stack.pushFast(.{
+                            .func = tgt,
+                            .pc = 0,
+                            .base = new_base,
+                            .caller_base = caller_base,
+                            .closure_val = fn_val,
+                            .dst_reg = a,
+                        }, tgt.num_regs) catch return error.OutOfMemory;
+                        try vm.setupCallArgs(tgt, args_slice, new_base, true);
+                        func = tgt;
+                        pc = 0;
+                        code = func.code;
+                    } else {
                         return error.TypeError;
-                    };
-                    vm.call_stack.reg(a).* = result;
+                    }
                 },
                 .TAIL_CALL => {
                     const a = bytecode.decodeA(instr);
                     const b = bytecode.decodeB(instr);
                     const fn_val = vm.call_stack.reg(a).*;
-                    const base_frame = vm.call_stack.currentFrame().base;
-                    const args_start = base_frame + @as(u32, a) + 1;
+                    const tc_base = vm.call_stack.currentFrame().base;
+                    const args_start = tc_base + @as(u32, a) + 1;
                     const args_end = args_start + @as(u32, b);
 
-                    // Snapshot args into the TC buffer (since we're about to
-                    // pop the frame).
                     if (b > tc_args_buf.len) return error.ArityMismatch;
                     @memcpy(tc_args_buf[0..b], vm.call_stack.regs.items[args_start..args_end]);
+
+                    const at_outermost = vm.call_stack.frames.items.len - 1 == outermost_idx;
 
                     if (objects.isClosure(fn_val)) {
                         const fn_id = objects.closureCodePtr(fn_val);
                         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
                         const tgt = &vm.compiled_fns[@intCast(fn_id)];
-                        return DispatchResult{ .tail_call = .{
+                        if (at_outermost) {
+                            return DispatchResult{ .tail_call = .{
+                                .func = tgt,
+                                .closure_val = fn_val,
+                                .args = tc_args_buf[0..b],
+                            } };
+                        }
+                        // zepo-5wg: non-outermost tail call — inherit dst_reg from
+                        // current frame and reuse the logical call slot.
+                        const args_len = @as(usize, b);
+                        if (tgt.keyword_params.len > 0) {
+                            if (args_len < tgt.arity) return error.ArityMismatch;
+                            if ((args_len - tgt.arity) % 2 != 0) return error.ArityMismatch;
+                        } else if (tgt.has_rest) {
+                            if (args_len < tgt.arity) return error.ArityMismatch;
+                        } else {
+                            if (args_len != tgt.arity) return error.ArityMismatch;
+                        }
+                        const dst = vm.call_stack.currentFrame().dst_reg;
+                        const parent_base = vm.call_stack.frames.items[vm.call_stack.frames.items.len - 2].base;
+                        _ = vm.call_stack.pop();
+                        const new_base: u32 = @intCast(vm.call_stack.regs.items.len);
+                        vm.call_stack.pushFast(.{
                             .func = tgt,
+                            .pc = 0,
+                            .base = new_base,
+                            .caller_base = parent_base,
                             .closure_val = fn_val,
-                            .args = tc_args_buf[0..b],
-                        } };
+                            .dst_reg = dst,
+                        }, tgt.num_regs) catch return error.OutOfMemory;
+                        try vm.setupCallArgs(tgt, tc_args_buf[0..b], new_base, false);
+                        func = tgt;
+                        pc = 0;
+                        code = func.code;
+                        continue;
                     }
                     if (objects.isPrim(fn_val)) {
                         const raw = objects.primFnPtr(fn_val);
                         const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
-                        // tc_args_buf is on the C-stack, not in the register file.
-                        // Root each slot so vmRootVisit can update them if the prim triggers GC.
                         const prev_extra = vm.gc.roots.extra.items.len;
                         vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, b) catch return error.OutOfMemory;
                         for (0..b) |i| vm.gc.roots.extra.appendAssumeCapacity(&tc_args_buf[i]);
@@ -584,14 +636,32 @@ pub const VM = struct {
                             return e;
                         };
                         vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
-                        return DispatchResult{ .value = v };
+                        if (at_outermost) return DispatchResult{ .value = v };
+                        // zepo-5wg: non-outermost prim tail call — pop, write result.
+                        const dst = vm.call_stack.currentFrame().dst_reg;
+                        _ = vm.call_stack.pop();
+                        func = vm.call_stack.currentFrame().func;
+                        pc = vm.call_stack.currentFrame().pc;
+                        code = func.code;
+                        vm.call_stack.reg(dst).* = v;
+                        continue;
                     }
                     return error.TypeError;
                 },
                 .RETURN => {
                     const a = bytecode.decodeA(instr);
                     const v = vm.call_stack.reg(a).*;
-                    return DispatchResult{ .value = v };
+                    if (vm.call_stack.frames.items.len - 1 == outermost_idx) {
+                        return DispatchResult{ .value = v };
+                    }
+                    // zepo-5wg: non-outermost return — pop frame, write result
+                    // into caller's dst_reg, resume caller's dispatch context.
+                    const dst = vm.call_stack.currentFrame().dst_reg;
+                    _ = vm.call_stack.pop();
+                    func = vm.call_stack.currentFrame().func;
+                    pc = vm.call_stack.currentFrame().pc;
+                    code = func.code;
+                    vm.call_stack.reg(dst).* = v;
                 },
                 .SAFEPOINT => {
                     // Register current register stack as roots for the
