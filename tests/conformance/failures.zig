@@ -55,3 +55,18 @@ test "fail: prim called with wrong arity" {
     defer r.deinit();
     try std.testing.expectError(error.ArityMismatch, r.eval("(cons 1)"));
 }
+
+// zepo-01r: vm_max_regs must thread from EvalContext through to VM.init.
+// This catches the regression where pushFast call sites swallow StackOverflow
+// as OutOfMemory (zepo-7be) — the EvalContext path is what the CLI uses.
+test "fail: stack overflow via EvalContext vm_max_regs" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // zepo-01r: set before first eval so VM is created with this ceiling
+    r.ctx.vm_max_regs = 256;
+    try std.testing.expectError(error.StackOverflow, r.eval(
+        \\(define (count-down n)
+        \\  (if (= n 0) 0 (+ 1 (count-down (- n 1)))))
+        \\(count-down 100000)
+    ));
+}

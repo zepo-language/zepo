@@ -67,6 +67,31 @@ const Rig = struct {
         alloc.destroy(r);
     }
 
+    pub fn runWithMaxRegs(r: *Rig, src: []const u8, max_regs: usize) !abi.Value {
+        var p = Parser.init(&r.gc, &r.syms, &r.spans, src, "<test>", alloc);
+        defer p.deinit();
+        const v = try p.readOne();
+        var b = Builder.init(&r.arena, &r.syms, alloc);
+        const root_id = try b.build(v);
+        var analyzer = sema_mod.CaptureAnalyzer.init(&r.arena, alloc);
+        try analyzer.analyze(root_id);
+        var compiler = Compiler.init(&r.arena, &r.program, &r.syms, alloc);
+        const fn_id = try compiler.compileExpr(root_id);
+
+        if (r.compiled) |old| {
+            for (old) |*cf| cf.deinit(alloc);
+            alloc.free(old);
+            r.compiled = null;
+        }
+        if (r.vm) |*v2| v2.deinit();
+        r.vm = null;
+
+        r.compiled = try r.emitter.emit(&r.program);
+        r.vm = try vm_mod.VM.init(&r.gc, &r.globals, &r.syms, r.compiled.?, alloc, max_regs);
+        r.vm.?.installAsRoot();
+        return try r.vm.?.run(fn_id, &.{});
+    }
+
     pub fn run(r: *Rig, src: []const u8) !abi.Value {
         var p = Parser.init(&r.gc, &r.syms, &r.spans, src, "<test>", alloc);
         defer p.deinit();
@@ -115,4 +140,30 @@ test "unbound variable raises UnboundVariable" {
     const r = try Rig.init();
     defer r.deinit();
     try std.testing.expectError(error.UnboundVariable, r.run("xyzzy-unbound"));
+}
+
+// zepo-01r: StackOverflow must propagate as error.StackOverflow, not panic or OutOfMemory.
+// Regression classes tested:
+//   (a) guard removed from pushFast (zepo-7be dropped it → SIGBUS/panic on CALL path)
+//   (b) execFn initial push using `catch return error.OutOfMemory` (→ wrong label on first-frame overflow)
+//   (c) CALL dispatch push using `catch return error.OutOfMemory` (→ wrong label on recursive overflow)
+
+test "deep non-tail recursion raises StackOverflow (CALL dispatch path)" {
+    const r = try Rig.init();
+    defer r.deinit();
+    // zepo-01r: overflow happens on recursive CALL, not initial execFn push — covers (a) and (c)
+    const src =
+        \\(begin
+        \\  (define (count-down n)
+        \\    (if (= n 0) 0 (+ 1 (count-down (- n 1)))))
+        \\  (count-down 100000))
+    ;
+    try std.testing.expectError(error.StackOverflow, r.runWithMaxRegs(src, 256));
+}
+
+test "initial frame too large raises StackOverflow (execFn push path)" {
+    const r = try Rig.init();
+    defer r.deinit();
+    // zepo-01r: zero-capacity pool overflows on any first push — covers (b)
+    try std.testing.expectError(error.StackOverflow, r.runWithMaxRegs("(if #t 1 2)", 0));
 }
