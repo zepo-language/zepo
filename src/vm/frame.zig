@@ -62,6 +62,8 @@ pub const CallStack = struct {
             const new_cap = if (cs.frames.capacity == 0) 4096 else cs.frames.capacity * 2;
             try cs.frames.ensureTotalCapacity(cs.allocator, new_cap);
         }
+        // zepo-b5r: guard register pool; exhaustion returns StackOverflow not SIGBUS.
+        if (cs.regs.items.len + num_regs > cs.regs.capacity) return error.StackOverflow;
         const slice = cs.regs.addManyAsSliceAssumeCapacity(num_regs);
         @memset(slice, value_mod.NIL);
         cs.frames.appendAssumeCapacity(frame);

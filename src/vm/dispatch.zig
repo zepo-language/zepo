@@ -80,9 +80,10 @@ pub const VM = struct {
         symbols: *SymbolTable,
         compiled_fns: []CompiledFn,
         allocator: std.mem.Allocator,
+        max_regs: usize,
     ) !VM {
         var cs = CallStack.init(allocator);
-        try cs.regs.ensureTotalCapacity(allocator, MAX_REGS);
+        try cs.regs.ensureTotalCapacity(allocator, max_regs);
         // zepo-dv2: pre-reserve frames so push hot path can use appendAssumeCapacity.
         try cs.frames.ensureTotalCapacity(allocator, 4096);
         return .{
@@ -259,14 +260,14 @@ pub const VM = struct {
             // zepo-dv2: regs has MAX_REGS pre-reserved capacity; skip the
             // ensureUnusedCapacity call in the hot path.
             // zepo-5wg: outermost_sentinel marks this as the entry frame.
-            vm.call_stack.pushFast(.{
+            try vm.call_stack.pushFast(.{
                 .func = func,
                 .pc = 0,
                 .base = base,
                 .caller_base = base,
                 .closure_val = closure_val,
                 .dst_reg = frame_mod.outermost_sentinel,
-            }, func.num_regs) catch return error.OutOfMemory;
+            }, func.num_regs);
 
             try vm.setupCallArgs(func, args_src, base, args_in_regs);
 
@@ -556,14 +557,14 @@ pub const VM = struct {
                         }
                         vm.call_stack.currentFrame().pc = pc;
                         const new_base: u32 = @intCast(vm.call_stack.regs.items.len);
-                        vm.call_stack.pushFast(.{
+                        try vm.call_stack.pushFast(.{
                             .func = tgt,
                             .pc = 0,
                             .base = new_base,
                             .caller_base = caller_base,
                             .closure_val = fn_val,
                             .dst_reg = a,
-                        }, tgt.num_regs) catch return error.OutOfMemory;
+                        }, tgt.num_regs);
                         try vm.setupCallArgs(tgt, args_slice, new_base, true);
                         func = tgt;
                         pc = 0;
@@ -611,14 +612,14 @@ pub const VM = struct {
                         const parent_base = vm.call_stack.frames.items[vm.call_stack.frames.items.len - 2].base;
                         _ = vm.call_stack.pop();
                         const new_base: u32 = @intCast(vm.call_stack.regs.items.len);
-                        vm.call_stack.pushFast(.{
+                        try vm.call_stack.pushFast(.{
                             .func = tgt,
                             .pc = 0,
                             .base = new_base,
                             .caller_base = parent_base,
                             .closure_val = fn_val,
                             .dst_reg = dst,
-                        }, tgt.num_regs) catch return error.OutOfMemory;
+                        }, tgt.num_regs);
                         try vm.setupCallArgs(tgt, tc_args_buf[0..b], new_base, false);
                         func = tgt;
                         pc = 0;

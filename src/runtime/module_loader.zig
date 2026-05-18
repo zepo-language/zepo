@@ -524,7 +524,7 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
 
     // Rebuild VM with updated compiled_fns.
     if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }
-    ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator);
+    ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
     if (ctx.current_module != null) ctx.vm.?.fallback_globals = ctx.globals;
     ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
     ctx.vm.?.do_import_ctx = ctx;
@@ -548,7 +548,7 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
         ctx.current_module = m;
         // Rebuild VM so it targets the module env.
         if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }
-        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator);
+        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
         ctx.vm.?.fallback_globals = ctx.globals;
         ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
         ctx.vm.?.do_import_ctx = ctx;

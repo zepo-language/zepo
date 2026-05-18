@@ -95,7 +95,7 @@ const Rig = struct {
         r.vm = null;
 
         r.compiled = try r.emitter.emit(&r.program);
-        r.vm = try vm_mod.VM.init(&r.gc, &r.globals, &r.syms, r.compiled.?, alloc);
+        r.vm = try vm_mod.VM.init(&r.gc, &r.globals, &r.syms, r.compiled.?, alloc, vm_mod.VM.MAX_REGS);
         r.vm.?.installAsRoot();
 
         return try r.vm.?.run(fn_id, &.{});

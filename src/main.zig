@@ -82,6 +82,13 @@ fn realMain() !void {
 
     const arg = args[1];
 
+    // zepo-cvh: parse --max-regs=N before the command/script
+    var user_max_regs: ?usize = null;
+    const cmd_start: usize = if (std.mem.startsWith(u8, arg, "--max-regs=")) blk: {
+        user_max_regs = std.fmt.parseInt(usize, arg["--max-regs=".len..], 10) catch null;
+        break :blk 2;
+    } else 1;
+
     if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
         try stdout.writeAll(HELP);
         return;
@@ -149,6 +156,7 @@ fn realMain() !void {
     var ctx = try zepo.runtime.EvalContext.init(&gc, &syms, &globals, alloc);
     defer ctx.deinit();
     ctx.installRootVisitor();
+    if (user_max_regs) |n| ctx.vm_max_regs = n;
     try zepo.runtime.loadStdlib(&ctx);
 
     // *program-mode* — #t when running as a script, #f when loaded into the REPL.
@@ -189,22 +197,27 @@ fn realMain() !void {
     } else |_| {}
     ctx.module_path = path_dirs.items;
 
-    if (std.mem.eql(u8, arg, "--repl")) {
+    if (cmd_start >= args.len) {
+        try stderr.writeAll("error: --max-regs requires a script or command\n");
+        std.process.exit(1);
+    }
+    const interp_arg = args[cmd_start];
+    if (std.mem.eql(u8, interp_arg, "--repl")) {
         // argv for preloaded files: [file, extra-args...]  (no "zepo --repl" prefix)
-        zepo.prims.io.program_argv = args[2..];
-        try repl_cmd.runRepl(&ctx, alloc, args[2..]);
-    } else if (std.mem.eql(u8, arg, "run")) {
-        zepo.prims.io.program_argv = args[2..];
+        zepo.prims.io.program_argv = args[cmd_start + 1 ..];
+        try repl_cmd.runRepl(&ctx, alloc, args[cmd_start + 1 ..]);
+    } else if (std.mem.eql(u8, interp_arg, "run")) {
+        zepo.prims.io.program_argv = args[cmd_start + 1 ..];
         setProgramMode(&syms, &globals);
-        try run_cmd.runRun(&ctx, alloc, args[2..]);
-    } else if (std.mem.eql(u8, arg, "test")) {
-        zepo.prims.io.program_argv = args[2..];
-        try test_cmd.runTest(&ctx, alloc, args[2..]);
+        try run_cmd.runRun(&ctx, alloc, args[cmd_start + 1 ..]);
+    } else if (std.mem.eql(u8, interp_arg, "test")) {
+        zepo.prims.io.program_argv = args[cmd_start + 1 ..];
+        try test_cmd.runTest(&ctx, alloc, args[cmd_start + 1 ..]);
     } else {
         // Direct file: zepo script.lisp arg1 arg2
-        zepo.prims.io.program_argv = args[1..];
+        zepo.prims.io.program_argv = args[cmd_start..];
         setProgramMode(&syms, &globals);
-        try runFile(&ctx, alloc, arg);
+        try runFile(&ctx, alloc, interp_arg);
     }
 }
 

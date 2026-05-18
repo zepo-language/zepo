@@ -77,6 +77,7 @@ pub const EvalContext = struct {
     // Accumulated compiled bytecode; grows incrementally across evals.
     compiled: std.ArrayListUnmanaged(CompiledFn),
     vm: ?VM,
+    vm_max_regs: usize = VM.MAX_REGS,
 
     // Macro transformer registry. Keys are owned slices; values are closure
     // Values also stored in globals (so GC can reach them).
@@ -409,7 +410,7 @@ pub const EvalContext = struct {
         // The VM always sees the currently-active env — if we're inside a
         // module, that's the module's env; the top-level globals become the
         // read-only fallback so the module body can call prims/prelude.
-        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator);
+        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
         if (ctx.current_module != null) {
             ctx.vm.?.fallback_globals = ctx.globals;
         }

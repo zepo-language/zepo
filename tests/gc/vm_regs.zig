@@ -52,7 +52,7 @@ test "minor GC preserves VM registers" {
     };
     var compiled_fns = [_]bytecode.CompiledFn{cf};
 
-    var vm = try vm_mod.VM.init(&gc, &globals, &syms, &compiled_fns, alloc);
+    var vm = try vm_mod.VM.init(&gc, &globals, &syms, &compiled_fns, alloc, vm_mod.VM.MAX_REGS);
     defer vm.deinit();
     vm.installAsRoot();
 
