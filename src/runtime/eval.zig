@@ -289,6 +289,7 @@ pub const EvalContext = struct {
         var buf: [512]u8 = undefined;
         // For UserError, prefer the message stored in the VM over the bare name.
         const err_label: []const u8 = blk: {
+            if (err == error.StackOverflow) break :blk "stack overflow (recursion too deep)";
             if (err == error.UserError) {
                 if (ctx.vm) |vm| {
                     if (vm.error_msg) |msg| break :blk msg;
@@ -327,8 +328,10 @@ pub const EvalContext = struct {
             const frames = vm.call_stack.frames.items;
             if (frames.len > 0) {
                 stderr.writeAll("call stack (innermost first):\n") catch {};
+                const max_frames: usize = 20;
+                const shown = @min(frames.len, max_frames);
                 var fi: usize = frames.len;
-                while (fi > 0) {
+                while (fi > frames.len - shown) {
                     fi -= 1;
                     const frame = frames[fi];
                     const fname = if (frame.func.src_name.len > 0) frame.func.src_name else "<anonymous>";
@@ -336,6 +339,12 @@ pub const EvalContext = struct {
                     const fline = std.fmt.bufPrint(&fbuf, "  {s}\n", .{fname}) catch continue;
                     stderr.writeAll(fline) catch {};
                 }
+                if (frames.len > max_frames) {
+                    var tbuf: [64]u8 = undefined;
+                    const tnote = std.fmt.bufPrint(&tbuf, "  ... ({d} more frames)\n", .{frames.len - max_frames}) catch "";
+                    stderr.writeAll(tnote) catch {};
+                }
+
             }
         }
     }
