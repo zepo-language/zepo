@@ -24,8 +24,9 @@ const HELP =
     \\       zepo build <file.lisp> [-o outname]
     \\
     \\Options:
-    \\  --repl        Start an interactive REPL
-    \\  --help        Show this help message
+    \\  --repl             Start an interactive REPL
+    \\  --max-regs=N       Set VM register pool ceiling (default: 4194304, ~660K recursion levels)
+    \\  --help             Show this help message
     \\
     \\Commands:
     \\  fmt [file...]        Format source files in place (--check for CI)

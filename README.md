@@ -42,6 +42,7 @@ zepo fmt [file...] [--check] [--stdout]  # format source files in place
 zepo lint [file...]  # run diagnostics on source files
 zepo --repl       # start the interactive REPL
 zepo file.lisp    # evaluate a script
+zepo --max-regs=N file.lisp  # set VM register pool ceiling (default 4M slots, ~660K recursion levels)
 zepo build [file.lisp] [-o name]  # compile to a standalone native binary
 zepo lsp          # start the LSP server (stdio JSON-RPC)
 ```

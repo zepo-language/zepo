@@ -31,8 +31,9 @@ Usage: zepo [options] [file]
        zepo build [file.lisp] [-o outname]
 
 Options:
-  --repl        Start an interactive REPL
-  --help        Show this help message
+  --repl             Start an interactive REPL
+  --max-regs=N       Set VM register pool ceiling (default: 4194304, ~660K recursion levels)
+  --help             Show this help message
 
 Commands:
   fmt [file...]        Format source files in place (--check for CI)
@@ -266,6 +267,25 @@ to stderr.
 ZEPO_TRACE=gc,opcodes zepo myscript.lisp
 ZEPO_TRACE=gc,module,eval,opcodes zepo myscript.lisp
 ```
+
+### Recursion depth
+
+The VM uses a register pool with a default ceiling of **4,194,304 slots** (~660,000 non-tail recursion levels). Exhausting the pool raises a `StackOverflow` error, reported as:
+
+```
+error: stack overflow (recursion too deep)
+```
+
+with a call-stack trace showing the innermost 20 frames.
+
+Use `--max-regs=N` to raise the ceiling for deeply recursive programs or lower it in memory-constrained environments:
+
+```sh
+zepo --max-regs=8388608 deep_recursion.lisp   # 8M slots, ~1.3M levels
+zepo --max-regs=65536   shallow.lisp          # 64K slots, low-memory env
+```
+
+Tail calls (`define`/`let` loops using TCO) do not consume register slots and are unaffected by this limit.
 
 ### Script convention
 
