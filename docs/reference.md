@@ -802,6 +802,7 @@ Vectors render as `#(1 2 3)` notation in both display and write.
 | `symbol->string` | 1 | Symbol name as string |
 | `string-upcase` | 1 | ASCII uppercase |
 | `string-downcase` | 1 | ASCII lowercase |
+| `gensym` | 0–1 | Generate a fresh unique symbol; optional string/symbol prefix |
 
 ```scheme
 (string-length "hello")        ; => 5
@@ -814,6 +815,9 @@ Vectors render as `#(1 2 3)` notation in both display and write.
 (string->symbol "foo")         ; => foo
 (symbol->string 'bar)          ; => "bar"
 (string-upcase "hello")        ; => "HELLO"
+(gensym)                       ; => #:g0
+(gensym "tmp")                 ; => #:tmp1
+(eq? (gensym) (gensym))        ; => #f  (always fresh)
 ```
 
 ### Characters
