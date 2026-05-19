@@ -9,10 +9,31 @@ const objects = helpers.objects;
 
 const alloc = std.testing.allocator;
 
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn readFilePosix(a: std.mem.Allocator, path: []const u8, _: usize) ![]u8 {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return error.NameTooLong;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const path_c: [*:0]const u8 = @ptrCast(&pbuf);
+    const f = std.c.fopen(path_c, "rb") orelse return error.FileNotFound;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2);
+    const sz = ftell(f);
+    if (sz < 0) return error.Unexpected;
+    _ = fseek(f, 0, 0);
+    const buf = try a.alloc(u8, @intCast(sz));
+    const n = std.c.fread(buf.ptr, 1, buf.len, f);
+    return buf[0..n];
+}
+
+
 fn rigWithClap() !*Rig {
     const r = try Rig.initWithPrelude(alloc);
     errdefer r.deinit();
-    const clap_src = try std.fs.cwd().readFileAlloc(alloc, "lib/clap.lisp", 1 << 20);
+    const clap_src = try readFilePosix(alloc, "lib/clap.lisp", 1 << 20);
     defer alloc.free(clap_src);
     _ = try r.eval(clap_src);
     _ = try r.eval("(import clap)");

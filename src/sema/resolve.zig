@@ -113,7 +113,7 @@ pub const Resolver = struct {
             },
             .module_decl => unreachable,
             .import_stmt => {}, // no new local bindings; handled at runtime
-            .lambda => |_| {
+            .lambda => {
                 var inner = try Scope.init(scope, r.allocator);
                 defer inner.deinit();
                 // Re-read since we need current slice data.

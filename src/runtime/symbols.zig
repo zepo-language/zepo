@@ -25,13 +25,16 @@ pub const SymbolTable = struct {
     /// Heap-allocated individual Value slots so pointer identity is stable
     /// across inserts. These are also registered as GC roots.
     slots: std.ArrayListUnmanaged(*Value),
+    // zepo-voc: gensym counter; monotonically increasing, never reused.
+    gensym_counter: usize,
 
     pub fn init(gc: *GC, allocator: std.mem.Allocator) !SymbolTable {
         return .{
             .gc = gc,
             .allocator = allocator,
             .map = std.StringHashMap(Value).init(allocator),
-            .slots = .{},
+            .slots = .empty,
+            .gensym_counter = 0,
         };
     }
 
@@ -104,6 +107,19 @@ pub const SymbolTable = struct {
 
     pub fn count(st: *const SymbolTable) usize {
         return st.slots.items.len;
+    }
+
+    // zepo-voc: generate a fresh symbol guaranteed not to collide with user source.
+    // Names use the #: prefix which the reader never produces, so (gensym) symbols
+    // are distinct from every interned symbol a user can write.
+    // prefix defaults to "g" when null.
+    pub fn gensym(st: *SymbolTable, prefix: ?[]const u8) !Value {
+        const n = st.gensym_counter;
+        st.gensym_counter += 1;
+        const p = prefix orelse "g";
+        var buf: [256]u8 = undefined;
+        const name = std.fmt.bufPrint(&buf, "#:{s}{d}", .{ p, n }) catch return error.OutOfMemory;
+        return st.intern(name);
     }
 };
 

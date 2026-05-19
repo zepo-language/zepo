@@ -28,7 +28,6 @@ const LispError = errs.LispError;
 pub fn primDebugValue(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     const v = args[0];
-    const stderr = std.fs.File.stderr();
     var buf: [256]u8 = undefined;
 
     if (!value_mod.isPtr(v)) {
@@ -43,7 +42,7 @@ pub fn primDebugValue(vm: *VM, args: []const Value) LispError!Value {
         const msg = std.fmt.bufPrint(&buf, "[debug-value] bits=0x{x:0>16} tag={s}\n", .{
             @as(u64, @bitCast(v)), tag_name,
         }) catch "[debug-value] fmt error\n";
-        stderr.writeAll(msg) catch {};
+        _ = std.c.write(2, msg.ptr, msg.len);
     } else {
         const obj = value_mod.ptrVal(v);
         if (obj.isForward()) {
@@ -52,7 +51,7 @@ pub fn primDebugValue(vm: *VM, args: []const Value) LispError!Value {
                 "[debug-value] bits=0x{x:0>16} → FORWARDED to 0x{x} (header=0x{x})\n", .{
                     @as(u64, @bitCast(v)), @intFromPtr(fwd), obj.word,
                 }) catch "[debug-value] fmt error\n";
-            stderr.writeAll(msg) catch {};
+            _ = std.c.write(2, msg.ptr, msg.len);
         } else {
             _ = vm;
             const obj_kind = obj.kind();
@@ -62,7 +61,7 @@ pub fn primDebugValue(vm: *VM, args: []const Value) LispError!Value {
                     @as(u64, @bitCast(v)), @intFromPtr(obj),
                     @tagName(obj_kind), @tagName(space), obj.word,
                 }) catch "[debug-value] fmt error\n";
-            stderr.writeAll(msg) catch {};
+            _ = std.c.write(2, msg.ptr, msg.len);
         }
     }
     return v;

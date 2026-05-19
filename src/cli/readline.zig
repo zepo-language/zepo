@@ -18,7 +18,7 @@ pub const CompleteFn = *const fn (
 ) void;
 
 pub const History = struct {
-    entries: std.ArrayListUnmanaged([]u8) = .{},
+    entries: std.ArrayListUnmanaged([]u8) = .empty,
     alloc: std.mem.Allocator,
     path: ?[]const u8 = null,
 
@@ -78,8 +78,8 @@ pub fn readLine(
     complete_ctx: ?*anyopaque,
     complete_fn: ?CompleteFn,
 ) !?[]u8 {
-    const stdin = std.fs.File.stdin();
-    const stdout = std.fs.File.stdout();
+    const stdin = std.Io.File.stdin();
+    const stdout = std.Io.File.stdout();
 
     // Fallback: not a TTY (pipe / file redirect)
     if (!posix.isatty(stdin.handle)) {
@@ -104,14 +104,14 @@ pub fn readLine(
     try posix.tcsetattr(stdin.handle, .FLUSH, raw);
     defer posix.tcsetattr(stdin.handle, .FLUSH, orig) catch {};
 
-    var line_buf: std.ArrayListUnmanaged(u8) = .{};
+    var line_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer line_buf.deinit(alloc);
     var cursor: usize = 0;
 
     // History navigation: hist_pos == history.entries.len means "current input"
     const hist_base = history.entries.items.len;
     var hist_pos: usize = hist_base;
-    var saved_input: std.ArrayListUnmanaged(u8) = .{};
+    var saved_input: std.ArrayListUnmanaged(u8) = .empty;
     defer saved_input.deinit(alloc);
 
     try stdout.writeAll(prompt);
@@ -181,7 +181,7 @@ pub fn readLine(
             9 => {
                 if (complete_fn) |cfn| {
                     const word = currentWord(line_buf.items[0..cursor]);
-                    var matches: std.ArrayListUnmanaged([]u8) = .{};
+                    var matches: std.ArrayListUnmanaged([]u8) = .empty;
                     defer {
                         for (matches.items) |m| alloc.free(m);
                         matches.deinit(alloc);
@@ -280,7 +280,7 @@ pub fn readLine(
     }
 }
 
-fn refresh(stdout: std.fs.File, prompt: []const u8, buf: []const u8, cursor: usize) !void {
+fn refresh(stdout: std.Io.File, prompt: []const u8, buf: []const u8, cursor: usize) !void {
     // \r: go to col 0, write prompt + buf, clear to EOL, reposition cursor.
     try stdout.writeAll("\r");
     try stdout.writeAll(prompt);

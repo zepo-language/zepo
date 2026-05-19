@@ -157,7 +157,8 @@ pub fn primJsonNullQ(vm: *VM, args: []const Value) LispError!Value {
 fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
     // Order of checks matters — check null sym first before generic symbol.
     if (value_mod.isFixnum(v)) {
-        try buf.writer(a).print("{d}", .{value_mod.fixnumVal(v)});
+        var tmp_fx: [32]u8 = undefined;
+        try buf.appendSlice(a, std.fmt.bufPrint(&tmp_fx, "{d}", .{value_mod.fixnumVal(v)}) catch unreachable);
         return;
     }
     if (v == value_mod.TRUE) {
@@ -173,7 +174,8 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
         return;
     }
     if (objects.isFloat(v)) {
-        try buf.writer(a).print("{d}", .{objects.floatVal(v)});
+        var tmp_fl: [64]u8 = undefined;
+        try buf.appendSlice(a, std.fmt.bufPrint(&tmp_fl, "{d}", .{objects.floatVal(v)}) catch unreachable);
         return;
     }
     if (objects.isString(v)) {
@@ -253,7 +255,7 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
 pub fn primJsonStringify(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     const a = vm.gc.allocator;
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(a);
 
     writeJson(&buf, a, args[0]) catch |e| {

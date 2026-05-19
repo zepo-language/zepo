@@ -10,7 +10,7 @@ const SafepointId = @import("../abi/mod.zig").safepoint.SafepointId;
 /// Ensure that every call and allocation op has a preceding `safepoint`.
 /// If the immediate predecessor is not a safepoint, insert one.
 pub fn insertSafepoints(func: *Function) !void {
-    var new_ops = std.ArrayList(Op){};
+    var new_ops = std.ArrayListUnmanaged(Op).empty;
     errdefer new_ops.deinit(func.allocator);
 
     var last_was_sp = false;
@@ -52,7 +52,7 @@ pub fn identifyBackedges(func: *Function) !std.ArrayList(Backedge) {
         if (op == .label) try label_positions.put(op.label.id, i);
     }
 
-    var result = std.ArrayList(Backedge){};
+    var result = std.ArrayListUnmanaged(Backedge).empty;
     for (func.ops.items, 0..) |op, i| {
         if (op == .branch) {
             if (label_positions.get(op.branch.label)) |pos| {

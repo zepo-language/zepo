@@ -8,7 +8,7 @@ pub fn runRun(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, run_args
     defer if (cfg_opt) |*c| c.deinit();
 
     // Build module search path: project paths first, then existing (exe-relative, ZEPO_PATH).
-    var path_buf: std.ArrayListUnmanaged([]const u8) = .{};
+    var path_buf: std.ArrayListUnmanaged([]const u8) = .empty;
     var path_owned: usize = 0; // number of abs paths we allocated at the front
     defer {
         for (path_buf.items[0..path_owned]) |p| alloc.free(p);
@@ -28,19 +28,19 @@ pub fn runRun(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, run_args
     else if (cfg_opt) |*cfg|
         cfg.entry
     else {
-        const stderr = std.fs.File.stderr();
+        const stderr = std.Io.File.stderr();
         try stderr.writeAll("error: no project.lisp found — pass a file: zepo run file.lisp\n");
         std.process.exit(1);
     };
 
-    const src = std.fs.cwd().readFileAlloc(alloc, file, 16 * 1024 * 1024) catch |e| {
+    const src = std.Io.Dir.cwd().readFileAlloc(alloc, file, 16 * 1024 * 1024) catch |e| {
         std.debug.print("error: cannot read '{s}': {}\n", .{ file, e });
         std.process.exit(1);
     };
     defer alloc.free(src);
 
     _ = ctx.evalString(src, file) catch |e| {
-        ctx.printDiagnostic(std.fs.File.stderr(), e);
+        ctx.printDiagnostic(std.Io.File.stderr(), e);
         std.process.exit(1);
     };
 }

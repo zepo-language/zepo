@@ -53,7 +53,7 @@ pub const GlobalEnv = struct {
         return .{
             .gc = gc,
             .allocator = allocator,
-            .entries = .{},
+            .entries = .empty,
         };
     }
 

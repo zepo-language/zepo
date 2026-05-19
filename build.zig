@@ -5,13 +5,13 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const lib_opts = b.addOptions();
-    const stdlib_src = std.fs.cwd().readFileAlloc(b.allocator, "lib/stdlib.lisp", 1 << 20) catch @panic("lib/stdlib.lisp not found");
+    const stdlib_src = b.build_root.handle.readFileAlloc(b.graph.io, "lib/stdlib.lisp", b.allocator, .unlimited) catch @panic("lib/stdlib.lisp not found");
     lib_opts.addOption([]const u8, "stdlib_src", stdlib_src);
 
     // Bake the absolute source-tree path so `zepo build` can locate
     // the zepo runtime when shelling out to `zig build`.
     const main_opts = b.addOptions();
-    const zepo_src_dir = b.build_root.handle.realpathAlloc(b.allocator, ".") catch @panic("cannot resolve build root");
+    const zepo_src_dir = b.build_root.path orelse b.pathResolve(&.{"."});
     main_opts.addOption([]const u8, "zepo_src_dir", zepo_src_dir);
 
     const mod = b.addModule("zepo", .{
@@ -285,7 +285,7 @@ pub fn build(b: *std.Build) void {
     // slow debug binary.
     {
         const install_global = b.step("install-global", "Install zepo binary and libs to ~/.local/{bin,lib/zepo}");
-        const home = std.process.getEnvVarOwned(b.allocator, "HOME") catch @panic("HOME not set");
+        const home = b.graph.environ_map.get("HOME") orelse @panic("HOME not set");
         const bin_dir = std.fs.path.join(b.allocator, &.{ home, ".local", "bin" }) catch @panic("OOM");
         const lib_dir = std.fs.path.join(b.allocator, &.{ home, ".local", "lib", "zepo" }) catch @panic("OOM");
         const bin_dest = std.fs.path.join(b.allocator, &.{ bin_dir, "zepo" }) catch @panic("OOM");

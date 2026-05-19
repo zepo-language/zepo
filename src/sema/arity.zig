@@ -21,7 +21,7 @@ pub const ArityChecker = struct {
         return .{
             .arena = arena,
             .allocator = allocator,
-            .diagnostics = std.ArrayList(ArityDiag){},
+            .diagnostics = std.ArrayListUnmanaged(ArityDiag).empty,
         };
     }
 

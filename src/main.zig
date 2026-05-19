@@ -66,15 +66,15 @@ fn workerMain(out: *anyerror!void) void {
 }
 
 fn realMain() !void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
 
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+    const stdout = std.Io.File.stdout();
+    const stderr = std.Io.File.stderr();
 
     if (args.len < 2) {
         try stdout.writeAll(HELP);
@@ -168,7 +168,7 @@ fn realMain() !void {
     }
 
     // Build module search path: exe/../lib, then ZEPO_PATH entries.
-    var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
+    var path_dirs: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (path_dirs.items) |d| alloc.free(d);
         path_dirs.deinit(alloc);
@@ -189,13 +189,13 @@ fn realMain() !void {
     // package_path: just the base ~/.local/lib/zepo/ (first entry added by appendGlobalPaths)
     ctx.package_path = if (installed_end > installed_start) path_dirs.items[installed_start .. installed_start + 1] else &.{};
     // ZEPO_PATH — override/extra paths (colon-separated)
-    if (std.process.getEnvVarOwned(alloc, "ZEPO_PATH")) |env| {
-        defer alloc.free(env);
+    if (std.c.getenv("ZEPO_PATH")) |raw| {
+        const env = std.mem.span(raw);
         var it = std.mem.splitScalar(u8, env, ':');
         while (it.next()) |dir| {
             if (dir.len > 0) try path_dirs.append(alloc, try alloc.dupe(u8, dir));
         }
-    } else |_| {}
+    }
     ctx.module_path = path_dirs.items;
 
     if (cmd_start >= args.len) {
@@ -228,13 +228,13 @@ fn setProgramMode(syms: *zepo.runtime.SymbolTable, globals: *zepo.runtime.Global
 }
 
 fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) !void {
-    const src = std.fs.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+    const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
         std.debug.print("error: cannot read '{s}': {}\n", .{ path, e });
         std.process.exit(1);
     };
     defer alloc.free(src);
     _ = ctx.evalString(src, path) catch |e| {
-        ctx.printDiagnostic(std.fs.File.stderr(), e);
+        ctx.printDiagnostic(std.Io.File.stderr(), e);
         std.process.exit(1);
     };
 }

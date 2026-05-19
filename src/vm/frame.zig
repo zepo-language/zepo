@@ -33,8 +33,8 @@ pub const CallStack = struct {
 
     pub fn init(allocator: std.mem.Allocator) CallStack {
         return .{
-            .frames = std.ArrayList(Frame){},
-            .regs = std.ArrayList(Value){},
+            .frames = std.ArrayListUnmanaged(Frame).empty,
+            .regs = std.ArrayListUnmanaged(Value).empty,
             .allocator = allocator,
         };
     }

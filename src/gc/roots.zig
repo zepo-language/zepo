@@ -32,7 +32,7 @@ pub const RootSet = struct {
     intern_table_root: ?*Value = null,
     handle_stack: ?*HandleScope = null,
     /// Extra ad-hoc roots (used by tests and runtime bridges).
-    extra: std.ArrayListUnmanaged(*Value) = .{},
+    extra: std.ArrayListUnmanaged(*Value) = .empty,
     /// Custom visitor callback (e.g. VM register stack). Invoked during
     /// visitAll with the visitor so the caller can walk arbitrary slot
     /// storage (like a dynamically-sized register array) without copying

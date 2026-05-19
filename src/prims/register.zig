@@ -105,6 +105,7 @@ const TABLE: []const Entry = &.{
     make("string->number", 1, pairs.primStringToNumber),
     make("symbol->string", 1, pairs.primSymbolToString),
     make("string->symbol", 1, pairs.primStringToSymbol),
+    make("gensym", -1, pairs.primGensym), // zepo-voc: 0..1 args, arity checked in prim
     make("char->integer", 1, pairs.primCharToInteger),
     make("integer->char", 1, pairs.primIntegerToChar),
     make("getkey", 3, pairs.primGetkey),

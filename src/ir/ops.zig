@@ -152,13 +152,13 @@ pub const Function = struct {
             .arity = arity,
             .has_rest = has_rest,
             .num_locals = 0,
-            .ops = std.ArrayList(Op){},
-            .root_maps = std.ArrayList(RootMapEntry){},
-            .capture_names = std.ArrayList([]const u8){},
-            .keyword_params = std.ArrayList(KwParamIR){},
+            .ops = std.ArrayListUnmanaged(Op).empty,
+            .root_maps = std.ArrayListUnmanaged(RootMapEntry).empty,
+            .capture_names = std.ArrayListUnmanaged([]const u8).empty,
+            .keyword_params = std.ArrayListUnmanaged(KwParamIR).empty,
             .allocator = allocator,
             .next_label = 0,
-            .reg_lists = std.ArrayList([]Reg){},
+            .reg_lists = std.ArrayListUnmanaged([]Reg).empty,
         };
     }
 
@@ -205,7 +205,7 @@ pub const Program = struct {
 
     pub fn init(allocator: std.mem.Allocator) Program {
         return .{
-            .functions = std.ArrayList(Function){},
+            .functions = std.ArrayListUnmanaged(Function).empty,
             .allocator = allocator,
         };
     }

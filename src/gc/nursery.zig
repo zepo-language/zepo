@@ -87,7 +87,7 @@ fn mmapAnon(size: usize) ![*]u8 {
     const slice = try posix.mmap(
         null,
         size,
-        posix.PROT.READ | posix.PROT.WRITE,
+        .{ .READ = true, .WRITE = true },
         .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
         -1,
         0,
@@ -111,7 +111,7 @@ pub const CopyCtx = struct {
     /// Promoted objects land in old-gen (not to-space), so the Cheney scan
     /// pointer never visits them; we must scan them explicitly before the
     /// flip while from-space forwarding pointers are still valid.
-    promoted: std.ArrayListUnmanaged(*ObjHeader) = .{},
+    promoted: std.ArrayListUnmanaged(*ObjHeader) = .empty,
 };
 
 /// Returns size in BYTES for an object given its header, assuming header-word

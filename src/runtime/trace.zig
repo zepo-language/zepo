@@ -25,8 +25,8 @@ pub const TraceFlags = struct {
     /// the temporary string; safe to call before any arena is set up.
     pub fn fromEnv() TraceFlags {
         var flags = TraceFlags{};
-        const val = std.process.getEnvVarOwned(std.heap.page_allocator, "ZEPO_TRACE") catch return flags;
-        defer std.heap.page_allocator.free(val);
+        const raw = std.c.getenv("ZEPO_TRACE") orelse return flags;
+        const val = std.mem.span(raw);
         var it = std.mem.splitScalar(u8, val, ',');
         while (it.next()) |seg| {
             const s = std.mem.trim(u8, seg, " \t");

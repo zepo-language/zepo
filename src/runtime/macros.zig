@@ -63,7 +63,7 @@ pub fn macroExpand(ctx: *EvalContext, form: Value) anyerror!Value {
         const name = objs.symbolName(head);
         if (ctx.macro_names.contains(name)) {
             // Collect unevaluated argument forms into a Zig-heap array.
-            var args = std.ArrayListUnmanaged(Value){};
+            var args = std.ArrayListUnmanaged(Value).empty;
             defer args.deinit(ctx.allocator);
             var cur = objs.pairCdr(form).*;
             while (!value_mod.isNil(cur)) {

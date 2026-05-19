@@ -17,8 +17,8 @@ pub const LspDiag = struct {
 };
 
 pub fn runLsp(alloc: std.mem.Allocator) !void {
-    const stdin = std.fs.File.stdin();
-    const stdout = std.fs.File.stdout();
+    const stdin = std.Io.File.stdin();
+    const stdout = std.Io.File.stdout();
     var read_buf: [65536]u8 = undefined;
     var file_reader = stdin.reader(&read_buf);
     const reader = &file_reader.interface;
@@ -57,7 +57,7 @@ fn readMessage(alloc: std.mem.Allocator, reader: anytype) ![]u8 {
     return body;
 }
 
-fn handleMessage(alloc: std.mem.Allocator, stdout: std.fs.File, body: []const u8) !bool {
+fn handleMessage(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8) !bool {
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch return false;
     defer parsed.deinit();
 
@@ -122,7 +122,7 @@ fn handleMessage(alloc: std.mem.Allocator, stdout: std.fs.File, body: []const u8
     return false;
 }
 
-fn diagnoseAndPublish(alloc: std.mem.Allocator, stdout: std.fs.File, uri: []const u8, text: []const u8) !void {
+fn diagnoseAndPublish(alloc: std.mem.Allocator, stdout: std.Io.File, uri: []const u8, text: []const u8) !void {
     var diags = try checkDocument(alloc, uri, text);
     defer {
         for (diags.items) |d| if (d.msg_owned) alloc.free(d.message);
@@ -132,7 +132,7 @@ fn diagnoseAndPublish(alloc: std.mem.Allocator, stdout: std.fs.File, uri: []cons
 }
 
 pub fn checkDocument(alloc: std.mem.Allocator, uri: []const u8, src: []const u8) !std.ArrayListUnmanaged(LspDiag) {
-    var diags: std.ArrayListUnmanaged(LspDiag) = .{};
+    var diags: std.ArrayListUnmanaged(LspDiag) = .empty;
 
     var gc = try zepo.GC.init(alloc);
     defer gc.deinit();
@@ -194,7 +194,7 @@ fn spanToDiag(span: zepo.reader.Span, msg: []const u8, owned: bool) LspDiag {
     return .{ .start_line = sl, .start_char = sc, .end_line = el, .end_char = ec, .message = msg, .msg_owned = owned };
 }
 
-fn sendResponse(alloc: std.mem.Allocator, stdout: std.fs.File, id: std.json.Value, result_json: []const u8) !void {
+fn sendResponse(alloc: std.mem.Allocator, stdout: std.Io.File, id: std.json.Value, result_json: []const u8) !void {
     var id_buf: [128]u8 = undefined;
     const id_str: []const u8 = switch (id) {
         .integer => |n| try std.fmt.bufPrint(&id_buf, "{d}", .{n}),
@@ -208,8 +208,8 @@ fn sendResponse(alloc: std.mem.Allocator, stdout: std.fs.File, id: std.json.Valu
     try sendRaw(alloc, stdout, body);
 }
 
-fn sendDiagnostics(alloc: std.mem.Allocator, stdout: std.fs.File, uri: []const u8, diags: []const LspDiag) !void {
-    var arr: std.ArrayListUnmanaged(u8) = .{};
+fn sendDiagnostics(alloc: std.mem.Allocator, stdout: std.Io.File, uri: []const u8, diags: []const LspDiag) !void {
+    var arr: std.ArrayListUnmanaged(u8) = .empty;
     defer arr.deinit(alloc);
     const w = arr.writer(alloc);
 
@@ -239,7 +239,7 @@ fn sendDiagnostics(alloc: std.mem.Allocator, stdout: std.fs.File, uri: []const u
     try sendRaw(alloc, stdout, body);
 }
 
-fn sendRaw(alloc: std.mem.Allocator, stdout: std.fs.File, body: []const u8) !void {
+fn sendRaw(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8) !void {
     const header = try std.fmt.allocPrint(alloc, "Content-Length: {d}\r\n\r\n", .{body.len});
     defer alloc.free(header);
     try stdout.writeAll(header);

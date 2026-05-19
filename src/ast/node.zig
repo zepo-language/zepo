@@ -110,14 +110,14 @@ pub const NodeArena = struct {
 
     pub fn init(allocator: std.mem.Allocator) NodeArena {
         return .{
-            .nodes = std.ArrayList(Node){},
+            .nodes = std.ArrayListUnmanaged(Node).empty,
             .allocator = allocator,
-            .strings = std.ArrayList([]u8){},
-            .node_id_lists = std.ArrayList([]NodeId){},
-            .name_lists = std.ArrayList([][]const u8){},
-            .clause_lists = std.ArrayList([]CondClause){},
-            .binding_lists = std.ArrayList([]LetBinding){},
-            .kw_param_lists = std.ArrayList([]KwParam){},
+            .strings = std.ArrayListUnmanaged([]u8).empty,
+            .node_id_lists = std.ArrayListUnmanaged([]NodeId).empty,
+            .name_lists = std.ArrayListUnmanaged([][]const u8).empty,
+            .clause_lists = std.ArrayListUnmanaged([]CondClause).empty,
+            .binding_lists = std.ArrayListUnmanaged([]LetBinding).empty,
+            .kw_param_lists = std.ArrayListUnmanaged([]KwParam).empty,
         };
     }
 

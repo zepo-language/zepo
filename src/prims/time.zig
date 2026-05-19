@@ -14,8 +14,10 @@ const LispError = errs.LispError;
 pub fn primCurrentTimeMs(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
     if (args.len != 0) return error.ArityMismatch;
-    const ms = std.time.milliTimestamp();
-    return value_mod.fixnum(@intCast(ms));
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.REALTIME, &ts);
+    const ms: i63 = @intCast(ts.sec * 1000 + @divTrunc(ts.nsec, 1_000_000));
+    return value_mod.fixnum(ms);
 }
 
 const MONTH_DAYS = [12]i64{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
@@ -141,20 +143,21 @@ pub fn primTimeFormat(vm: *VM, args: []const Value) LispError!Value {
     const fmt = objects.stringBytes(args[1]);
     const d = secsToDate(@divFloor(ms, 1000));
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
 
     var j: usize = 0;
     while (j < fmt.len) : (j += 1) {
         if (fmt[j] == '%' and j + 1 < fmt.len) {
             j += 1;
+            var tmp: [20]u8 = undefined;
             switch (fmt[j]) {
-                'Y' => try std.fmt.format(buf.writer(vm.allocator), "{d:0>4}", .{@as(u64, @intCast(d.year))}),
-                'm' => try std.fmt.format(buf.writer(vm.allocator), "{d:0>2}", .{@as(u64, @intCast(d.month))}),
-                'd' => try std.fmt.format(buf.writer(vm.allocator), "{d:0>2}", .{@as(u64, @intCast(d.day))}),
-                'H' => try std.fmt.format(buf.writer(vm.allocator), "{d:0>2}", .{@as(u64, @intCast(d.hour))}),
-                'M' => try std.fmt.format(buf.writer(vm.allocator), "{d:0>2}", .{@as(u64, @intCast(d.minute))}),
-                'S' => try std.fmt.format(buf.writer(vm.allocator), "{d:0>2}", .{@as(u64, @intCast(d.second))}),
+                'Y' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>4}", .{@as(u64, @intCast(d.year))}) catch unreachable),
+                'm' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.month))}) catch unreachable),
+                'd' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.day))}) catch unreachable),
+                'H' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.hour))}) catch unreachable),
+                'M' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.minute))}) catch unreachable),
+                'S' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.second))}) catch unreachable),
                 '%' => try buf.append(vm.allocator, '%'),
                 else => {
                     try buf.append(vm.allocator, '%');

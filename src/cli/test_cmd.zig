@@ -7,7 +7,7 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
     var cfg_opt = ProjectConfig.loadOptional(alloc);
     defer if (cfg_opt) |*c| c.deinit();
 
-    var path_buf: std.ArrayListUnmanaged([]const u8) = .{};
+    var path_buf: std.ArrayListUnmanaged([]const u8) = .empty;
     var path_owned: usize = 0;
     defer {
         for (path_buf.items[0..path_owned]) |p| alloc.free(p);
@@ -29,14 +29,14 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
     const test_dir_name = if (cfg_opt) |*cfg| cfg.test_dir else "tests";
 
     // Project mode: discover <test-dir>/**/*_test.lisp
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    var files: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (files.items) |f| alloc.free(f);
         files.deinit(alloc);
     }
 
-    const stderr = std.fs.File.stderr();
-    var tests_dir = std.fs.cwd().openDir(test_dir_name, .{ .iterate = true }) catch {
+    const stderr = std.Io.File.stderr();
+    var tests_dir = std.Io.Dir.cwd().openDir(test_dir_name, .{ .iterate = true }) catch {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "error: no {s}/ directory found — run from project root\n", .{test_dir_name}) catch "error: tests dir not found\n";
         try stderr.writeAll(msg);
@@ -47,7 +47,7 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
     try collectTests(alloc, tests_dir, test_dir_name, &files);
 
     if (files.items.len == 0) {
-        const stdout = std.fs.File.stdout();
+        const stdout = std.Io.File.stdout();
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "No test files found ({s}/**/*_test.lisp)\n", .{test_dir_name}) catch "No test files found\n";
         try stdout.writeAll(msg);
@@ -70,7 +70,7 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
         }
     }
 
-    const stdout = std.fs.File.stdout();
+    const stdout = std.Io.File.stdout();
     var buf: [128]u8 = undefined;
     const summary = try std.fmt.bufPrint(&buf, "\n{d} passed, {d} failed\n", .{ passed, failed });
     try stdout.writeAll(summary);
@@ -79,10 +79,10 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
 }
 
 fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) bool {
-    const stdout = std.fs.File.stdout();
+    const stdout = std.Io.File.stdout();
     var buf: [512]u8 = undefined;
 
-    const src = std.fs.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+    const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
         const msg = std.fmt.bufPrint(&buf, "FAIL  {s}  (cannot read: {})\n", .{ path, e }) catch "FAIL\n";
         stdout.writeAll(msg) catch {};
         return false;
@@ -92,7 +92,7 @@ fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []con
     _ = ctx.evalString(src, path) catch |e| {
         const msg = std.fmt.bufPrint(&buf, "FAIL  {s}  ({s})\n", .{ path, @errorName(e) }) catch "FAIL\n";
         stdout.writeAll(msg) catch {};
-        ctx.printDiagnostic(std.fs.File.stderr(), e);
+        ctx.printDiagnostic(std.Io.File.stderr(), e);
         return false;
     };
 

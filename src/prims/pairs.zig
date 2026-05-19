@@ -235,7 +235,7 @@ pub fn primStringAppend(vm: *VM, args: []const Value) LispError!Value {
         if (!objects.isString(a)) return error.TypeError;
         total += objects.stringLen(a);
     }
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     buf.ensureTotalCapacity(vm.allocator, total) catch return error.OutOfMemory;
     for (args) |a| {
@@ -411,6 +411,18 @@ pub fn primStringToSymbol(vm: *VM, args: []const Value) LispError!Value {
     return vm.symbols.intern(name) catch error.OutOfMemory;
 }
 
+// zepo-voc: (gensym) or (gensym prefix-string) — returns a fresh unique symbol.
+// Names use the #: prefix which the reader never produces, preventing collisions.
+pub fn primGensym(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len > 1) return error.ArityMismatch;
+    const prefix: ?[]const u8 = if (args.len == 1) blk: {
+        if (objects.isString(args[0])) break :blk objects.stringBytes(args[0]);
+        if (objects.isSymbol(args[0])) break :blk objects.symbolName(args[0]);
+        return error.TypeError;
+    } else null;
+    return vm.symbols.gensym(prefix) catch error.OutOfMemory;
+}
+
 pub fn primCharToInteger(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
     if (args.len != 1) return error.ArityMismatch;
@@ -431,7 +443,7 @@ pub fn primStringUpcase(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;
     const bytes = objects.stringBytes(args[0]);
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     for (bytes) |b| {
         buf.append(vm.allocator, if (b >= 'a' and b <= 'z') b - 32 else b) catch return error.OutOfMemory;
@@ -443,7 +455,7 @@ pub fn primStringDowncase(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;
     const bytes = objects.stringBytes(args[0]);
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     for (bytes) |b| {
         buf.append(vm.allocator, if (b >= 'A' and b <= 'Z') b + 32 else b) catch return error.OutOfMemory;

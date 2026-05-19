@@ -607,7 +607,7 @@ pub const Compiler = struct {
         }
         const saved_reg = ctx.next_reg;
         const func_r = try c.lowerNode(ctx, func_id);
-        var arg_regs = std.ArrayList(Reg){};
+        var arg_regs = std.ArrayListUnmanaged(Reg).empty;
         defer arg_regs.deinit(ctx.allocator);
         for (arg_ids) |aid| {
             const ar = try c.lowerNode(ctx, aid);
@@ -625,7 +625,7 @@ pub const Compiler = struct {
         const sp_id = c.freshSp();
         try ctx.func.emit(.{ .safepoint = .{ .id = sp_id } });
         // Record conservative root map BEFORE reclaiming registers.
-        var live = std.ArrayList(Reg){};
+        var live = std.ArrayListUnmanaged(Reg).empty;
         defer live.deinit(ctx.allocator);
         try live.append(ctx.allocator, func_r);
         for (arg_regs.items) |r| try live.append(ctx.allocator, r);
@@ -652,11 +652,11 @@ pub const Compiler = struct {
         const saved_reg = outer.next_reg;
 
         // Resolve capture sources in outer context.
-        var capture_src_regs = std.ArrayList(Reg){};
+        var capture_src_regs = std.ArrayListUnmanaged(Reg).empty;
         defer capture_src_regs.deinit(outer.allocator);
-        var capture_kinds = std.ArrayList(LocalKind){};
+        var capture_kinds = std.ArrayListUnmanaged(LocalKind).empty;
         defer capture_kinds.deinit(outer.allocator);
-        var capture_names = std.ArrayList([]const u8){};
+        var capture_names = std.ArrayListUnmanaged([]const u8).empty;
         defer capture_names.deinit(outer.allocator);
 
         for (lam.free_vars) |fv| {
@@ -818,7 +818,7 @@ pub const Compiler = struct {
         const let = c.arena.get(id).*.let_expr;
 
         // Evaluate all init exprs in current scope (before any binding is in scope).
-        var init_regs = std.ArrayList(Reg){};
+        var init_regs = std.ArrayListUnmanaged(Reg).empty;
         defer init_regs.deinit(ctx.allocator);
         for (let.bindings) |binding| {
             const r = try c.lowerNode(ctx, binding.value);
@@ -829,7 +829,7 @@ pub const Compiler = struct {
         // Init registers are all dead after stores — reclaim them.
         const saved_reg = ctx.next_reg;
         const SavedBinding = struct { name: []const u8, old: ?LocalInfo };
-        var saved = std.ArrayList(SavedBinding){};
+        var saved = std.ArrayListUnmanaged(SavedBinding).empty;
         defer saved.deinit(ctx.allocator);
 
         for (let.bindings, 0..) |binding, i| {
@@ -876,7 +876,7 @@ pub const Compiler = struct {
 
         const saved_reg = ctx.next_reg;
         const SavedBinding = struct { name: []const u8, old: ?LocalInfo };
-        var saved = std.ArrayList(SavedBinding){};
+        var saved = std.ArrayListUnmanaged(SavedBinding).empty;
         defer saved.deinit(ctx.allocator);
 
         for (let.bindings) |binding| {

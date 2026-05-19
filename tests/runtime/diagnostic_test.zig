@@ -11,11 +11,24 @@ const alloc = std.testing.allocator;
 
 /// Run `src`, catch the error, call printDiagnostic into a buffer, return the output.
 fn diagnose(r: *Rig, src: []const u8) ![]const u8 {
-    var buf: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    // zepo-04p: std.io removed in Zig 0.16; use inline struct writer instead.
+    const FbsWriter = struct {
+        buf: *[8192]u8,
+        pos: usize = 0,
+        pub fn writeAll(self: *@This(), data: []const u8) !void {
+            const n = @min(data.len, self.buf.len - self.pos);
+            @memcpy(self.buf[self.pos..][0..n], data[0..n]);
+            self.pos += n;
+        }
+        pub fn getWritten(self: *@This()) []const u8 {
+            return self.buf[0..self.pos];
+        }
+    };
+    var rawbuf: [8192]u8 = undefined;
+    var fbs = FbsWriter{ .buf = &rawbuf };
     r.ctx.last_error_span = null;
     _ = r.ctx.evalString(src, "<test>") catch |e| {
-        r.ctx.printDiagnostic(fbs.writer(), e);
+        r.ctx.printDiagnostic(&fbs, e);
         return try alloc.dupe(u8, fbs.getWritten());
     };
     return error.TestExpectedError;

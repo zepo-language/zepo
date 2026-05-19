@@ -1,13 +1,13 @@
 const std = @import("std");
 
 pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+    const stdout = std.Io.File.stdout();
+    const stderr = std.Io.File.stderr();
 
     // If a directory name was given, create it and work inside it.
     if (extra_args.len > 0) {
         const dir_name = extra_args[0];
-        std.fs.cwd().makePath(dir_name) catch |e| {
+        std.Io.Dir.cwd().makePath(dir_name) catch |e| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "error: cannot create directory '{s}': {s}\n", .{ dir_name, @errorName(e) }) catch "error: cannot create directory\n";
             try stderr.writeAll(msg);
@@ -16,7 +16,7 @@ pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
         try std.posix.chdir(dir_name);
     }
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
 
     // Error if project.lisp already exists.
     if (cwd.access("project.lisp", .{})) |_| {

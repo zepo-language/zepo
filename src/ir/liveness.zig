@@ -15,7 +15,7 @@ pub fn computeLiveness(func: *Function) !void {
     for (func.reg_lists.items) |l| func.allocator.free(l);
     func.reg_lists.clearRetainingCapacity();
 
-    var written = std.ArrayList(Reg){};
+    var written = std.ArrayListUnmanaged(Reg).empty;
     defer written.deinit(func.allocator);
 
     for (func.ops.items) |op| {

@@ -44,7 +44,7 @@ pub const CaptureAnalyzer = struct {
             .sequence => |seq| {
                 for (seq.exprs) |e| try c.walk(e);
             },
-            .lambda => |_| {
+            .lambda => {
                 try c.analyzeLambda(id);
                 // Recurse into body so nested lambdas are analysed too.
                 const lam = c.arena.get(id).*.lambda;
@@ -84,12 +84,12 @@ pub const CaptureAnalyzer = struct {
         }
 
         // Persist.
-        var free_names = std.ArrayList([]const u8){};
+        var free_names = std.ArrayListUnmanaged([]const u8).empty;
         defer free_names.deinit(c.allocator);
         var it = free_set.keyIterator();
         while (it.next()) |k| try free_names.append(c.allocator, k.*);
 
-        var mut_names = std.ArrayList([]const u8){};
+        var mut_names = std.ArrayListUnmanaged([]const u8).empty;
         defer mut_names.deinit(c.allocator);
         var it2 = mutated_set.keyIterator();
         while (it2.next()) |k| try mut_names.append(c.allocator, k.*);
@@ -127,7 +127,7 @@ pub const CaptureAnalyzer = struct {
             try c.collectFree(bid, &params_set, &free_set, &mutated_set);
         }
 
-        var mut_names = std.ArrayList([]const u8){};
+        var mut_names = std.ArrayListUnmanaged([]const u8).empty;
         defer mut_names.deinit(c.allocator);
         var it = mutated_set.keyIterator();
         while (it.next()) |k| {

@@ -26,12 +26,12 @@ fn completeSymbol(
 }
 
 pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload: []const []const u8) !void {
-    const stdout = std.fs.File.stdout();
+    const stdout = std.Io.File.stdout();
 
     // Apply project.lisp module paths if present.
     var cfg_opt = ProjectConfig.loadOptional(alloc);
     defer if (cfg_opt) |*c| c.deinit();
-    var path_buf: std.ArrayListUnmanaged([]const u8) = .{};
+    var path_buf: std.ArrayListUnmanaged([]const u8) = .empty;
     var path_owned: usize = 0;
     defer {
         for (path_buf.items[0..path_owned]) |p| alloc.free(p);
@@ -47,7 +47,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
 
     // Pre-load any files passed on the command line.
     for (preload) |path| {
-        const src = std.fs.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+        const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "error: cannot read '{s}': {}\n", .{ path, e }) catch "error: cannot read file\n";
             stdout.writeAll(msg) catch {};
@@ -55,14 +55,13 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
         };
         defer alloc.free(src);
         _ = ctx.evalString(src, path) catch |e| {
-            ctx.printDiagnostic(std.fs.File.stderr(), e);
+            ctx.printDiagnostic(std.Io.File.stderr(), e);
         };
     }
 
     // History file: ~/.zepo_history
     const hist_path: ?[]const u8 = blk: {
-        const home = std.process.getEnvVarOwned(alloc, "HOME") catch break :blk null;
-        defer alloc.free(home);
+        const home = std.mem.span(std.c.getenv("HOME") orelse break :blk null);
         break :blk std.fs.path.join(alloc, &.{ home, ".zepo_history" }) catch null;
     };
     defer if (hist_path) |p| alloc.free(p);
@@ -71,7 +70,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
     defer history.deinit();
     history.load();
 
-    var input = std.ArrayListUnmanaged(u8){};
+    var input = std.ArrayListUnmanaged(u8).empty;
     defer input.deinit(alloc);
 
     var depth: i32 = 0;
@@ -116,11 +115,11 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
                 continue;
             }
             const result = ctx.evalString(input.items, "<repl>") catch |e| {
-                ctx.printDiagnostic(std.fs.File.stderr(), e);
+                ctx.printDiagnostic(std.Io.File.stderr(), e);
                 input.clearRetainingCapacity();
                 continue;
             };
-            var buf = std.ArrayListUnmanaged(u8){};
+            var buf = std.ArrayListUnmanaged(u8).empty;
             defer buf.deinit(alloc);
             zepo.prims.io.displayValue(&buf, alloc, result) catch {};
             try buf.append(alloc, '\n');

@@ -5,10 +5,10 @@ const lsp_cmd = @import("lsp_cmd.zig");
 /// Runs the LSP diagnostic pass over each file and prints results.
 /// Exits 1 if any diagnostics are found.
 pub fn runLint(alloc: std.mem.Allocator, lint_args: []const []const u8) !void {
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+    const stdout = std.Io.File.stdout();
+    const stderr = std.Io.File.stderr();
 
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    var files: std.ArrayListUnmanaged([]const u8) = .empty;
     defer files.deinit(alloc);
 
     if (lint_args.len > 0) {
@@ -27,7 +27,7 @@ pub fn runLint(alloc: std.mem.Allocator, lint_args: []const []const u8) !void {
     var total_diags: usize = 0;
 
     for (files.items) |path| {
-        const src = std.fs.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+        const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
             var buf: [256]u8 = undefined;
             try stderr.writeAll(std.fmt.bufPrint(&buf, "error: cannot read '{s}': {}\n", .{ path, e }) catch "error: cannot read file\n");
             continue;
@@ -60,7 +60,7 @@ pub fn runLint(alloc: std.mem.Allocator, lint_args: []const []const u8) !void {
 }
 
 fn collectLisp(alloc: std.mem.Allocator, dir_path: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    var dir = std.Io.Dir.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
     defer dir.close();
     var it = dir.iterate();
     while (try it.next()) |entry| {

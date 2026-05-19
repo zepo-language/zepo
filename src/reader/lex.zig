@@ -50,7 +50,7 @@ pub const Lexer = struct {
     /// must copy before the next call to `next` if it needs the bytes to
     /// survive, but since we append (never shrink), earlier slices stay
     /// valid through the lexer's lifetime unless we reset.
-    string_buf: std.ArrayListUnmanaged(u8) = .{},
+    string_buf: std.ArrayListUnmanaged(u8) = .empty,
     allocator: std.mem.Allocator,
 
     pub fn init(src: []const u8, file: []const u8, allocator: std.mem.Allocator) Lexer {

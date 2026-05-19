@@ -138,7 +138,7 @@ pub const Builder = struct {
         const bindings_form = first;
         const body_form = objects.pairCdr(rest).*;
 
-        var bindings = std.ArrayList(LetBinding){};
+        var bindings = std.ArrayListUnmanaged(LetBinding).empty;
         defer bindings.deinit(b.allocator);
 
         var cur = bindings_form;
@@ -162,7 +162,7 @@ pub const Builder = struct {
             cur = objects.pairCdr(cur).*;
         }
 
-        var body_ids = std.ArrayList(NodeId){};
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
         try b.collectBody(body_form, &body_ids);
 
@@ -184,9 +184,9 @@ pub const Builder = struct {
 
         const loop_name = try b.arena.dupString(objects.symbolName(name_sym));
 
-        var params = std.ArrayList([]const u8){};
+        var params = std.ArrayListUnmanaged([]const u8).empty;
         defer params.deinit(b.allocator);
-        var init_ids = std.ArrayList(NodeId){};
+        var init_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer init_ids.deinit(b.allocator);
 
         var cur = bindings_form;
@@ -209,7 +209,7 @@ pub const Builder = struct {
             cur = objects.pairCdr(cur).*;
         }
 
-        var body_ids = std.ArrayList(NodeId){};
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
         try b.collectBody(body_form, &body_ids);
 
@@ -273,7 +273,7 @@ pub const Builder = struct {
         const bindings_form = objects.pairCar(rest).*;
         const body_form = objects.pairCdr(rest).*;
 
-        var bindings = std.ArrayList(LetBinding){};
+        var bindings = std.ArrayListUnmanaged(LetBinding).empty;
         defer bindings.deinit(b.allocator);
 
         var cur = bindings_form;
@@ -295,7 +295,7 @@ pub const Builder = struct {
             cur = objects.pairCdr(cur).*;
         }
 
-        var body_ids = std.ArrayList(NodeId){};
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
         try b.collectBody(body_form, &body_ids);
 
@@ -320,9 +320,9 @@ pub const Builder = struct {
         const bindings_form = objects.pairCar(rest).*;
         const body_form = objects.pairCdr(rest).*;
 
-        var names = std.ArrayList([]const u8){};
+        var names = std.ArrayListUnmanaged([]const u8).empty;
         defer names.deinit(b.allocator);
-        var val_exprs = std.ArrayList(Value){};
+        var val_exprs = std.ArrayListUnmanaged(Value).empty;
         defer val_exprs.deinit(b.allocator);
 
         var cur = bindings_form;
@@ -345,7 +345,7 @@ pub const Builder = struct {
         }
 
         // Build the inner body of the let: a sequence of set!s followed by the body.
-        var inner_seq = std.ArrayList(NodeId){};
+        var inner_seq = std.ArrayListUnmanaged(NodeId).empty;
         defer inner_seq.deinit(b.allocator);
 
         for (names.items, 0..) |nm, i| {
@@ -377,7 +377,7 @@ pub const Builder = struct {
         } });
 
         // Build arg exprs = #f for each binding.
-        var arg_ids = std.ArrayList(NodeId){};
+        var arg_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer arg_ids.deinit(b.allocator);
         for (names.items) |_| {
             const fid = try b.arena.add(.{ .literal = .{ .val = .{ .boolean = false }, .span = b.current_span } });
@@ -396,7 +396,7 @@ pub const Builder = struct {
     fn buildAnd(b: *Builder, pair: Value) BuildError!NodeId {
         const rest = objects.pairCdr(pair).*;
         // Collect exprs.
-        var exprs = std.ArrayList(Value){};
+        var exprs = std.ArrayListUnmanaged(Value).empty;
         defer exprs.deinit(b.allocator);
         var cur = rest;
         while (true) {
@@ -433,7 +433,7 @@ pub const Builder = struct {
     /// (or) => #f, (or e) => e, (or e1 e2 ...) => (let ((t e1)) (if t t (or e2 ...)))
     fn buildOr(b: *Builder, pair: Value) BuildError!NodeId {
         const rest = objects.pairCdr(pair).*;
-        var exprs = std.ArrayList(Value){};
+        var exprs = std.ArrayListUnmanaged(Value).empty;
         defer exprs.deinit(b.allocator);
         var cur = rest;
         while (true) {
@@ -490,7 +490,7 @@ pub const Builder = struct {
         const test_v = objects.pairCar(rest).*;
         const body_form = objects.pairCdr(rest).*;
         const test_id = try b.buildExpr(test_v);
-        var body_ids = std.ArrayList(NodeId){};
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
         try b.collectBody(body_form, &body_ids);
         const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -511,7 +511,7 @@ pub const Builder = struct {
         const test_v = objects.pairCar(rest).*;
         const body_form = objects.pairCdr(rest).*;
         const test_id = try b.buildExpr(test_v);
-        var body_ids = std.ArrayList(NodeId){};
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
         try b.collectBody(body_form, &body_ids);
         const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -540,10 +540,10 @@ pub const Builder = struct {
         const params_form = objects.pairCar(rest).*;
         const body_form = objects.pairCdr(rest).*;
 
-        var params = std.ArrayList([]const u8){};
+        var params = std.ArrayListUnmanaged([]const u8).empty;
         defer params.deinit(b.allocator);
         var rest_param: ?[]const u8 = null;
-        var kw_params = std.ArrayList(node_mod.KwParam){};
+        var kw_params = std.ArrayListUnmanaged(node_mod.KwParam).empty;
         defer kw_params.deinit(b.allocator);
 
         if (objects.isSymbol(params_form)) {
@@ -591,7 +591,7 @@ pub const Builder = struct {
             return BuildError.InvalidSpecialForm;
         }
 
-        var body_ids = std.ArrayList(NodeId){};
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
         try b.collectBody(body_form, &body_ids);
 
@@ -644,10 +644,10 @@ pub const Builder = struct {
             const name = try b.arena.dupString(objects.symbolName(name_val));
             const params_form = objects.pairCdr(target).*;
 
-            var params = std.ArrayList([]const u8){};
+            var params = std.ArrayListUnmanaged([]const u8).empty;
             defer params.deinit(b.allocator);
             var rest_param: ?[]const u8 = null;
-            var kw_params = std.ArrayList(node_mod.KwParam){};
+            var kw_params = std.ArrayListUnmanaged(node_mod.KwParam).empty;
             defer kw_params.deinit(b.allocator);
 
             var cur = params_form;
@@ -684,7 +684,7 @@ pub const Builder = struct {
                 return BuildError.InvalidSpecialForm;
             }
 
-            var body_ids = std.ArrayList(NodeId){};
+            var body_ids = std.ArrayListUnmanaged(NodeId).empty;
             defer body_ids.deinit(b.allocator);
             try b.collectBody(tail, &body_ids);
 
@@ -748,7 +748,7 @@ pub const Builder = struct {
 
     fn buildCond(b: *Builder, pair: Value) BuildError!NodeId {
         const rest = objects.pairCdr(pair).*;
-        var clauses = std.ArrayList(CondClause){};
+        var clauses = std.ArrayListUnmanaged(CondClause).empty;
         defer clauses.deinit(b.allocator);
 
         var cur = rest;
@@ -767,7 +767,7 @@ pub const Builder = struct {
             else
                 try b.buildExpr(test_v);
 
-            var body_ids = std.ArrayList(NodeId){};
+            var body_ids = std.ArrayListUnmanaged(NodeId).empty;
             defer body_ids.deinit(b.allocator);
             try b.collectBody(body_form, &body_ids);
             const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -782,7 +782,7 @@ pub const Builder = struct {
 
     fn buildBegin(b: *Builder, pair: Value) BuildError!NodeId {
         const rest = objects.pairCdr(pair).*;
-        var exprs = std.ArrayList(NodeId){};
+        var exprs = std.ArrayListUnmanaged(NodeId).empty;
         defer exprs.deinit(b.allocator);
         try b.collectBody(rest, &exprs);
         const owned = try b.arena.dupNodeIds(exprs.items);
@@ -794,7 +794,7 @@ pub const Builder = struct {
         const args_form = objects.pairCdr(pair).*;
         const func_id = try b.buildExpr(func_v);
 
-        var args = std.ArrayList(NodeId){};
+        var args = std.ArrayListUnmanaged(NodeId).empty;
         defer args.deinit(b.allocator);
         try b.collectBody(args_form, &args);
         const args_owned = try b.arena.dupNodeIds(args.items);
@@ -833,7 +833,7 @@ pub const Builder = struct {
                 const head = objects.pairCar(selector).*;
                 if (!objects.isSymbol(head)) return BuildError.InvalidSpecialForm;
                 if (!std.mem.eql(u8, objects.symbolName(head), "only")) return BuildError.InvalidSpecialForm;
-                var names = std.ArrayList([]const u8){};
+                var names = std.ArrayListUnmanaged([]const u8).empty;
                 defer names.deinit(b.allocator);
                 var cur = objects.pairCdr(selector).*;
                 while (!value_mod.isNil(cur)) {

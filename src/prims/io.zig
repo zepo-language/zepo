@@ -120,13 +120,12 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
 }
 
 fn writeToStdout(bytes: []const u8) void {
-    const f = std.fs.File.stdout();
-    f.writeAll(bytes) catch {};
+    _ = std.c.write(1, bytes.ptr, bytes.len);
 }
 
 pub fn primDisplay(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     displayValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
     writeToStdout(buf.items);
@@ -193,7 +192,7 @@ pub fn writeValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Valu
 
 pub fn primWrite(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     writeValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
     writeToStdout(buf.items);
@@ -202,7 +201,7 @@ pub fn primWrite(vm: *VM, args: []const Value) LispError!Value {
 
 pub fn primDisplayToString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     displayValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
     return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
@@ -210,7 +209,7 @@ pub fn primDisplayToString(vm: *VM, args: []const Value) LispError!Value {
 
 pub fn primWriteToString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     writeValue(&buf, vm.allocator, args[0]) catch return error.OutOfMemory;
     return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
@@ -225,7 +224,7 @@ pub fn primFormat(vm: *VM, args: []const Value) LispError!Value {
     if (!objects.isString(args[0])) return error.TypeError;
     const fmt = objects.stringBytes(args[0]);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     buf.ensureUnusedCapacity(vm.allocator, fmt.len) catch return error.OutOfMemory;
 
@@ -295,16 +294,7 @@ pub fn primArgv(vm: *VM, args: []const Value) LispError!Value {
         }
         return result;
     }
-    const raw = std.os.argv;
-    var result: Value = value_mod.NIL;
-    var i: usize = raw.len;
-    while (i > 0) {
-        i -= 1;
-        const s = std.mem.span(raw[i]);
-        const sv = objects.makeString(vm.gc, s) catch return error.OutOfMemory;
-        result = objects.makePair(vm.gc, sv, result) catch return error.OutOfMemory;
-    }
-    return result;
+    return value_mod.NIL; // no argv available outside program_argv path
 }
 
 // ── String output ports ───────────────────────────────────────────────────────
@@ -332,7 +322,7 @@ fn isStringPort(v: Value) bool {
 pub fn primOpenOutputString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 0) return error.ArityMismatch;
     const sp = vm.allocator.create(StringPort) catch return error.OutOfMemory;
-    sp.* = .{ .buf = .{}, .allocator = vm.allocator };
+    sp.* = .{ .buf = .empty, .allocator = vm.allocator };
     return objects.makeForeign(vm.gc, sp, deinitStringPort, TAG_STRING_PORT) catch return error.OutOfMemory;
 }
 

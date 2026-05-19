@@ -23,7 +23,7 @@ pub const ProjectConfig = struct {
 
     /// Load project.lisp from CWD. Returns null silently if not found.
     pub fn loadOptional(alloc: std.mem.Allocator) ?ProjectConfig {
-        const src = std.fs.cwd().readFileAlloc(alloc, "project.lisp", 64 * 1024) catch return null;
+        const src = std.Io.Dir.cwd().readFileAlloc(alloc, "project.lisp", 64 * 1024) catch return null;
         defer alloc.free(src);
         return parse(alloc, src);
     }
@@ -31,8 +31,8 @@ pub const ProjectConfig = struct {
     /// Load and parse project.lisp from CWD.
     /// Returns null (with error written to stderr) if not found or malformed.
     pub fn load(alloc: std.mem.Allocator) ?ProjectConfig {
-        const stderr = std.fs.File.stderr();
-        const src = std.fs.cwd().readFileAlloc(alloc, "project.lisp", 64 * 1024) catch {
+        const stderr = std.Io.File.stderr();
+        const src = std.Io.Dir.cwd().readFileAlloc(alloc, "project.lisp", 64 * 1024) catch {
             stderr.writeAll("error: no project.lisp found — run 'zepo init' first\n") catch {};
             return null;
         };
@@ -71,7 +71,7 @@ pub const ProjectConfig = struct {
         existing: []const []const u8,
         path_buf: *std.ArrayListUnmanaged([]const u8),
     ) !void {
-        const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch null;
+        const cwd = std.Io.Dir.cwd().realpathAlloc(alloc, ".") catch null;
         defer if (cwd) |p| alloc.free(p);
 
         for (cfg.paths) |rel| {
@@ -110,13 +110,12 @@ fn extractString(src: []const u8, marker: []const u8) ?[]const u8 {
 /// Read ~/.local/lib/zepo/packages.lisp and append the base dir plus each
 /// listed package directory to `dirs`. Silent on missing manifest.
 pub fn appendGlobalPaths(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([]const u8)) !void {
-    const home = std.process.getEnvVarOwned(alloc, "HOME") catch return;
-    defer alloc.free(home);
+    const home = std.mem.span(std.c.getenv("HOME") orelse return);
     const base = std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" }) catch return;
     try dirs.append(alloc, base);
     const manifest_path = std.fs.path.join(alloc, &.{ base, "packages.lisp" }) catch return;
     defer alloc.free(manifest_path);
-    const src = std.fs.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch return;
+    const src = std.Io.Dir.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch return;
     defer alloc.free(src);
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
@@ -130,13 +129,12 @@ pub fn appendGlobalPaths(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged
 /// Register a package name in ~/.local/lib/zepo/packages.lisp.
 /// Creates the manifest if it doesn't exist; skips if already listed.
 pub fn registerGlobalPackage(alloc: std.mem.Allocator, pkg_name: []const u8) !void {
-    const home = std.process.getEnvVarOwned(alloc, "HOME") catch return;
-    defer alloc.free(home);
+    const home = std.mem.span(std.c.getenv("HOME") orelse return);
     const base = std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" }) catch return;
     defer alloc.free(base);
     const manifest_path = std.fs.path.join(alloc, &.{ base, "packages.lisp" }) catch return;
     defer alloc.free(manifest_path);
-    const existing = std.fs.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch "";
+    const existing = std.Io.Dir.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch "";
     defer if (existing.len > 0) alloc.free(existing);
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
@@ -144,7 +142,7 @@ pub fn registerGlobalPackage(alloc: std.mem.Allocator, pkg_name: []const u8) !vo
     for (current) |p| {
         if (std.mem.eql(u8, p, pkg_name)) return;
     }
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     defer out.deinit(alloc);
     try out.appendSlice(alloc, "(paths");
     for (current) |p| {
@@ -155,7 +153,7 @@ pub fn registerGlobalPackage(alloc: std.mem.Allocator, pkg_name: []const u8) !vo
     try out.appendSlice(alloc, " \"");
     try out.appendSlice(alloc, pkg_name);
     try out.appendSlice(alloc, "\")\n");
-    const f = try std.fs.cwd().createFile(manifest_path, .{ .truncate = true });
+    const f = try std.Io.Dir.cwd().createFile(manifest_path, .{ .truncate = true });
     defer f.close();
     try f.writeAll(out.items);
 }
@@ -166,7 +164,7 @@ fn extractPaths(alloc: std.mem.Allocator, src: []const u8, marker: []const u8) ?
     const end_idx = std.mem.indexOfScalarPos(u8, src, start_idx, ')') orelse return null;
     const form = src[start_idx..end_idx];
 
-    var list: std.ArrayListUnmanaged([]const u8) = .{};
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
     var i: usize = 0;
     while (i < form.len) {
         const q = std.mem.indexOfScalarPos(u8, form, i, '"') orelse break;

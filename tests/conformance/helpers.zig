@@ -10,7 +10,7 @@ pub const runtime = zepo.runtime;
 pub const objects = runtime.objects;
 
 pub const Rig = struct {
-    gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .{},
+    gpa_state: std.heap.DebugAllocator(.{}) = .{},
     gc: zepo.GC,
     syms: runtime.SymbolTable,
     globals: runtime.GlobalEnv,

@@ -149,15 +149,14 @@ const ALT_EXIT   = "\x1b[?1049l\x1b[?25h";
 const CLEAR      = "\x1b[2J\x1b[H";
 
 fn render(alloc: std.mem.Allocator, screen: []const u8) void {
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll(CLEAR) catch {};
+    _ = std.c.write(1, CLEAR, CLEAR.len);
     // In raw mode \n is LF only — replace with CRLF so lines align left.
     const crlf = std.mem.replaceOwned(u8, alloc, screen, "\n", "\r\n") catch {
-        stdout.writeAll(screen) catch {};
+        _ = std.c.write(1, screen.ptr, screen.len);
         return;
     };
     defer alloc.free(crlf);
-    stdout.writeAll(crlf) catch {};
+    _ = std.c.write(1, crlf.ptr, crlf.len);
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
@@ -177,16 +176,15 @@ pub fn primTuiRun(vm: *VM, args: []const Value) LispError!Value {
     enterRawMode(&orig) catch return error.IOError;
     defer exitRawMode(&orig);
 
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll(ALT_ENTER) catch return error.IOError;
-    defer stdout.writeAll(ALT_EXIT) catch {};
+    _ = std.c.write(1, ALT_ENTER, ALT_ENTER.len);
+    defer _ = std.c.write(1, ALT_EXIT, ALT_EXIT.len);
 
     var key_buf: [16]u8 = undefined;
 
     while (true) {
         // Render current model.
         const view_result = vm.callValue(view_fn, &.{model}) catch |e| {
-            _ = stdout.writeAll(ALT_EXIT) catch {};
+            _ = std.c.write(1, ALT_EXIT, ALT_EXIT.len);
             exitRawMode(&orig);
             return e;
         };

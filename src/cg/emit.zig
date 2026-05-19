@@ -53,7 +53,7 @@ pub const Emitter = struct {
             .allocator = allocator,
             .symbols = symbols,
             .gc = gc,
-            .names_pool = std.ArrayList([]const u8){},
+            .names_pool = std.ArrayListUnmanaged([]const u8).empty,
         };
     }
 
@@ -309,13 +309,13 @@ const FnEmit = struct {
     fn init(e: *Emitter) FnEmit {
         return .{
             .e = e,
-            .code = std.ArrayList(Instr){},
-            .consts = std.ArrayList(Value){},
-            .names = std.ArrayList([]const u8){},
-            .name_syms = std.ArrayList(Value){},
-            .safepoint_maps = std.ArrayList(SafepointMap){},
+            .code = std.ArrayListUnmanaged(Instr).empty,
+            .consts = std.ArrayListUnmanaged(Value).empty,
+            .names = std.ArrayListUnmanaged([]const u8).empty,
+            .name_syms = std.ArrayListUnmanaged(Value).empty,
+            .safepoint_maps = std.ArrayListUnmanaged(SafepointMap).empty,
             .label_positions = std.AutoHashMap(Label, u32).init(e.allocator),
-            .fixups = std.ArrayList(JumpFixup){},
+            .fixups = std.ArrayListUnmanaged(JumpFixup).empty,
             .next_phys_reg = 0,
         };
     }
@@ -554,7 +554,7 @@ const FnEmit = struct {
             },
             .ret => |x| try c.emitInstr(bytecode.encode(.RETURN, c.phys(x.src), 0, 0)),
 
-            .safepoint => |_| {
+            .safepoint => {
                 // Emit SAFEPOINT and record a map. We use a conservative mask
                 // of all currently-allocated regs — the VM doesn't strictly
                 // need precise masks because registers hold Values from the
@@ -626,7 +626,7 @@ const FnEmit = struct {
 };
 
 test "emit simple literal returns compiled fn" {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

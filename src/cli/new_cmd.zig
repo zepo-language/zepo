@@ -1,9 +1,9 @@
 const std = @import("std");
 
 pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
-    const cwd = std.fs.cwd();
+    const stdout = std.Io.File.stdout();
+    const stderr = std.Io.File.stderr();
+    const cwd = std.Io.Dir.cwd();
 
     if (new_args.len == 0) {
         try stderr.writeAll("Usage: zepo new <type> [name]\n  Types: module, lib, test, package\n  module  → modules/<name>.lisp         (requires project)\n  test    → tests/<name>_test.lisp      (requires project)\n  lib     → <name>/<name>.lisp          (standalone, single-file library)\n  package → <name>/src/main.lisp        (standalone, multi-module package)\n");
@@ -46,8 +46,8 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
 }
 
 fn promptName(alloc: std.mem.Allocator, kind: []const u8) ![]const u8 {
-    const stdout = std.fs.File.stdout();
-    const stdin = std.fs.File.stdin();
+    const stdout = std.Io.File.stdout();
+    const stdin = std.Io.File.stdin();
     var buf: [256]u8 = undefined;
     var reader = stdin.reader(&buf);
 
@@ -61,13 +61,13 @@ fn promptName(alloc: std.mem.Allocator, kind: []const u8) ![]const u8 {
     };
     const trimmed = std.mem.trim(u8, line, " \t\r");
     if (trimmed.len == 0) {
-        try std.fs.File.stderr().writeAll("error: name cannot be empty\n");
+        try std.Io.File.stderr().writeAll("error: name cannot be empty\n");
         std.process.exit(1);
     }
     return alloc.dupe(u8, trimmed);
 }
 
-fn newModule(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
+fn newModule(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
     const filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
     defer alloc.free(filename);
     const path = try std.fs.path.join(alloc, &.{ "modules", filename });
@@ -93,7 +93,7 @@ fn newModule(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout
     try stdout.writeAll(try std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}));
 }
 
-fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
+fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
     // Standalone single-file library: <name>/<name>.lisp with (lib ...) container.
     guardExists(cwd, name, stderr);
     try cwd.makePath(name);
@@ -132,7 +132,7 @@ fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: s
     , .{ name, lib_path, lib_path, name, name, name }));
 }
 
-fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
+fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
     const filename = try std.fmt.allocPrint(alloc, "{s}_test.lisp", .{name});
     defer alloc.free(filename);
     const path = try std.fs.path.join(alloc, &.{ "tests", filename });
@@ -157,7 +157,7 @@ fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: 
     try stdout.writeAll(try std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}));
 }
 
-fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.fs.File, stderr: std.fs.File) !void {
+fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
     // Layout: <name>/src/main.lisp — package entry point with (package ...) container.
     guardExists(cwd, name, stderr);
     const src_dir_path = try std.fs.path.join(alloc, &.{ name, "src" });
@@ -195,7 +195,7 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
     , .{ name, main_path, main_path, src_dir_path, name, name }));
 }
 
-fn guardExists(cwd: std.fs.Dir, path: []const u8, stderr: std.fs.File) void {
+fn guardExists(cwd: std.fs.Dir, path: []const u8, stderr: std.Io.File) void {
     if (cwd.access(path, .{})) |_| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "error: '{s}' already exists\n", .{path}) catch "error: file already exists\n";

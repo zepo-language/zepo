@@ -11,7 +11,7 @@ pub const BUILD_ZIG_TEMPLATE =
     \\    const target = b.standardTargetOptions(.{{}});
     \\    const optimize = b.standardOptimizeOption(.{{}});
     \\    const lib_opts = b.addOptions();
-    \\    const stdlib_src = std.fs.cwd().readFileAlloc(
+    \\    const stdlib_src = std.Io.Dir.cwd().readFileAlloc(
     \\        b.allocator, "{s}/lib/stdlib.lisp", 1 << 20,
     \\    ) catch @panic("stdlib.lisp not found");
     \\    lib_opts.addOption([]const u8, "stdlib_src", stdlib_src);
@@ -54,12 +54,12 @@ pub fn appendInstalledPaths(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmana
 /// Legacy single-list path setup used by install_cmd and other non-split callers.
 pub fn setupModulePath(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged([]const u8), src_dir: []const u8) !void {
     try appendInstalledPaths(alloc, dirs, src_dir);
-    if (std.process.getEnvVarOwned(alloc, "ZEPO_PATH")) |zpath| {
-        defer alloc.free(zpath);
+    if (std.c.getenv("ZEPO_PATH")) |raw| {
+        const zpath = std.mem.span(raw);
         var it = std.mem.splitScalar(u8, zpath, ':');
         while (it.next()) |seg|
             if (seg.len > 0) try dirs.append(alloc, try alloc.dupe(u8, seg));
-    } else |_| {}
+    }
 }
 
 /// Populate ctx.lib_path and ctx.package_path from installed dirs.
@@ -77,17 +77,17 @@ pub fn setupInstalledPaths(
     // package_path: ~/.local/lib/zepo/ only (first entry from appendGlobalPaths,
     // which is index base_len+1 since exe-dir/../../lib comes first).
     // Derive directly from HOME to avoid fragile index arithmetic.
-    if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
-        defer alloc.free(home);
+    if (std.c.getenv("HOME")) |raw| {
+        const home = std.mem.span(raw);
         if (std.fs.path.join(alloc, &.{ home, ".local", "lib", "zepo" })) |p|
             try installed_dirs.append(alloc, p)
         else |_| {}
         ctx.package_path = installed_dirs.items[installed_dirs.items.len - 1 ..];
-    } else |_| {}
+    }
 }
 
 pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
-    const stderr = std.fs.File.stderr();
+    const stderr = std.Io.File.stderr();
 
     // Parse args: <input.lisp> [-o outname]
     const input_path = args[0];
@@ -106,7 +106,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     // ── Discovery pass ───────────────────────────────────────────────────────
     // Run the program once to find which module files it loads from disk.
     var module_log = std.StringHashMap([]const u8).init(alloc);
-    var module_order: std.ArrayListUnmanaged([]const u8) = .{};
+    var module_order: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         var kit = module_log.keyIterator();
         while (kit.next()) |k| alloc.free(k.*);
@@ -128,17 +128,17 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         ctx.installRootVisitor();
         try zepo.runtime.loadStdlib(&ctx);
         // installed_dirs holds lib_path + package_path entries.
-        var installed_dirs: std.ArrayListUnmanaged([]const u8) = .{};
+        var installed_dirs: std.ArrayListUnmanaged([]const u8) = .empty;
         defer { for (installed_dirs.items) |d| alloc.free(d); installed_dirs.deinit(alloc); }
         try setupInstalledPaths(alloc, &ctx, src_dir, &installed_dirs);
 
-        var path_dirs: std.ArrayListUnmanaged([]const u8) = .{};
+        var path_dirs: std.ArrayListUnmanaged([]const u8) = .empty;
         defer { for (path_dirs.items) |d| alloc.free(d); path_dirs.deinit(alloc); }
         try setupModulePath(alloc, &path_dirs, src_dir);
         // Prepend project.lisp paths so project modules take precedence.
         var cfg_opt = ProjectConfig.loadOptional(alloc);
         defer if (cfg_opt) |*c| c.deinit();
-        var proj_path_buf: std.ArrayListUnmanaged([]const u8) = .{};
+        var proj_path_buf: std.ArrayListUnmanaged([]const u8) = .empty;
         var proj_path_owned: usize = 0;
         defer {
             for (proj_path_buf.items[0..proj_path_owned]) |p| alloc.free(p);
@@ -154,7 +154,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         ctx.module_file_log = &module_log;
         ctx.module_file_order = &module_order;
         ctx.discovery_mode = true;
-        const prog_src = std.fs.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024) catch |e| {
+        const prog_src = std.Io.Dir.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024) catch |e| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "error: cannot read '{s}': {}\n", .{ input_path, e }) catch "error\n";
             try stderr.writeAll(msg);
@@ -172,18 +172,18 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     const ts = std.time.milliTimestamp();
     const tmp_path = try std.fmt.allocPrint(alloc, "/tmp/zepo-build-{d}", .{ts});
     defer alloc.free(tmp_path);
-    std.fs.cwd().deleteTree(tmp_path) catch {};
-    try std.fs.cwd().makePath(tmp_path);
-    var tmp_dir = try std.fs.cwd().openDir(tmp_path, .{});
+    std.Io.Dir.cwd().deleteTree(tmp_path) catch {};
+    try std.Io.Dir.cwd().makePath(tmp_path);
+    var tmp_dir = try std.Io.Dir.cwd().openDir(tmp_path, .{});
     defer tmp_dir.close();
 
     // Write user program.
-    const prog_src2 = try std.fs.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024);
+    const prog_src2 = try std.Io.Dir.cwd().readFileAlloc(alloc, input_path, 16 * 1024 * 1024);
     defer alloc.free(prog_src2);
     try tmp_dir.writeFile(.{ .sub_path = "program.lisp", .data = prog_src2 });
 
     // ── Generate standalone_main.zig ─────────────────────────────────────────
-    var runner = std.ArrayList(u8){};
+    var runner = std.ArrayListUnmanaged(u8).empty;
     defer runner.deinit(alloc);
     const w = runner.writer(alloc);
 
@@ -196,14 +196,14 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
 
     // Embed each bundled module and copy its file into temp/lib/
     var mod_idx: usize = 0;
-    var mod_names: std.ArrayListUnmanaged([]const u8) = .{};
+    var mod_names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer mod_names.deinit(alloc);
     for (module_order.items) |mod_name| {
         const file_path = module_log.get(mod_name) orelse continue;
         const rel = try std.fmt.allocPrint(alloc, "lib/{s}.lisp", .{mod_name});
         defer alloc.free(rel);
         if (std.fs.path.dirname(rel)) |par| tmp_dir.makePath(par) catch {};
-        const fsrc = std.fs.cwd().readFileAlloc(alloc, file_path, 4 * 1024 * 1024) catch continue;
+        const fsrc = std.Io.Dir.cwd().readFileAlloc(alloc, file_path, 4 * 1024 * 1024) catch continue;
         defer alloc.free(fsrc);
         tmp_dir.writeFile(.{ .sub_path = rel, .data = fsrc }) catch continue;
         try w.print("const MODULE_{d} = @embedFile(\"{s}\");\n", .{ mod_idx, rel });
@@ -228,7 +228,7 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         \\    out.* = realMain();
         \\}
         \\fn realMain() !void {
-        \\    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+        \\    var gpa: std.heap.DebugAllocator(.{}) = .{};
         \\    defer _ = gpa.deinit();
         \\    const alloc = gpa.allocator();
         \\    var gc = try zepo.GC.init(alloc);
@@ -245,11 +245,11 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         \\
     );
     for (mod_names.items, 0..) |mod_name, j| {
-        try w.print("    if (ctx.evalString(MODULE_{d}, \"{s}\")) |_| {{}} else |e| ctx.printDiagnostic(std.fs.File.stderr(), e);\n", .{ j, mod_name });
+        try w.print("    if (ctx.evalString(MODULE_{d}, \"{s}\")) |_| {{}} else |e| ctx.printDiagnostic(std.Io.File.stderr(), e);\n", .{ j, mod_name });
     }
     try w.writeAll(
         \\    if (ctx.evalString(PROGRAM, "<program>")) |_| {} else |e| {
-        \\        ctx.printDiagnostic(std.fs.File.stderr(), e);
+        \\        ctx.printDiagnostic(std.Io.File.stderr(), e);
         \\        std.process.exit(1);
         \\    }
         \\}
@@ -286,15 +286,15 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     // ── Copy binary ───────────────────────────────────────────────────────────
     const built_bin = try std.fs.path.join(alloc, &.{ out_prefix, "bin", binary_name });
     defer alloc.free(built_bin);
-    std.fs.cwd().copyFile(built_bin, std.fs.cwd(), output_path, .{}) catch |e| {
+    std.Io.Dir.cwd().copyFile(built_bin, std.Io.Dir.cwd(), output_path, .{}) catch |e| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "error: cannot copy binary: {}\n", .{e}) catch "error\n";
         try stderr.writeAll(msg);
         std.process.exit(1);
     };
-    std.fs.cwd().deleteTree(tmp_path) catch {};
+    std.Io.Dir.cwd().deleteTree(tmp_path) catch {};
 
-    const stdout = std.fs.File.stdout();
+    const stdout = std.Io.File.stdout();
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "built: {s}\n", .{output_path}) catch "built.\n";
     try stdout.writeAll(msg);

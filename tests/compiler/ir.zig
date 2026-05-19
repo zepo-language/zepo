@@ -41,7 +41,7 @@ fn compileSrc(
     return compiler.compileExpr(root_id);
 }
 
-fn countOpKind(ops: []const ir_mod.Op, comptime tag: @Type(.enum_literal)) usize {
+fn countOpKind(ops: []const ir_mod.Op, comptime tag: anytype) usize {
     var n: usize = 0;
     for (ops) |op| {
         if (op == tag) n += 1;

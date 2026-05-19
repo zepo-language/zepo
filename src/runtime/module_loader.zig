@@ -2,6 +2,56 @@
 //! (include ...), (import ...) forms plus search-path resolution.
 
 const std = @import("std");
+
+// zepo-04p: Zig 0.16 removed std.io and std.Io.Dir convenience methods.
+// Use POSIX/C directly for file I/O.
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len >= pbuf.len) return null;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const path_c: [*:0]const u8 = @ptrCast(&pbuf);
+    const f = std.c.fopen(path_c, "rb") orelse return null;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2); // SEEK_END
+    const sz = ftell(f);
+    if (sz < 0) return null;
+    _ = fseek(f, 0, 0); // SEEK_SET
+    const buf = alloc.alloc(u8, @intCast(sz)) catch return null;
+    const n = std.c.fread(buf.ptr, 1, buf.len, f);
+    return buf[0..n];
+}
+
+fn fileExistsPosix(path: []const u8) bool {
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    return std.c.access(@ptrCast(&pbuf), 0) == 0;
+}
+
+// Minimal reader for std.io.fixedBufferStream replacement (removed in Zig 0.16).
+const SliceReader = struct {
+    buf: []const u8 = &.{},
+    pos: usize = 0,
+
+    pub fn readNoEof(self: *SliceReader, dest: []u8) !void {
+        if (self.pos + dest.len > self.buf.len) return error.EndOfStream;
+        @memcpy(dest, self.buf[self.pos..][0..dest.len]);
+        self.pos += dest.len;
+    }
+
+    pub fn readInt(self: *SliceReader, comptime T: type, endian: std.builtin.Endian) !T {
+        const n = @sizeOf(T);
+        if (self.pos + n > self.buf.len) return error.EndOfStream;
+        const bytes = self.buf[self.pos..][0..n];
+        self.pos += n;
+        return std.mem.readInt(T, bytes[0..n], endian);
+    }
+};
 const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
 const value_mod = abi.value;
@@ -62,7 +112,7 @@ fn parseContainerKeywords(alloc: std.mem.Allocator, objects: anytype, list: Valu
             }
         } else if (std.mem.eql(u8, kw, "depends")) {
             // :depends (a b c) — val must be a list of symbols/strings
-            var deps: std.ArrayListUnmanaged([]const u8) = .{};
+            var deps: std.ArrayListUnmanaged([]const u8) = .empty;
             errdefer { for (deps.items) |d| alloc.free(d); deps.deinit(alloc); }
             var dep = val;
             while (!value_mod.isNil(dep)) {
@@ -363,7 +413,7 @@ pub fn evalInclude(ctx: *EvalContext, form: Value) anyerror!Value {
     const path_v = objects.pairCar(rest).*;
     if (!objects.isString(path_v)) return error.InvalidSpecialForm;
     const path = objects.stringBytes(path_v);
-    const src = try std.fs.cwd().readFileAlloc(ctx.allocator, path, 16 * 1024 * 1024);
+    const src = readFilePosix(ctx.allocator, path) orelse return error.IOError;
     defer ctx.allocator.free(src);
     return ctx.evalString(src, path);
 }
@@ -385,7 +435,7 @@ pub fn logModuleFile(ctx: *EvalContext, name: []const u8, path: []const u8) void
 /// for both absolute and CWD-relative paths since openat with an absolute path
 /// ignores the dirfd on POSIX).
 fn readModuleFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
-    return std.fs.cwd().readFileAlloc(alloc, path, 4 * 1024 * 1024) catch null;
+    return readFilePosix(alloc, path);
 }
 
 /// Load `name` from an explicit path list — the core of auto-loading.
@@ -435,7 +485,7 @@ pub fn tryAutoLoadFromPaths(ctx: *EvalContext, name: []const u8, paths: []const 
                     // Try <dir>/<name>/mod.lisp (package entry point).
                     const manifest = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/package.lisp", .{ dir, name }) catch continue;
                     defer ctx.allocator.free(manifest);
-                    std.fs.cwd().access(manifest, .{}) catch continue;
+                    if (!fileExistsPosix(manifest)) continue;
                     // Try compiled mod.zbc first.
                     const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch continue;
                     defer ctx.allocator.free(mod_zbc);
@@ -477,7 +527,7 @@ fn tryLoadZbc(ctx: *EvalContext, name: []const u8, zbc_path: []const u8) bool {
 
 /// Load a pre-compiled .zbc library file into ctx.
 pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
-    const data = std.fs.cwd().readFileAlloc(ctx.allocator, zbc_path, 32 * 1024 * 1024) catch return error.FileNotFound;
+    const data = readFilePosix(ctx.allocator, zbc_path) orelse return error.FileNotFound;
     defer ctx.allocator.free(data);
 
     const base_offset: u32 = @intCast(ctx.compiled.items.len);
@@ -485,12 +535,12 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
     // Name store: scratch buffer for deserialized name strings.
     // Appended during read; slices stay valid as long as name_store lives.
     // We move ownership into the context after loading.
-    var name_store: std.ArrayListUnmanaged(u8) = .{};
+    var name_store: std.ArrayListUnmanaged(u8) = .empty;
     errdefer name_store.deinit(ctx.allocator);
 
-    var fbs = std.io.fixedBufferStream(data);
+    var fbs = SliceReader{ .buf = data };
     var result = try serialize.read(
-        fbs.reader(),
+        &fbs,
         ctx.allocator,
         ctx.gc,
         ctx.symbols,
@@ -732,10 +782,9 @@ fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const
         }
     }
     const target = ctx.registry.get(mod_name) orelse {
-        const stderr = std.fs.File.stderr();
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "note: '{s}' not found in search paths\n", .{mod_name}) catch "";
-        stderr.writeAll(msg) catch {};
+        _ = std.c.write(2, msg.ptr, msg.len);
         return error.ModuleNotFound;
     };
     if (!target.initialized) return error.ImportBeforeInitialization;
@@ -821,17 +870,17 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     }
 
     const target = ctx.registry.get(mod_name) orelse {
-        const stderr = std.fs.File.stderr();
         var hdr_buf: [256]u8 = undefined;
         const hdr = std.fmt.bufPrint(&hdr_buf, "note: '{s}' not found in search paths:\n", .{mod_name}) catch "";
-        stderr.writeAll(hdr) catch {};
+        _ = std.c.write(2, hdr.ptr, hdr.len);
         if (ctx.module_path.len == 0) {
-            stderr.writeAll("  (no search paths — add paths to project.lisp or set ZEPO_PATH)\n") catch {};
+            const nm = "  (no search paths — add paths to project.lisp or set ZEPO_PATH)\n";
+            _ = std.c.write(2, nm, nm.len);
         } else {
             for (ctx.module_path) |dir| {
                 var line_buf: [512]u8 = undefined;
                 const line = std.fmt.bufPrint(&line_buf, "  {s}/{s}.lisp\n", .{ dir, mod_name }) catch continue;
-                stderr.writeAll(line) catch {};
+                _ = std.c.write(2, line.ptr, line.len);
             }
         }
         return error.ModuleNotFound;

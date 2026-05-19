@@ -210,7 +210,7 @@ const Parser = struct {
             },
             .lparen => {
                 _ = self.consume();
-                var children: std.ArrayListUnmanaged(Node) = .{};
+                var children: std.ArrayListUnmanaged(Node) = .empty;
                 while (true) {
                     const inner = self.peek();
                     if (inner.kind == .eof) break;
@@ -256,7 +256,7 @@ const Parser = struct {
     }
 
     fn parseAll(self: *Parser) ![]Node {
-        var forms: std.ArrayListUnmanaged(Node) = .{};
+        var forms: std.ArrayListUnmanaged(Node) = .empty;
         while (try self.parseOne()) |node| {
             try forms.append(self.arena, node);
         }
@@ -588,7 +588,7 @@ fn formatSource(alloc: std.mem.Allocator, src: []const u8) ![]u8 {
 // ---------------------------------------------------------------------------
 
 fn collectLispFiles(alloc: std.mem.Allocator, dir_path: []const u8, out: *std.ArrayListUnmanaged([]u8)) !void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    var dir = std.Io.Dir.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
     defer dir.close();
 
     var it = dir.iterate();
@@ -613,7 +613,7 @@ fn collectLispFiles(alloc: std.mem.Allocator, dir_path: []const u8, out: *std.Ar
 pub fn runFmt(alloc: std.mem.Allocator, fmt_args: []const []const u8) !void {
     var check_mode = false;
     var stdout_mode = false;
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    var files: std.ArrayListUnmanaged([]const u8) = .empty;
     defer files.deinit(alloc);
 
     // Parse flags
@@ -628,7 +628,7 @@ pub fn runFmt(alloc: std.mem.Allocator, fmt_args: []const []const u8) !void {
     }
 
     // Discover files if none given
-    var discovered: std.ArrayListUnmanaged([]u8) = .{};
+    var discovered: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (discovered.items) |p| alloc.free(p);
         discovered.deinit(alloc);
@@ -641,13 +641,13 @@ pub fn runFmt(alloc: std.mem.Allocator, fmt_args: []const []const u8) !void {
         file_list = discovered.items;
     }
 
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+    const stdout = std.Io.File.stdout();
+    const stderr = std.Io.File.stderr();
 
     var would_change: bool = false;
 
     for (file_list) |path| {
-        const src = std.fs.cwd().readFileAlloc(alloc, path, 64 * 1024 * 1024) catch |e| {
+        const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 64 * 1024 * 1024) catch |e| {
             const msg = try std.fmt.allocPrint(alloc, "error: cannot read '{s}': {}\n", .{ path, e });
             defer alloc.free(msg);
             try stderr.writeAll(msg);
@@ -669,7 +669,7 @@ pub fn runFmt(alloc: std.mem.Allocator, fmt_args: []const []const u8) !void {
             try stdout.writeAll(formatted);
         } else {
             if (!std.mem.eql(u8, src, formatted)) {
-                try std.fs.cwd().writeFile(.{ .sub_path = path, .data = formatted });
+                try std.Io.Dir.cwd().writeFile(.{ .sub_path = path, .data = formatted });
                 const msg2 = try std.fmt.allocPrint(alloc, "reformatted: {s}\n", .{path});
                 defer alloc.free(msg2);
                 try stderr.writeAll(msg2);

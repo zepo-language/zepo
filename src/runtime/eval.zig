@@ -93,11 +93,11 @@ pub const EvalContext = struct {
     toplevel_fn_ids: ?*std.ArrayListUnmanaged(u32) = null,
     // Owns the name-string buffers deserialized from .zbc files. Each entry
     // is a contiguous block that backs CompiledFn.names slices.
-    zbc_name_bufs: std.ArrayListUnmanaged([]u8) = .{},
+    zbc_name_bufs: std.ArrayListUnmanaged([]u8) = .empty,
     /// Heap-allocated module_path slice headers (from tryImportPackage extensions).
-    owned_module_path_slices: std.ArrayListUnmanaged([][]const u8) = .{},
+    owned_module_path_slices: std.ArrayListUnmanaged([][]const u8) = .empty,
     /// Individual strings owned by tryImportPackage (src_dir allocations).
-    owned_module_path_dirs: std.ArrayListUnmanaged([]const u8) = .{},
+    owned_module_path_dirs: std.ArrayListUnmanaged([]const u8) = .empty,
 
     // Error diagnostics — populated on the first error, used by CLI formatters.
     last_error_span: ?errs.Span = null,
@@ -128,7 +128,7 @@ pub const EvalContext = struct {
             .program = Program.init(allocator),
             .emitter = Emitter.init(allocator, symbols, gc),
             .spans = SpanTable.init(allocator),
-            .compiled = .{},
+            .compiled = .empty,
             .vm = null,
             .macro_names = std.StringHashMap(void).init(allocator),
             .source_map = std.StringHashMap([]const u8).init(allocator),
@@ -285,7 +285,7 @@ pub const EvalContext = struct {
     }
 
     /// Print a caught error with file/line/col and source excerpt to `writer`.
-    /// Pass `std.fs.File.stderr()` for CLI output; pass a buffer writer in tests.
+    /// Pass `std.Io.File.stderr()` for CLI output; pass a buffer writer in tests.
     pub fn printDiagnostic(ctx: *const EvalContext, writer: anytype, err: anyerror) void {
         // zepo-45l
         var buf: [512]u8 = undefined;
