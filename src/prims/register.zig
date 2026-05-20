@@ -208,6 +208,7 @@ const TABLE: []const Entry = &.{
     make("tcp-server?", 1, net_prims.primTcpServerQ),
     make("tcp-listen", 1, net_prims.primTcpListen),
     make("tcp-accept", 1, net_prims.primTcpAccept),
+    make("tcp-recv-line", 1, net_prims.primTcpRecvLine),
 
     make("http-request", 4, http_prims.primHttpRequest),
 
