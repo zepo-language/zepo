@@ -138,7 +138,16 @@ const TABLE: []const Entry = &.{
     make("format", -1, io_mod.primFormat),
     make("exit", -1, io_mod.primExit),
     make("argv", 0, io_mod.primArgv),
-    make("read-line", 0, io_mod.primReadLine), // zepo-8e6
+    make("read-line", -1, io_mod.primReadLine), // zepo-8e6, zepo-s4p: now variadic (0 or 1 arg)
+    // zepo-s4p
+    make("open-input-file", 1, io_mod.primOpenInputFile),
+    make("close-input-port", 1, io_mod.primCloseInputPort),
+    make("current-input-port", 0, io_mod.primCurrentInputPort),
+    make("read-char", 1, io_mod.primReadChar),
+    make("peek-char", 1, io_mod.primPeekChar),
+    make("eof-object?", 1, io_mod.primEofObjectQ),
+    make("eof-object", 0, io_mod.primEofObject),
+    make("input-port?", 1, io_mod.primInputPortQ),
 
     make("file-read-string", 1, sys_mod.primFileReadString),
     make("file-write-string", 2, sys_mod.primFileWriteString),

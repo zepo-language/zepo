@@ -933,6 +933,56 @@ All paths are relative to the process working directory unless absolute.
 (file-exists? "/tmp/out.txt")       ; => #f
 ```
 
+### Input Ports
+
+R7RS-compatible streaming input port primitives for processing files line-by-line
+without loading the entire file into memory.
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `open-input-file` | 1 | `(open-input-file path)` → port — open file for reading; raises `IOError` if not found |
+| `close-input-port` | 1 | `(close-input-port port)` — close the port; safe to call once |
+| `current-input-port` | 0 | `(current-input-port)` → a port wrapping stdin (fd 0) |
+| `input-port?` | 1 | `(input-port? val)` → `#t` if val is an input port |
+| `read-line` | 0–1 | `(read-line)` or `(read-line port)` → string or eof-object; strips trailing newline |
+| `read-char` | 1 | `(read-char port)` → character or eof-object |
+| `peek-char` | 1 | `(peek-char port)` → character without advancing, or eof-object |
+| `eof-object` | 0 | `(eof-object)` → the EOF singleton |
+| `eof-object?` | 1 | `(eof-object? val)` → `#t` if val is the EOF singleton |
+
+```scheme
+; Read a file line by line
+(define p (open-input-file "data.ndjson"))
+(let loop ((line (read-line p)))
+  (unless (eof-object? line)
+    (display line)
+    (newline)
+    (loop (read-line p))))
+(close-input-port p)
+
+; Read characters one at a time
+(define p (open-input-file "greet.txt"))
+(let loop ((c (read-char p)))
+  (unless (eof-object? c)
+    (display c)
+    (loop (read-char p))))
+(close-input-port p)
+
+; Peek without consuming
+(define p (open-input-file "data.txt"))
+(display (peek-char p))  ; => first char (not consumed)
+(display (read-char p))  ; => same first char
+(close-input-port p)
+
+; eof-object singleton
+(eof-object? (eof-object))   ; => #t
+(eof-object? "hello")        ; => #f
+
+; stdin port
+(define stdin-port (current-input-port))
+(input-port? stdin-port)     ; => #t
+```
+
 ### Directory and Path
 
 | Primitive | Arity | Description |

@@ -21,6 +21,11 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
         try out.appendSlice(allocator, "()");
         return;
     }
+    // zepo-s4p
+    if (value_mod.isEof(v)) {
+        try out.appendSlice(allocator, "#<eof>");
+        return;
+    }
     if (v == value_mod.TRUE) {
         try out.appendSlice(allocator, "#t");
         return;
@@ -111,6 +116,11 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
         }
         if (tag == TAG_STRING_PORT) {
             try out.appendSlice(allocator, "#<string-port>");
+            return;
+        }
+        // zepo-s4p
+        if (tag == TAG_INPUT_PORT) {
+            try out.appendSlice(allocator, "#<input-port>");
             return;
         }
         try out.appendSlice(allocator, "#<foreign>");
@@ -271,15 +281,24 @@ pub fn primFormat(vm: *VM, args: []const Value) LispError!Value {
 
 // zepo-8e6: read a line from stdin; returns the line as a string (newline stripped),
 // or #f on EOF.
+// zepo-s4p: extended to accept optional port argument.
 pub fn primReadLine(vm: *VM, args: []const Value) LispError!Value {
-    if (args.len != 0) return error.ArityMismatch;
+    if (args.len > 1) return error.ArityMismatch;
+    if (args.len == 1) {
+        // Port variant
+        const port = args[0];
+        if (!isInputPort(port)) return error.TypeError;
+        const file = inputPortFile(port);
+        return readLineFromFile(vm, file);
+    }
+    // Stdin variant (original behaviour)
     var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(vm.allocator);
     var b: u8 = 0;
     while (true) {
         const n = std.c.read(0, @as([*]u8, @ptrCast(&b)), 1);
         if (n <= 0) {
-            if (buf.items.len == 0) return value_mod.FALSE;
+            if (buf.items.len == 0) return value_mod.EOF_VAL;
             break;
         }
         if (b == '\n') break;
@@ -371,4 +390,138 @@ pub fn primPortWrite(_: *VM, args: []const Value) LispError!Value {
     const sp: *StringPort = @alignCast(@ptrCast(objects.foreignPayload(args[0])));
     writeValue(&sp.buf, sp.allocator, args[1]) catch return error.OutOfMemory;
     return value_mod.NIL;
+}
+
+// ── Input Ports ───────────────────────────────────────────────────────────────
+// zepo-s4p
+
+pub const TAG_INPUT_PORT: u64 = 0x696E7074; // "inpt"
+
+extern "c" fn fgets(s: [*]u8, n: c_int, stream: *std.c.FILE) ?[*:0]u8;
+extern "c" fn fgetc(stream: *std.c.FILE) c_int;
+extern "c" fn ungetc(c: c_int, stream: *std.c.FILE) c_int;
+
+const EOF_C: c_int = -1;
+
+const InputPortPayload = struct {
+    file: *std.c.FILE,
+    owned: bool,
+    allocator: std.mem.Allocator,
+};
+
+fn deinitInputPortFull(ptr: ?*anyopaque) callconv(.c) void {
+    if (ptr) |p| {
+        const pd: *InputPortPayload = @alignCast(@ptrCast(p));
+        if (pd.owned) {
+            _ = std.c.fclose(pd.file);
+        }
+        pd.allocator.destroy(pd);
+    }
+}
+
+pub fn isInputPort(v: Value) bool {
+    return value_mod.isPtr(v) and objects.isForeign(v) and
+        objects.foreignTypeTag(v) == TAG_INPUT_PORT;
+}
+
+pub fn inputPortFile(v: Value) *std.c.FILE {
+    const pd: *InputPortPayload = @alignCast(@ptrCast(objects.foreignPayload(v)));
+    return pd.file;
+}
+
+fn readLineFromFile(vm: *VM, file: *std.c.FILE) LispError!Value {
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(vm.allocator);
+    var tmp: [256]u8 = undefined;
+    var got_any = false;
+    while (true) {
+        const result = fgets(&tmp, @intCast(tmp.len), file);
+        if (result == null) {
+            if (!got_any) return value_mod.EOF_VAL;
+            break;
+        }
+        got_any = true;
+        const slice = std.mem.sliceTo(@as([*:0]u8, @ptrCast(&tmp)), 0);
+        if (slice.len > 0 and slice[slice.len - 1] == '\n') {
+            buf.appendSlice(vm.allocator, slice[0 .. slice.len - 1]) catch return error.OutOfMemory;
+            break;
+        }
+        buf.appendSlice(vm.allocator, slice) catch return error.OutOfMemory;
+    }
+    return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
+}
+
+pub fn primOpenInputFile(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    const path_bytes = objects.stringBytes(args[0]);
+    // Need null-terminated path
+    const path_z = vm.allocator.dupeZ(u8, path_bytes) catch return error.OutOfMemory;
+    defer vm.allocator.free(path_z);
+    const file = std.c.fopen(path_z.ptr, "r") orelse return error.IOError;
+    const pd = vm.allocator.create(InputPortPayload) catch {
+        _ = std.c.fclose(file);
+        return error.OutOfMemory;
+    };
+    pd.* = .{ .file = file, .owned = true, .allocator = vm.allocator };
+    return objects.makeForeign(vm.gc, pd, deinitInputPortFull, TAG_INPUT_PORT) catch return error.OutOfMemory;
+}
+
+pub fn primCloseInputPort(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!isInputPort(args[0])) return error.TypeError;
+    const pd: *InputPortPayload = @alignCast(@ptrCast(objects.foreignPayload(args[0])));
+    if (pd.owned) {
+        _ = std.c.fclose(pd.file);
+        // Null out the pointer and mark not-owned so double-close is safe.
+        pd.owned = false;
+    }
+    return value_mod.NIL;
+}
+
+extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*std.c.FILE;
+
+pub fn primCurrentInputPort(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    // fdopen(0, "r") gives us a FILE* wrapping stdin; not owned (do not fclose).
+    const file = fdopen(0, "r") orelse return error.IOError;
+    const pd = vm.allocator.create(InputPortPayload) catch return error.OutOfMemory;
+    pd.* = .{ .file = file, .owned = false, .allocator = vm.allocator };
+    return objects.makeForeign(vm.gc, pd, deinitInputPortFull, TAG_INPUT_PORT) catch return error.OutOfMemory;
+}
+
+pub fn primReadChar(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!isInputPort(args[0])) return error.TypeError;
+    const file = inputPortFile(args[0]);
+    _ = vm;
+    const c = fgetc(file);
+    if (c == EOF_C) return value_mod.EOF_VAL;
+    return value_mod.char(@intCast(c & 0xFF));
+}
+
+pub fn primPeekChar(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!isInputPort(args[0])) return error.TypeError;
+    const file = inputPortFile(args[0]);
+    _ = vm;
+    const c = fgetc(file);
+    if (c == EOF_C) return value_mod.EOF_VAL;
+    _ = ungetc(c, file);
+    return value_mod.char(@intCast(c & 0xFF));
+}
+
+pub fn primEofObjectQ(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    return if (value_mod.isEof(args[0])) value_mod.TRUE else value_mod.FALSE;
+}
+
+pub fn primEofObject(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    return value_mod.EOF_VAL;
+}
+
+pub fn primInputPortQ(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    return if (isInputPort(args[0])) value_mod.TRUE else value_mod.FALSE;
 }
