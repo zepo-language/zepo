@@ -43,14 +43,27 @@ pub fn primFileReadString(vm: *VM, args: []const Value) LispError!Value {
     const path_c = toCStr(path, &pbuf) orelse return error.IOError;
     const f = std.c.fopen(path_c, "rb") orelse return error.IOError;
     defer _ = std.c.fclose(f);
+    // Try seek-based sizing; fall back to growable read for non-seekable fds
+    // (pipes, /dev/stdin, fifos all return ftell == -1).
     _ = fseek(f, 0, 2); // SEEK_END
     const size = ftell(f);
-    if (size < 0) return error.IOError;
-    _ = fseek(f, 0, 0); // SEEK_SET
-    const buf = vm.allocator.alloc(u8, @intCast(size)) catch return error.OutOfMemory;
-    defer vm.allocator.free(buf);
-    const n = std.c.fread(buf.ptr, 1, buf.len, f);
-    return objects.makeString(vm.gc, buf[0..n]) catch return error.OutOfMemory;
+    if (size >= 0) {
+        _ = fseek(f, 0, 0); // SEEK_SET
+        const buf = vm.allocator.alloc(u8, @intCast(size)) catch return error.OutOfMemory;
+        defer vm.allocator.free(buf);
+        const n = std.c.fread(buf.ptr, 1, buf.len, f);
+        return objects.makeString(vm.gc, buf[0..n]) catch return error.OutOfMemory;
+    }
+    // Non-seekable: read in chunks until EOF.
+    var accum = std.ArrayListUnmanaged(u8).empty;
+    defer accum.deinit(vm.allocator);
+    var chunk: [4096]u8 = undefined;
+    while (true) {
+        const n = std.c.fread(&chunk, 1, chunk.len, f);
+        if (n == 0) break;
+        accum.appendSlice(vm.allocator, chunk[0..n]) catch return error.OutOfMemory;
+    }
+    return objects.makeString(vm.gc, accum.items) catch return error.OutOfMemory;
 }
 
 /// (file-write-string path str) → ()
