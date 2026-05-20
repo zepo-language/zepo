@@ -26,6 +26,7 @@ pub const Kind = enum(u4) {
     env_frame = 9,
     foreign = 10,
     hash_table = 11,
+    bytevector = 12, // zepo-9qg
     _,
 };
 

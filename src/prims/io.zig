@@ -525,3 +525,50 @@ pub fn primInputPortQ(_: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     return if (isInputPort(args[0])) value_mod.TRUE else value_mod.FALSE;
 }
+
+// zepo-9qg: binary file I/O ──────────────────────────────────────────────────
+
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+/// (file-read-bytes path) → bytevector
+pub fn primFileReadBytes(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    const path = objects.stringBytes(args[0]);
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return error.InvalidForm;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse return error.IOError;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2); // SEEK_END
+    const size: usize = @intCast(@max(0, ftell(f)));
+    _ = fseek(f, 0, 0); // SEEK_SET
+    const bv = objects.makeBytevector(vm.gc, size, 0) catch return error.OutOfMemory;
+    if (size > 0) {
+        const dst = objects.bytevectorBytes(bv);
+        _ = std.c.fread(dst.ptr, 1, size, f);
+    }
+    return bv;
+}
+
+/// (file-write-bytes path bv) — write bytevector to file (truncate)
+pub fn primFileWriteBytes(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 2) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    if (!objects.isBytevector(args[1])) return error.TypeError;
+    const path = objects.stringBytes(args[0]);
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return error.InvalidForm;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "wb") orelse return error.IOError;
+    defer _ = std.c.fclose(f);
+    const bytes = objects.bytevectorBytes(args[1]);
+    if (bytes.len > 0) {
+        _ = std.c.fwrite(bytes.ptr, 1, bytes.len, f);
+    }
+    return value_mod.NIL;
+}

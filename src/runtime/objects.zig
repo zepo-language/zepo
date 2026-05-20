@@ -304,6 +304,35 @@ pub fn envSet(gc: *GC, v: Value, idx: usize, new_val: Value) void {
     slot.* = new_val;
 }
 
+// -------------------- Bytevector --------------------
+// zepo-9qg: Body: [len: u64][bytes padded to word boundary]
+// Mutable raw byte array; same GC layout as string but distinct Kind.
+
+pub fn makeBytevector(gc: *GC, len: usize, fill: u8) !Value {
+    const tail_words = (len + WORD - 1) / WORD;
+    const body_words = 1 + tail_words;
+    const h = try gc.alloc(.bytevector, body_words);
+    bodyPtr(u64, h, 0).* = @intCast(len);
+    if (len != 0) {
+        const tail_ptr: [*]u8 = @ptrCast(bodyPtr(u8, h, 1));
+        @memset(tail_ptr[0 .. tail_words * WORD], fill);
+    }
+    return value_mod.fromPtr(h);
+}
+
+pub fn bytevectorLen(v: Value) usize {
+    const h = value_mod.ptrVal(v);
+    return @intCast(bodyPtr(u64, h, 0).*);
+}
+
+pub fn bytevectorBytes(v: Value) []u8 {
+    const h = value_mod.ptrVal(v);
+    const n: usize = @intCast(bodyPtr(u64, h, 0).*);
+    if (n == 0) return &.{};
+    const tail_ptr: [*]u8 = @ptrCast(bodyPtr(u8, h, 1));
+    return tail_ptr[0..n];
+}
+
 // -------------------- Type predicates --------------------
 
 pub inline fn isKind(v: Value, k: Kind) bool {
@@ -389,6 +418,9 @@ pub fn isPrim(v: Value) bool {
 }
 pub fn isEnvFrame(v: Value) bool {
     return isKind(v, .env_frame);
+}
+pub fn isBytevector(v: Value) bool { // zepo-9qg
+    return isKind(v, .bytevector);
 }
 
 pub fn isNumber(v: Value) bool {

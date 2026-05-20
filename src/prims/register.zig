@@ -35,6 +35,7 @@ const math_prims = @import("math.zig");
 const debug_prims = @import("debug.zig");
 const bitwise_prims = @import("bitwise.zig"); // zepo-qny
 const signal_prims = @import("signal.zig"); // zepo-6qx
+const bytevec_prims = @import("bytevec.zig"); // zepo-9qg
 
 const Entry = struct {
     name: []const u8,
@@ -252,6 +253,28 @@ const TABLE: []const Entry = &.{
     make("signal-set!", 2, signal_prims.primSignalSet),
     make("signal-number", 1, signal_prims.primSignalNumber),
     make("getpid", 0, signal_prims.primGetpid),
+
+    // zepo-9qg: bytevector primitives
+    make("make-bytevector",        -1, bytevec_prims.primMakeBytevector),
+    make("bytevector",             -1, bytevec_prims.primBytevector),
+    make("bytevector?",             1, bytevec_prims.primBytevectorQ),
+    make("bytevector-length",       1, bytevec_prims.primBytevectorLength),
+    make("bytevector-u8-ref",       2, bytevec_prims.primBytevectorU8Ref),
+    make("bytevector-u8-set!",      3, bytevec_prims.primBytevectorU8Set),
+    make("bytevector-copy",        -1, bytevec_prims.primBytevectorCopy),
+    make("bytevector-append",      -1, bytevec_prims.primBytevectorAppend),
+    make("bytevector->string",      1, bytevec_prims.primBytevectorToString),
+    make("string->bytevector",      1, bytevec_prims.primStringToBytevector),
+    make("bytevector-u16be-ref",    2, bytevec_prims.primBytevectorU16BeRef),
+    make("bytevector-u16le-ref",    2, bytevec_prims.primBytevectorU16LeRef),
+    make("bytevector-u32be-ref",    2, bytevec_prims.primBytevectorU32BeRef),
+    make("bytevector-u32le-ref",    2, bytevec_prims.primBytevectorU32LeRef),
+    make("bytevector-u16be-set!",   3, bytevec_prims.primBytevectorU16BeSet),
+    make("bytevector-u16le-set!",   3, bytevec_prims.primBytevectorU16LeSet),
+    make("bytevector-u32be-set!",   3, bytevec_prims.primBytevectorU32BeSet),
+    make("bytevector-u32le-set!",   3, bytevec_prims.primBytevectorU32LeSet),
+    make("file-read-bytes",         1, io_mod.primFileReadBytes),
+    make("file-write-bytes",        2, io_mod.primFileWriteBytes),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
