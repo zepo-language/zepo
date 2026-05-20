@@ -39,6 +39,9 @@ const CompiledFn = bytecode.CompiledFn;
 const frame_mod = @import("frame.zig");
 const CallStack = frame_mod.CallStack;
 const Frame = frame_mod.Frame;
+const fiber_mod = @import("fiber.zig");
+pub const FiberState = fiber_mod.FiberState;
+pub const FiberStatus = fiber_mod.FiberStatus;
 
 pub const PrimFn = *const fn (vm: *VM, args: []const Value) LispError!Value;
 
@@ -67,6 +70,11 @@ pub const VM = struct {
     /// zepo-6qx: countdown to next signal poll. Decrements each opcode;
     /// when it reaches zero pollSignals() is called and it resets to SIGNAL_POLL_INTERVAL.
     signal_poll_counter: u32 = SIGNAL_POLL_INTERVAL,
+    // zepo-4yr: spawned fiber states (not including the main fiber's call_stack,
+    // which lives directly in vm.call_stack). current_fiber_idx == 0 means the
+    // main execution context is running; >= 1 means a spawned fiber is active.
+    fibers: std.ArrayListUnmanaged(*FiberState) = .empty,
+    current_fiber_idx: usize = 0,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -115,6 +123,9 @@ pub const VM = struct {
             vm.error_msg = null;
         }
         vm.call_stack.deinit();
+        // zepo-4yr: free all spawned fiber states.
+        for (vm.fibers.items) |fs| fs.deinit();
+        vm.fibers.deinit(vm.allocator);
     }
 
     /// Register the VM's register stack and frame closures as GC roots.
@@ -127,16 +138,29 @@ pub const VM = struct {
 
     fn vmRootVisit(ctx: *anyopaque, visitor: @import("../gc/roots.zig").RootVisitor, visitor_ctx: *anyopaque) void {
         const vm: *VM = @ptrCast(@alignCast(ctx));
-        // Only visit regs within active frame windows; stale slots above the
-        // current frame's top (if any) must not be treated as roots.
-        const regs = vm.call_stack.regs.items;
-        for (vm.call_stack.frames.items) |*f| {
-            const start: usize = f.base;
-            const end: usize = @min(regs.len, start + f.func.num_regs);
-            if (start >= end) continue;
-            for (regs[start..end]) |*slot| visitor(visitor_ctx, slot);
+
+        // Walk a single CallStack's live registers and closure values.
+        const visitCallStack = struct {
+            fn call(cs: *const CallStack, vis: @import("../gc/roots.zig").RootVisitor, vis_ctx: *anyopaque) void {
+                const regs = cs.regs.items;
+                for (cs.frames.items) |*f| {
+                    const start: usize = f.base;
+                    const end: usize = @min(regs.len, start + f.func.num_regs);
+                    if (start >= end) continue;
+                    for (regs[start..end]) |*slot| vis(vis_ctx, slot);
+                }
+                for (cs.frames.items) |*f| vis(vis_ctx, &f.closure_val);
+            }
+        }.call;
+
+        // Active fiber's call stack (mirrors vm.call_stack for the running fiber).
+        visitCallStack(&vm.call_stack, visitor, visitor_ctx);
+        // zepo-4yr: suspended fibers — their registers must also be GC roots.
+        for (vm.fibers.items) |fs| {
+            visitCallStack(&fs.call_stack, visitor, visitor_ctx);
+            visitor(visitor_ctx, &fs.result);
+            visitor(visitor_ctx, &fs.error_val);
         }
-        for (vm.call_stack.frames.items) |*f| visitor(visitor_ctx, &f.closure_val);
         visitor(visitor_ctx, &vm.raised_val);
         // Compiled-function constant pools hold heap Values (strings, symbols,
         // etc.) that are not referenced by any register while dormant. Without
@@ -163,6 +187,17 @@ pub const VM = struct {
 
     fn unrootSafepoint(vm: *VM, prev_len: usize) void {
         vm.gc.roots.extra.shrinkRetainingCapacity(prev_len);
+    }
+
+    // zepo-4yr: allocate a new FiberState and register it with the VM.
+    // Returns its index into vm.fibers (0-based). The caller (spawn primitive,
+    // zepo-i19) is responsible for pushing an initial frame before resuming.
+    // Context-switching logic lives in the scheduler (zepo-0bo).
+    pub fn addFiber(vm: *VM) !usize {
+        const fs = try FiberState.init(vm.allocator, VM.MAX_REGS);
+        const idx = vm.fibers.items.len;
+        try vm.fibers.append(vm.allocator, fs);
+        return idx;
     }
 
     // zepo-5wg: place args from args_src into the new frame at `base`.
