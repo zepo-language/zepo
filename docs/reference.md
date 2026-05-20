@@ -968,12 +968,46 @@ All paths are relative to the process working directory unless absolute.
 | `getenv` | 1 | `(getenv name)` → string or `#f` if unset |
 | `shell` | 1 | `(shell cmd)` → stdout string (exit code ignored) |
 | `shell/status` | 1 | `(shell/status cmd)` → integer exit code |
+| `getpid` | 0 | `(getpid)` → integer process ID |
 
 ```scheme
 (getenv "HOME")                         ; => "/Users/me"
 (getenv "UNDEFINED_VAR")               ; => #f
 (shell "echo hello")                    ; => "hello\n"
 (shell/status "test -f project.lisp")  ; => 0 or 1
+(getpid)                               ; => 12345
+```
+
+### Signals
+
+Register Lisp thunks as OS signal handlers. The VM polls for pending signals
+every 1000 opcodes, so handlers fire promptly during any active computation.
+
+Supported signal names: `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGTERM`, `SIGUSR1`, `SIGUSR2`.
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `signal-set!` | 2 | `(signal-set! sig-sym handler-fn)` → `#f`; installs handler for named signal |
+| `signal-number` | 1 | `(signal-number sig-sym)` → integer signal number, or `#f` for unknown names |
+
+```scheme
+;; Graceful shutdown on SIGTERM
+(signal-set! 'SIGTERM (lambda ()
+  (println "shutting down")
+  (exit 0)))
+
+;; Interrupt handler
+(signal-set! 'SIGINT (lambda ()
+  (println "interrupted")
+  (exit 1)))
+
+;; Query signal numbers
+(signal-number 'SIGTERM)   ; => 15
+(signal-number 'SIGINT)    ; => 2
+(signal-number 'SIGHUP)    ; => 1
+(signal-number 'SIGUSR1)   ; => 10
+(signal-number 'SIGUSR2)   ; => 12
+(signal-number 'SIGFOO)    ; => #f  (unknown)
 ```
 
 ### String Output Ports

@@ -34,6 +34,7 @@ const regex_prims = @import("regex.zig");
 const math_prims = @import("math.zig");
 const debug_prims = @import("debug.zig");
 const bitwise_prims = @import("bitwise.zig"); // zepo-qny
+const signal_prims = @import("signal.zig"); // zepo-6qx
 
 const Entry = struct {
     name: []const u8,
@@ -237,6 +238,11 @@ const TABLE: []const Entry = &.{
     make("bitwise-not", 1, bitwise_prims.primBitwiseNot),
     make("arithmetic-shift", 2, bitwise_prims.primArithmeticShift),
     make("bit-count", 1, bitwise_prims.primBitCount),
+
+    // zepo-6qx
+    make("signal-set!", 2, signal_prims.primSignalSet),
+    make("signal-number", 1, signal_prims.primSignalNumber),
+    make("getpid", 0, signal_prims.primGetpid),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
