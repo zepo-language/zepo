@@ -149,6 +149,15 @@ pub const LAYOUT_TABLE: [16]LayoutDesc = blk: {
         .length_offset = 0,
     };
 
+    // zepo-9qg: bytevector layout — same as string: [len: u64][raw bytes padded to word boundary]
+    t[@intFromEnum(Kind.bytevector)] = .{
+        .kind = .bytevector,
+        .body_words = 0, // variable (length stored in body[0])
+        .value_offsets = &no_offsets,
+        .has_raw_tail = true,
+        .length_offset = 0,
+    };
+
     break :blk t;
 };
 

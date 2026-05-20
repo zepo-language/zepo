@@ -815,6 +815,56 @@ Vectors render as `#(1 2 3)` notation in both display and write.
 (vector-append #(1 2) #(3 4)) ; => #(1 2 3 4)
 ```
 
+### Bytevectors
+
+R7RS-compatible mutable byte arrays. Each element is an exact integer in
+the range 0–255. Distinct from vectors, which hold arbitrary Scheme values.
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `bytevector` | -1 | `(bytevector b ...)` — construct from individual bytes |
+| `make-bytevector` | -1 | `(make-bytevector n)` or `(make-bytevector n fill)` — fill defaults to 0 |
+| `bytevector?` | 1 | Is a bytevector? |
+| `bytevector-length` | 1 | Number of bytes |
+| `bytevector-u8-ref` | 2 | `(bytevector-u8-ref bv i)` → 0..255 |
+| `bytevector-u8-set!` | 3 | `(bytevector-u8-set! bv i val)` — mutates byte at index |
+| `bytevector-copy` | -1 | `(bytevector-copy bv [start [end]])` — new copy, optional range |
+| `bytevector-append` | -1 | `(bytevector-append bv ...)` — concatenate bytevectors |
+| `bytevector->string` | 1 | `(bytevector->string bv)` — interpret bytes as UTF-8 string |
+| `string->bytevector` | 1 | `(string->bytevector str)` — encode string as UTF-8 bytes |
+| `bytevector-u16be-ref` | 2 | `(bytevector-u16be-ref bv offset)` → big-endian u16 |
+| `bytevector-u16le-ref` | 2 | `(bytevector-u16le-ref bv offset)` → little-endian u16 |
+| `bytevector-u32be-ref` | 2 | `(bytevector-u32be-ref bv offset)` → big-endian u32 |
+| `bytevector-u32le-ref` | 2 | `(bytevector-u32le-ref bv offset)` → little-endian u32 |
+| `bytevector-u16be-set!` | 3 | `(bytevector-u16be-set! bv offset val)` — write big-endian u16 |
+| `bytevector-u16le-set!` | 3 | `(bytevector-u16le-set! bv offset val)` — write little-endian u16 |
+| `bytevector-u32be-set!` | 3 | `(bytevector-u32be-set! bv offset val)` — write big-endian u32 |
+| `bytevector-u32le-set!` | 3 | `(bytevector-u32le-set! bv offset val)` — write little-endian u32 |
+
+Bounds errors raise `ContractViolation`. Multi-byte accessors require the
+full word to fit: u16 needs `offset+1 < length`, u32 needs `offset+3 < length`.
+
+```scheme
+(define bv (make-bytevector 4 0))
+(bytevector-u32be-set! bv 0 305419896)  ; 0x12345678
+(bytevector-u32be-ref bv 0)             ; => 305419896
+(bytevector-u8-ref bv 0)                ; => 18  (0x12)
+(bytevector-u8-ref bv 3)                ; => 120 (0x78)
+
+(bytevector->string (string->bytevector "hello"))  ; => "hello"
+
+(define b2 (bytevector 1 2 3 4))
+(bytevector-length b2)                  ; => 4
+(bytevector-copy b2 1 3)                ; => bytevector of bytes 2 3
+(bytevector-append (bytevector 1 2) (bytevector 3 4))  ; length 4
+
+(define bv5 (make-bytevector 4 0))
+(bytevector-u16be-set! bv5 0 43981)     ; 0xABCD
+(bytevector-u8-ref bv5 0)               ; => 171 (0xAB, high byte)
+(bytevector-u8-ref bv5 1)               ; => 205 (0xCD, low byte)
+(bytevector-u16le-ref bv5 0)            ; => 52651 (0xCDAB — LE reads low first)
+```
+
 ### Strings
 
 | Primitive | Arity | Description |
@@ -923,6 +973,8 @@ All paths are relative to the process working directory unless absolute.
 | `file-append-string` | 2 | `(file-append-string path str)` — append to file, creating if needed |
 | `file-exists?` | 1 | `(file-exists? path)` → bool |
 | `file-delete` | 1 | `(file-delete path)` — delete file; raises `IOError` if it does not exist |
+| `file-read-bytes` | 1 | `(file-read-bytes path)` → bytevector — read entire file as raw bytes |
+| `file-write-bytes` | 2 | `(file-write-bytes path bv)` — write bytevector to file (truncate) |
 
 ```scheme
 (file-write-string "/tmp/out.txt" "hello\n")
