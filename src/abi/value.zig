@@ -17,6 +17,8 @@ pub const Value = u64;
 pub const NIL: Value = 0x03;
 pub const FALSE: Value = 0x0B;
 pub const TRUE: Value = 0x13;
+// zepo-s4p
+pub const EOF_VAL: Value = 0x1B; // special immediate for the EOF singleton
 
 pub const Tag = enum(u3) {
     ptr = 0,
@@ -64,6 +66,11 @@ pub inline fn isChar(v: Value) bool {
 
 pub inline fn isSpecial(v: Value) bool {
     return (v & TAG_MASK) == @intFromEnum(Tag.special);
+}
+
+// zepo-s4p
+pub inline fn isEof(v: Value) bool {
+    return v == EOF_VAL;
 }
 
 pub inline fn fixnum(n: i63) Value {
