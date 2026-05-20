@@ -33,6 +33,7 @@ const http_prims = @import("http.zig");
 const regex_prims = @import("regex.zig");
 const math_prims = @import("math.zig");
 const debug_prims = @import("debug.zig");
+const bitwise_prims = @import("bitwise.zig"); // zepo-qny
 
 const Entry = struct {
     name: []const u8,
@@ -223,6 +224,14 @@ const TABLE: []const Entry = &.{
     make("nan?", 1, math_prims.primNanQ),
     make("finite?", 1, math_prims.primFiniteQ),
     make("infinite?", 1, math_prims.primInfiniteQ),
+
+    // zepo-qny
+    make("bitwise-and", -1, bitwise_prims.primBitwiseAnd),
+    make("bitwise-or", -1, bitwise_prims.primBitwiseOr),
+    make("bitwise-xor", -1, bitwise_prims.primBitwiseXor),
+    make("bitwise-not", 1, bitwise_prims.primBitwiseNot),
+    make("arithmetic-shift", 2, bitwise_prims.primArithmeticShift),
+    make("bit-count", 1, bitwise_prims.primBitCount),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
