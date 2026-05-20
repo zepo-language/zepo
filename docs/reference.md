@@ -913,11 +913,25 @@ All paths are relative to the process working directory unless absolute.
 | `directory-list` | 1 | `(directory-list path)` → list of entry name strings |
 | `make-directory` | 1 | `(make-directory path)` — create directory and any missing parents |
 | `current-directory` | 0 | `(current-directory)` → absolute path string of CWD |
+| `file-directory?` | 1 | `(file-directory? path)` → `#t` if path is a directory, else `#f` |
+| `file-size` | 1 | `(file-size path)` → integer byte count, or `#f` if not a regular file |
+| `file-mtime` | 1 | `(file-mtime path)` → integer Unix timestamp (seconds), or `#f` if path doesn't exist |
+| `file-type` | 1 | `(file-type path)` → symbol `'file`, `'directory`, `'symlink`, or `'other`; `#f` if not found |
 
 ```scheme
 (make-directory "/tmp/zepo-test/sub")
 (current-directory)              ; => "/Users/me/myproject"
 (directory-list ".")             ; => ("src" "lib" "project.lisp" ...)
+
+(file-directory? ".")            ; => #t
+(file-directory? "build.zig")    ; => #f
+(file-size "build.zig")          ; => 14613  (bytes)
+(file-size ".")                  ; => #f  (not a regular file)
+(file-mtime "build.zig")         ; => 1779283282  (Unix seconds)
+(file-mtime "/nonexistent")      ; => #f
+(file-type ".")                  ; => directory
+(file-type "build.zig")          ; => file
+(file-type "/nonexistent")       ; => #f
 ```
 
 ### Environment and Shell

@@ -149,6 +149,11 @@ const TABLE: []const Entry = &.{
     make("getenv", 1, sys_mod.primGetenv),
     make("shell", 1, sys_mod.primShell),
     make("shell/status", 1, sys_mod.primShellStatus),
+    // zepo-b3c
+    make("file-directory?", 1, sys_mod.primFileDirectoryQ),
+    make("file-size", 1, sys_mod.primFileSize),
+    make("file-mtime", 1, sys_mod.primFileMtime),
+    make("file-type", 1, sys_mod.primFileType),
 
     make("tui-run", 3, tui_mod.primTuiRun),
     make("tui-screen-size", 0, tui_mod.primTuiScreenSize),
