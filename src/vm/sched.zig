@@ -34,7 +34,7 @@ pub const POLLOUT: c_short = 0x0004;
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
-const MAIN_FIBER: usize = std.math.maxInt(usize);
+pub const MAIN_FIBER: usize = std.math.maxInt(usize);
 
 pub const BlockedFiber = struct {
     fiber_idx: usize, // MAIN_FIBER or index into vm.fibers
@@ -137,12 +137,15 @@ pub const Scheduler = struct {
         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
         const func = &vm.compiled_fns[fn_id];
         vm.current_fiber_idx = 0;
+        vm.scheduler = sched;
+        defer vm.scheduler = null;
 
         // Run main fiber. If it never yields, we're done immediately.
         const first: ?Value = vm.execFn(func, value_mod.NIL, initial_args) catch |e| blk: {
             if (e != error.FiberYielded) return e;
             sched.saveCurrent(MAIN_FIBER);
-            try sched.run_queue.append(sched.allocator, MAIN_FIBER);
+            if (!vm.block_on_yield) try sched.run_queue.append(sched.allocator, MAIN_FIBER);
+            vm.block_on_yield = false;
             break :blk null;
         };
         if (first) |v| return v;
@@ -163,32 +166,36 @@ pub const Scheduler = struct {
 
             const step: ?Value = vm.resumeExecFn() catch |e| blk: {
                 if (e == error.FiberYielded) {
-                    // Re-save and re-enqueue; vm.call_stack → empty placeholder.
                     sched.saveCurrent(next);
-                    try sched.run_queue.append(sched.allocator, next);
+                    if (!vm.block_on_yield) try sched.run_queue.append(sched.allocator, next);
+                    vm.block_on_yield = false;
                     break :blk null;
                 }
                 // Real error.
                 if (next == MAIN_FIBER) return e;
-                vm.fibers.items[next].status = .errored;
-                vm.fibers.items[next].error_val = vm.raised_val;
-                // Clear dangling frames so vm.deinit stays clean.
+                const fs_err = vm.fibers.items[next];
+                fs_err.status = .errored;
+                fs_err.error_val = vm.raised_val;
+                // zepo-i19: wake fibers blocked in (fiber-join) on this one
+                for (fs_err.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
+                fs_err.waiters.clearRetainingCapacity();
                 vm.call_stack.frames.clearRetainingCapacity();
                 vm.call_stack.regs.shrinkRetainingCapacity(0);
                 break :blk null;
             };
 
             if (step) |v| {
-                // Fiber returned normally; vm.call_stack has zero items (pop was called).
                 if (next == MAIN_FIBER) {
                     main_result = v;
                     main_done = true;
                 } else {
-                    vm.fibers.items[next].status = .done;
-                    vm.fibers.items[next].result = v;
+                    const fs = vm.fibers.items[next];
+                    fs.status = .done;
+                    fs.result = v;
+                    // zepo-i19: wake fibers blocked in (fiber-join) on this one
+                    for (fs.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
+                    fs.waiters.clearRetainingCapacity();
                 }
-                // Leave vm.call_stack as-is (zero items, backing capacity freed
-                // lazily on the next loadFiber call that deinits the placeholder).
             }
         }
 

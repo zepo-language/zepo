@@ -29,6 +29,9 @@ pub const FiberState = struct {
     /// Raised value when status == .errored.
     error_val: Value,
     allocator: std.mem.Allocator,
+    // zepo-i19: fibers blocked in (fiber-join) waiting for this fiber to finish.
+    // Indices are into vm.fibers (or MAIN_FIBER sentinel from sched.zig).
+    waiters: std.ArrayListUnmanaged(usize) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, max_regs: usize) !*FiberState {
         const fs = try allocator.create(FiberState);
@@ -48,6 +51,7 @@ pub const FiberState = struct {
     pub fn deinit(fs: *FiberState) void {
         const alloc = fs.allocator;
         fs.call_stack.deinit();
+        fs.waiters.deinit(alloc);
         alloc.destroy(fs);
     }
 };

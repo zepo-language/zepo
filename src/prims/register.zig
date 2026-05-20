@@ -291,7 +291,14 @@ const TABLE: []const Entry = &.{
     make("process-kill",         2, process_prims.primProcessKill),
 
     // zepo-0bo
-    make("yield", 0, fiber_prims.primYield),
+    make("yield",           0, fiber_prims.primYield),
+    // zepo-i19
+    make("spawn",           1, fiber_prims.primSpawn),
+    make("fiber?",          1, fiber_prims.primFiberQ),
+    make("fiber-done?",     1, fiber_prims.primFiberDoneQ),
+    make("fiber-errored?",  1, fiber_prims.primFiberErroredQ),
+    make("fiber-result",    1, fiber_prims.primFiberResult),
+    make("fiber-join",      1, fiber_prims.primFiberJoin),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {

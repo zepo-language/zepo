@@ -83,6 +83,10 @@ pub const VM = struct {
     // zepo-0bo: set by the (yield) primitive; dispatch returns .yielded on the
     // next iteration boundary, leaving the frame intact for resumption.
     yield_requested: bool = false,
+    // zepo-i19: blocking yield — save but do not re-enqueue (fiber-join)
+    block_on_yield: bool = false,
+    // zepo-i19: active scheduler pointer, set by Scheduler.runMain
+    scheduler: ?*sched_mod.Scheduler = null,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -656,8 +660,15 @@ pub const VM = struct {
                         // zepo-0bo: (yield) sets this flag; save PC and return yielded.
                         if (vm.yield_requested) {
                             vm.yield_requested = false;
-                            vm.call_stack.reg(a).* = prim_val;
-                            vm.call_stack.currentFrame().pc = pc;
+                            if (vm.block_on_yield) {
+                                // zepo-i19: blocking prim (fiber-join) — re-execute
+                                // this CALL on resume so it can return the real result.
+                                vm.call_stack.currentFrame().pc = pc - 1;
+                            } else {
+                                // Cooperative yield — advance past CALL, store NIL result.
+                                vm.call_stack.reg(a).* = prim_val;
+                                vm.call_stack.currentFrame().pc = pc;
+                            }
                             return DispatchResult.yielded;
                         }
                         vm.call_stack.reg(a).* = prim_val;
