@@ -217,3 +217,69 @@ pub fn primShellStatus(vm: *VM, args: []const Value) LispError!Value {
     const code: i63 = if (status >= 0) @intCast((status >> 8) & 0xff) else -1;
     return value_mod.fixnum(code);
 }
+
+// zepo-b3c
+extern "c" fn stat(path: [*:0]const u8, buf: *std.c.Stat) c_int;
+
+const S_IFMT: u16 = 0o170000;
+const S_IFREG: u16 = 0o100000;
+const S_IFDIR: u16 = 0o040000;
+const S_IFLNK: u16 = 0o120000;
+
+/// (file-directory? path) → #t or #f
+pub fn primFileDirectoryQ(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 1) return error.ArityMismatch;
+    const path = try requireString(args[0]);
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const path_c = toCStr(path, &pbuf) orelse return value_mod.FALSE;
+    var st: std.c.Stat = undefined;
+    if (stat(path_c, &st) != 0) return value_mod.FALSE;
+    const mode = @as(u16, @intCast(@as(u32, @intCast(st.mode)) & S_IFMT));
+    return if (mode == S_IFDIR) value_mod.TRUE else value_mod.FALSE;
+}
+
+/// (file-size path) → integer bytes, or #f if not a regular file
+pub fn primFileSize(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 1) return error.ArityMismatch;
+    const path = try requireString(args[0]);
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const path_c = toCStr(path, &pbuf) orelse return value_mod.FALSE;
+    var st: std.c.Stat = undefined;
+    if (stat(path_c, &st) != 0) return value_mod.FALSE;
+    const mode = @as(u16, @intCast(@as(u32, @intCast(st.mode)) & S_IFMT));
+    if (mode != S_IFREG) return value_mod.FALSE;
+    return value_mod.fixnum(@intCast(st.size));
+}
+
+/// (file-mtime path) → integer Unix timestamp seconds, or #f if path doesn't exist
+pub fn primFileMtime(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 1) return error.ArityMismatch;
+    const path = try requireString(args[0]);
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const path_c = toCStr(path, &pbuf) orelse return value_mod.FALSE;
+    var st: std.c.Stat = undefined;
+    if (stat(path_c, &st) != 0) return value_mod.FALSE;
+    const ts = st.mtime();
+    return value_mod.fixnum(@intCast(ts.sec));
+}
+
+/// (file-type path) → symbol 'file, 'directory, 'symlink, or 'other; #f if not found
+pub fn primFileType(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    const path = try requireString(args[0]);
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const path_c = toCStr(path, &pbuf) orelse return value_mod.FALSE;
+    var st: std.c.Stat = undefined;
+    if (stat(path_c, &st) != 0) return value_mod.FALSE;
+    const mode = @as(u16, @intCast(@as(u32, @intCast(st.mode)) & S_IFMT));
+    const name: []const u8 = switch (mode) {
+        S_IFREG => "file",
+        S_IFDIR => "directory",
+        S_IFLNK => "symlink",
+        else => "other",
+    };
+    return vm.symbols.intern(name) catch return error.OutOfMemory;
+}
