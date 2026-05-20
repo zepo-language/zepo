@@ -85,6 +85,8 @@ pub const VM = struct {
     yield_requested: bool = false,
     // zepo-i19: blocking yield — save but do not re-enqueue (fiber-join)
     block_on_yield: bool = false,
+    // zepo-8pc: park yield — block_on_yield=true but advance pc (no re-execute)
+    park_on_yield: bool = false,
     // zepo-i19: active scheduler pointer, set by Scheduler.runMain
     scheduler: ?*sched_mod.Scheduler = null,
     /// The GC is informed of live VM registers via a root-visitor callback
@@ -660,14 +662,15 @@ pub const VM = struct {
                         // zepo-0bo: (yield) sets this flag; save PC and return yielded.
                         if (vm.yield_requested) {
                             vm.yield_requested = false;
-                            if (vm.block_on_yield) {
+                            if (vm.block_on_yield and !vm.park_on_yield) {
                                 // zepo-i19: blocking prim (fiber-join) — re-execute
                                 // this CALL on resume so it can return the real result.
                                 vm.call_stack.currentFrame().pc = pc - 1;
                             } else {
-                                // Cooperative yield — advance past CALL, store NIL result.
+                                // Cooperative yield or park (sleep) — advance past CALL.
                                 vm.call_stack.reg(a).* = prim_val;
                                 vm.call_stack.currentFrame().pc = pc;
+                                vm.park_on_yield = false; // zepo-8pc
                             }
                             return DispatchResult.yielded;
                         }

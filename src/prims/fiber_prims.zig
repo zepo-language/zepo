@@ -101,6 +101,33 @@ pub fn primFiberResult(_: *VM, args: []const Value) LispError!Value {
     };
 }
 
+// ── (sleep seconds) → #void ───────────────────────────────────────────────────
+// zepo-8pc: Parks the current fiber for the given duration (fractional seconds
+// allowed). Uses park_on_yield so pc advances — no re-execution on resume.
+pub fn primSleep(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    const sched = vm.scheduler orelse return error.ContractViolation;
+
+    const ms: i64 = if (value_mod.isFixnum(args[0]))
+        @as(i64, value_mod.fixnumVal(args[0])) * 1000
+    else if (objects.isFloat(args[0]))
+        @intFromFloat(@max(0.0, objects.floatVal(args[0])) * 1000.0)
+    else
+        return error.TypeError;
+
+    const my_idx: usize = if (vm.current_fiber_idx == 0)
+        sched_mod.MAIN_FIBER
+    else
+        vm.current_fiber_idx - 1;
+
+    const wake_ms = sched_mod.nowMs() + ms;
+    try sched.sleepFiber(my_idx, wake_ms);
+    vm.yield_requested = true;
+    vm.block_on_yield = true;
+    vm.park_on_yield = true;
+    return value_mod.NIL;
+}
+
 // ── (fiber-join handle) → value ───────────────────────────────────────────────
 // Suspends the current fiber until target completes; returns target's result.
 // On resume (woken by scheduler after target finishes), re-checks status.

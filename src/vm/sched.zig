@@ -32,6 +32,13 @@ extern "c" fn poll(fds: [*]PollFd, nfds: c_uint, timeout: c_int) c_int;
 pub const POLLIN: c_short = 0x0001;
 pub const POLLOUT: c_short = 0x0004;
 
+// zepo-8pc: monotonic millisecond timestamp
+pub fn nowMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(ts.nsec, 1_000_000);
+}
+
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 pub const MAIN_FIBER: usize = std.math.maxInt(usize);
@@ -42,11 +49,18 @@ pub const BlockedFiber = struct {
     events: c_short,
 };
 
+// zepo-8pc: fiber parked until an absolute monotonic deadline (ms)
+pub const SleepingFiber = struct {
+    fiber_idx: usize,
+    wake_ms: i64,
+};
+
 pub const Scheduler = struct {
     vm: *VM,
     allocator: std.mem.Allocator,
     run_queue: std.ArrayListUnmanaged(usize),
     blocked: std.ArrayListUnmanaged(BlockedFiber),
+    sleeping: std.ArrayListUnmanaged(SleepingFiber), // zepo-8pc
 
     pub fn init(vm: *VM) Scheduler {
         return .{
@@ -54,12 +68,14 @@ pub const Scheduler = struct {
             .allocator = vm.allocator,
             .run_queue = .empty,
             .blocked = .empty,
+            .sleeping = .empty,
         };
     }
 
     pub fn deinit(sched: *Scheduler) void {
         sched.run_queue.deinit(sched.allocator);
         sched.blocked.deinit(sched.allocator);
+        sched.sleeping.deinit(sched.allocator);
     }
 
     // ── Context switching ────────────────────────────────────────────────────
@@ -106,19 +122,42 @@ pub const Scheduler = struct {
         });
     }
 
-    // ── poll(2) ──────────────────────────────────────────────────────────────
+    // zepo-8pc: park a fiber until wake_ms (absolute nowMs()).
+    pub fn sleepFiber(sched: *Scheduler, fiber_idx: usize, wake_ms: i64) !void {
+        try sched.sleeping.append(sched.allocator, .{
+            .fiber_idx = fiber_idx,
+            .wake_ms = wake_ms,
+        });
+    }
+
+    // ── poll(2) + sleep timer ─────────────────────────────────────────────────
 
     fn pollAndWake(sched: *Scheduler) !void {
-        if (sched.blocked.items.len == 0) return;
+        const now = nowMs();
+
+        // Compute poll timeout from the earliest sleeping fiber.
+        var timeout: c_int = -1; // infinite (no sleepers)
+        for (sched.sleeping.items) |s| {
+            const rem = s.wake_ms - now;
+            const t: c_int = if (rem <= 0) 0 else @intCast(@min(rem, std.math.maxInt(c_int)));
+            if (timeout == -1 or t < timeout) timeout = t;
+        }
+
         const n = sched.blocked.items.len;
         const pfds = try sched.allocator.alloc(PollFd, n);
         defer sched.allocator.free(pfds);
         for (sched.blocked.items, 0..) |b, i|
             pfds[i] = .{ .fd = b.fd, .events = b.events, .revents = 0 };
 
-        const ready = poll(pfds.ptr, @intCast(n), -1);
-        if (ready <= 0) return;
+        if (n > 0) {
+            _ = poll(pfds.ptr, @intCast(n), timeout);
+        } else {
+            // Sleep-only: poll with no fds just for the timer.
+            var dummy: [0]PollFd = .{};
+            _ = poll(&dummy, 0, timeout);
+        }
 
+        // Wake fd-ready fibers.
         var i: usize = 0;
         while (i < sched.blocked.items.len) {
             if (pfds[i].revents != 0) {
@@ -126,6 +165,18 @@ pub const Scheduler = struct {
                 try sched.run_queue.append(sched.allocator, b.fiber_idx);
             } else {
                 i += 1;
+            }
+        }
+
+        // Wake sleeping fibers whose deadline has passed.
+        const now2 = nowMs();
+        var j: usize = 0;
+        while (j < sched.sleeping.items.len) {
+            if (sched.sleeping.items[j].wake_ms <= now2) {
+                const s = sched.sleeping.swapRemove(j);
+                try sched.run_queue.append(sched.allocator, s.fiber_idx);
+            } else {
+                j += 1;
             }
         }
     }
@@ -146,6 +197,7 @@ pub const Scheduler = struct {
             sched.saveCurrent(MAIN_FIBER);
             if (!vm.block_on_yield) try sched.run_queue.append(sched.allocator, MAIN_FIBER);
             vm.block_on_yield = false;
+            vm.park_on_yield = false; // zepo-8pc
             break :blk null;
         };
         if (first) |v| return v;
@@ -154,9 +206,9 @@ pub const Scheduler = struct {
         var main_done = false;
 
         // Invariant at loop top: vm.call_stack is empty (saved by saveCurrent).
-        while (!main_done or sched.run_queue.items.len > 0 or sched.blocked.items.len > 0) {
+        while (!main_done or sched.run_queue.items.len > 0 or sched.blocked.items.len > 0 or sched.sleeping.items.len > 0) {
             if (sched.run_queue.items.len == 0) {
-                if (sched.blocked.items.len == 0) break;
+                if (sched.blocked.items.len == 0 and sched.sleeping.items.len == 0) break;
                 try sched.pollAndWake();
                 continue;
             }
@@ -169,6 +221,7 @@ pub const Scheduler = struct {
                     sched.saveCurrent(next);
                     if (!vm.block_on_yield) try sched.run_queue.append(sched.allocator, next);
                     vm.block_on_yield = false;
+                    vm.park_on_yield = false; // zepo-8pc
                     break :blk null;
                 }
                 // Real error.

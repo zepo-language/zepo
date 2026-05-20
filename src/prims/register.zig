@@ -293,6 +293,8 @@ const TABLE: []const Entry = &.{
 
     // zepo-0bo
     make("yield",           0, fiber_prims.primYield),
+    // zepo-8pc
+    make("sleep",           1, fiber_prims.primSleep),
     // zepo-i19
     make("spawn",           1, fiber_prims.primSpawn),
     make("fiber?",          1, fiber_prims.primFiberQ),
