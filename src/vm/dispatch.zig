@@ -28,6 +28,8 @@ const LispError = errs.LispError;
 
 // zepo-abd: arith prims used as slow-path fallback for ADD2/SUB2/etc.
 const arith_prims = @import("../prims/arith.zig");
+// zepo-6qx
+const signal_mod = @import("../prims/signal.zig");
 
 const bytecode = @import("../cg/bytecode.zig");
 const Opcode = bytecode.Opcode;
@@ -62,6 +64,9 @@ pub const VM = struct {
     /// Lisp value being propagated by `raise` or `error`. NIL when no exception
     /// is in flight. Visited as a GC root so it survives stack unwind.
     raised_val: Value = value_mod.NIL,
+    /// zepo-6qx: countdown to next signal poll. Decrements each opcode;
+    /// when it reaches zero pollSignals() is called and it resets to SIGNAL_POLL_INTERVAL.
+    signal_poll_counter: u32 = SIGNAL_POLL_INTERVAL,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -73,6 +78,8 @@ pub const VM = struct {
     // to 4M so deep non-tail recursion works (4M slots × 8B = 32MB virtual,
     // pages only fault in as the stack grows).
     pub const MAX_REGS: usize = 4 * 1024 * 1024;
+    // zepo-6qx: poll signal handlers every N opcodes.
+    const SIGNAL_POLL_INTERVAL: u32 = 1000;
 
     pub fn init(
         gc: *GC,
@@ -321,6 +328,12 @@ pub const VM = struct {
         var pc: u32 = vm.call_stack.currentFrame().pc;
         var code = func.code;
         while (true) {
+            // zepo-6qx: periodically poll OS signal handlers.
+            vm.signal_poll_counter -= 1;
+            if (vm.signal_poll_counter == 0) {
+                vm.signal_poll_counter = SIGNAL_POLL_INTERVAL;
+                try signal_mod.pollSignals(vm);
+            }
             if (pc >= code.len) return error.ContractViolation;
             const instr = code[pc];
             pc += 1;
