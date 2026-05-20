@@ -269,6 +269,25 @@ pub fn primFormat(vm: *VM, args: []const Value) LispError!Value {
     return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
 }
 
+// zepo-8e6: read a line from stdin; returns the line as a string (newline stripped),
+// or #f on EOF.
+pub fn primReadLine(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(vm.allocator);
+    var b: u8 = 0;
+    while (true) {
+        const n = std.c.read(0, @as([*]u8, @ptrCast(&b)), 1);
+        if (n <= 0) {
+            if (buf.items.len == 0) return value_mod.FALSE;
+            break;
+        }
+        if (b == '\n') break;
+        buf.append(vm.allocator, b) catch return error.OutOfMemory;
+    }
+    return objects.makeString(vm.gc, buf.items) catch return error.OutOfMemory;
+}
+
 pub fn primExit(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
     const code: u8 = if (args.len >= 1 and value_mod.isFixnum(args[0]))

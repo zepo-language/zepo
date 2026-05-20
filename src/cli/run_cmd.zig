@@ -2,6 +2,31 @@ const std = @import("std");
 const zepo = @import("zepo");
 const ProjectConfig = @import("project_config.zig").ProjectConfig;
 
+// zepo-n3h
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return null;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse return null;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2);
+    const size: usize = @intCast(@max(0, ftell(f)));
+    _ = fseek(f, 0, 0);
+    const buf = alloc.alloc(u8, size) catch return null;
+    _ = std.c.fread(buf.ptr, 1, size, f);
+    return buf;
+}
+
+const StderrWriter = struct {
+    pub fn writeAll(_: StderrWriter, bytes: []const u8) error{}!void {
+        _ = std.c.write(2, bytes.ptr, bytes.len);
+    }
+};
+
 pub fn runRun(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, run_args: []const []const u8) !void {
     // Load project.lisp if present (optional — not required when running a file directly).
     var cfg_opt = ProjectConfig.loadOptional(alloc);
@@ -28,19 +53,22 @@ pub fn runRun(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, run_args
     else if (cfg_opt) |*cfg|
         cfg.entry
     else {
-        const stderr = std.Io.File.stderr();
-        try stderr.writeAll("error: no project.lisp found — pass a file: zepo run file.lisp\n");
+        // zepo-n3h
+        const msg = "error: no project.lisp found — pass a file: zepo run file.lisp\n";
+        _ = std.c.write(2, msg, msg.len);
         std.process.exit(1);
     };
 
-    const src = std.Io.Dir.cwd().readFileAlloc(alloc, file, 16 * 1024 * 1024) catch |e| {
-        std.debug.print("error: cannot read '{s}': {}\n", .{ file, e });
+    // zepo-n3h
+    const src = readFilePosix(alloc, file) orelse {
+        std.debug.print("error: cannot read '{s}'\n", .{file});
         std.process.exit(1);
     };
     defer alloc.free(src);
 
     _ = ctx.evalString(src, file) catch |e| {
-        ctx.printDiagnostic(std.Io.File.stderr(), e);
+        // zepo-n3h
+        ctx.printDiagnostic(StderrWriter{}, e);
         std.process.exit(1);
     };
 }

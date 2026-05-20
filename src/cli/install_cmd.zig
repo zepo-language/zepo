@@ -4,18 +4,74 @@ const project_config = @import("project_config.zig");
 const build_cmd = @import("build_cmd.zig");
 const cg_serialize = zepo.cg.serialize;
 
-pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
-    const stderr = std.Io.File.stderr();
-    const stdout = std.Io.File.stdout();
+// zepo-n3h
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn system(cmd: [*:0]const u8) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
 
+fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return null;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse return null;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2);
+    const size: usize = @intCast(@max(0, ftell(f)));
+    _ = fseek(f, 0, 0);
+    const buf = alloc.alloc(u8, size) catch return null;
+    _ = std.c.fread(buf.ptr, 1, size, f);
+    return buf;
+}
+
+fn writeFilePosix(path: []const u8, data: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "wb") orelse return false;
+    defer _ = std.c.fclose(f);
+    _ = std.c.fwrite(data.ptr, 1, data.len, f);
+    return true;
+}
+
+fn makePath(path: []const u8) void {
+    var buf: [4096]u8 = undefined;
+    var i: usize = 0;
+    while (i <= path.len) : (i += 1) {
+        if (i == path.len or path[i] == '/') {
+            if (i == 0) continue;
+            @memcpy(buf[0..i], path[0..i]);
+            buf[i] = 0;
+            _ = std.c.mkdir(@ptrCast(&buf), 0o755);
+        }
+    }
+}
+
+fn accessExists(path: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    return std.c.access(@ptrCast(&pbuf), 0) == 0;
+}
+
+fn writeStdout(bytes: []const u8) void {
+    _ = std.c.write(1, bytes.ptr, bytes.len);
+}
+fn writeStderr(bytes: []const u8) void {
+    _ = std.c.write(2, bytes.ptr, bytes.len);
+}
+
+pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     const pkg_name = std.fs.path.basename(pkg_path);
     if (pkg_name.len == 0) {
-        try stderr.writeAll("error: invalid package path\n");
+        writeStderr("error: invalid package path\n");
         std.process.exit(1);
     }
 
     const home = std.mem.span(std.c.getenv("HOME") orelse {
-        try stderr.writeAll("error: HOME not set\n");
+        writeStderr("error: HOME not set\n");
         std.process.exit(1);
     });
 
@@ -24,86 +80,84 @@ pub fn runInstall(alloc: std.mem.Allocator, pkg_path: []const u8) !void {
     const dest = try std.fs.path.join(alloc, &.{ dest_base, pkg_name });
     defer alloc.free(dest);
 
-    std.Io.Dir.cwd().makePath(dest_base) catch {};
-    std.Io.Dir.cwd().deleteTree(dest) catch {};
-    try std.Io.Dir.cwd().makePath(dest);
-
-    var src_dir = std.Io.Dir.cwd().openDir(pkg_path, .{ .iterate = true }) catch |e| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "error: cannot open '{s}': {}\n", .{ pkg_path, e }) catch "error: cannot open source\n";
-        try stderr.writeAll(msg);
-        std.process.exit(1);
-    };
-    defer src_dir.close();
-
-    var dest_dir = try std.Io.Dir.cwd().openDir(dest, .{});
-    defer dest_dir.close();
+    // zepo-n3h: delete dest tree via shell, then recreate
+    makePath(dest_base);
+    {
+        var shell_buf: [8192]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&shell_buf, "rm -rf {s}", .{dest}) catch "";
+        if (cmd.len > 0 and cmd.len < shell_buf.len) {
+            shell_buf[cmd.len] = 0;
+            _ = system(@ptrCast(&shell_buf));
+        }
+    }
+    makePath(dest);
 
     // Copy source tree first.
-    try copyDirAll(alloc, src_dir, dest_dir);
+    try copyDirPosix(alloc, pkg_path, dest);
 
     // Detect structure: package (has src/main.lisp) or lib (<name>.lisp at root).
     const has_src_main = blk: {
         const check = std.fs.path.join(alloc, &.{ dest, "src", "main.lisp" }) catch break :blk false;
         defer alloc.free(check);
-        std.Io.Dir.cwd().access(check, .{}) catch break :blk false;
-        break :blk true;
+        break :blk accessExists(check);
     };
     const has_lib_file = blk: {
         const lib_name = try std.fmt.allocPrint(alloc, "{s}.lisp", .{pkg_name});
         defer alloc.free(lib_name);
         const check = std.fs.path.join(alloc, &.{ dest, lib_name }) catch break :blk false;
         defer alloc.free(check);
-        std.Io.Dir.cwd().access(check, .{}) catch break :blk false;
-        break :blk true;
+        break :blk accessExists(check);
     };
 
     // Compile the appropriate subtree.
     var compiled: usize = 0;
     var failed: usize = 0;
     if (has_src_main) {
-        // Package structure: compile src/ only.
         const src_compile_path = std.fs.path.join(alloc, &.{ dest, "src" }) catch dest;
         defer if (src_compile_path.ptr != dest.ptr) alloc.free(src_compile_path);
-        var src_compile_dir = std.Io.Dir.cwd().openDir(src_compile_path, .{ .iterate = true }) catch dest_dir;
-        defer if (src_compile_dir.fd != dest_dir.fd) src_compile_dir.close();
-        compileTree(alloc, src_compile_path, src_compile_dir, &compiled, &failed);
+        compileTree(alloc, src_compile_path, &compiled, &failed);
     } else if (has_lib_file) {
-        // Lib structure: compile root .lisp files only.
-        compileTree(alloc, dest, dest_dir, &compiled, &failed);
+        compileTree(alloc, dest, &compiled, &failed);
     } else {
-        // Unknown structure: compile everything.
-        compileTree(alloc, dest, dest_dir, &compiled, &failed);
+        compileTree(alloc, dest, &compiled, &failed);
     }
 
     project_config.registerGlobalPackage(alloc, pkg_name) catch {};
 
     const kind_str: []const u8 = if (has_src_main) "package" else "lib";
     var msg_buf: [512]u8 = undefined;
-    const msg = try std.fmt.bufPrint(&msg_buf,
+    const msg = std.fmt.bufPrint(&msg_buf,
         "installed {s} '{s}' → {s}\n  {d} file(s) compiled, {d} skipped\n",
         .{ kind_str, pkg_name, dest, compiled, failed },
-    );
-    try stdout.writeAll(msg);
+    ) catch "installed\n";
+    writeStdout(msg);
 }
 
-/// Walk dest_dir and compile every .lisp to a sibling .zbc.
+/// Walk dir_path and compile every .lisp to a sibling .zbc.
 fn compileTree(
     alloc: std.mem.Allocator,
     dir_path: []const u8,
-    dir: std.fs.Dir,
     compiled: *usize,
     failed: *usize,
 ) void {
-    var it = dir.iterate();
-    while (it.next() catch return) |entry| {
-        switch (entry.kind) {
-            .file => {
-                if (!std.mem.endsWith(u8, entry.name, ".lisp")) continue;
-                if (std.mem.eql(u8, entry.name, "package.lisp")) continue;
-                const lisp_path = std.fs.path.join(alloc, &.{ dir_path, entry.name }) catch continue;
+    // zepo-n3h: use POSIX readdir
+    var pbuf: [4096]u8 = undefined;
+    const n = @min(dir_path.len, pbuf.len - 1);
+    @memcpy(pbuf[0..n], dir_path[0..n]);
+    pbuf[n] = 0;
+    const d = std.c.opendir(@ptrCast(&pbuf)) orelse return;
+    defer _ = std.c.closedir(d);
+    while (std.c.readdir(d)) |entry| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&entry.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        switch (entry.type) {
+            std.c.DT.REG => {
+                if (!std.mem.endsWith(u8, name, ".lisp")) continue;
+                if (std.mem.eql(u8, name, "package.lisp")) continue;
+                const lisp_path = std.fs.path.join(alloc, &.{ dir_path, name }) catch continue;
                 defer alloc.free(lisp_path);
-                const stem = entry.name[0 .. entry.name.len - ".lisp".len];
+                const stem = name[0 .. name.len - ".lisp".len];
                 const zbc_name = std.fmt.allocPrint(alloc, "{s}.zbc", .{stem}) catch continue;
                 defer alloc.free(zbc_name);
                 const zbc_path = std.fs.path.join(alloc, &.{ dir_path, zbc_name }) catch continue;
@@ -114,12 +168,10 @@ fn compileTree(
                     failed.* += 1;
                 }
             },
-            .directory => {
-                const sub_path = std.fs.path.join(alloc, &.{ dir_path, entry.name }) catch continue;
+            std.c.DT.DIR => {
+                const sub_path = std.fs.path.join(alloc, &.{ dir_path, name }) catch continue;
                 defer alloc.free(sub_path);
-                var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
-                defer sub_dir.close();
-                compileTree(alloc, sub_path, sub_dir, compiled, failed);
+                compileTree(alloc, sub_path, compiled, failed);
             },
             else => {},
         }
@@ -128,7 +180,8 @@ fn compileTree(
 
 /// Compile one .lisp file to a .zbc file.
 fn compileLibFile(alloc: std.mem.Allocator, lisp_path: []const u8, zbc_path: []const u8) !void {
-    const src = try std.Io.Dir.cwd().readFileAlloc(alloc, lisp_path, 4 * 1024 * 1024);
+    // zepo-n3h
+    const src = readFilePosix(alloc, lisp_path) orelse return error.FileNotFound;
     defer alloc.free(src);
 
     // Build a fresh interpreter context.
@@ -165,7 +218,6 @@ fn compileLibFile(alloc: std.mem.Allocator, lisp_path: []const u8, zbc_path: []c
     const lib_fns = ctx.compiled.items[fn_base..];
 
     // Adjust stored fn_ids to be 0-based within this library for portability.
-    // The serializer writes them relative to zero; the loader adds base_offset.
     const adjusted = try alloc.alloc(zepo.cg.CompiledFn, lib_fns.len);
     defer alloc.free(adjusted);
     @memcpy(adjusted, lib_fns);
@@ -193,7 +245,7 @@ fn compileLibFile(alloc: std.mem.Allocator, lisp_path: []const u8, zbc_path: []c
         rel_toplevel[i] = id - fn_base;
     }
 
-    // Capture module name and exports from the registry (at most one module per file).
+    // Capture module name and exports from the registry.
     var module_name: []const u8 = "";
     var exports: std.ArrayListUnmanaged([]const u8) = .empty;
     defer exports.deinit(alloc);
@@ -204,31 +256,51 @@ fn compileLibFile(alloc: std.mem.Allocator, lisp_path: []const u8, zbc_path: []c
         while (ex_it.next()) |k| try exports.append(alloc, k.*);
     }
 
-    // Write .zbc file: serialize into a buffer then write atomically.
+    // Write .zbc file.
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(alloc);
-    try cg_serialize.write(buf.writer(alloc), adjusted, rel_toplevel, module_name, exports.items);
-    try std.Io.Dir.cwd().writeFile(.{ .sub_path = zbc_path, .data = buf.items });
+    const BufWriter = struct {
+        b: *std.ArrayListUnmanaged(u8),
+        a: std.mem.Allocator,
+        pub fn writeAll(self: @This(), data: []const u8) !void {
+            try self.b.appendSlice(self.a, data);
+        }
+        pub fn writeInt(self: @This(), comptime T: type, value: T, endian: std.builtin.Endian) !void {
+            var tmp: [@sizeOf(T)]u8 = undefined;
+            std.mem.writeInt(T, &tmp, value, endian);
+            try self.b.appendSlice(self.a, &tmp);
+        }
+    };
+    try cg_serialize.write(BufWriter{ .b = &buf, .a = alloc }, adjusted, rel_toplevel, module_name, exports.items);
+    // zepo-n3h
+    _ = writeFilePosix(zbc_path, buf.items);
 }
 
-fn copyDirAll(alloc: std.mem.Allocator, src: std.fs.Dir, dest: std.fs.Dir) !void {
-    var it = src.iterate();
-    while (try it.next()) |entry| {
-        switch (entry.kind) {
-            .file => {
-                const data = try src.readFileAlloc(alloc, entry.name, 16 * 1024 * 1024);
+// zepo-n3h: POSIX-based recursive directory copy
+fn copyDirPosix(alloc: std.mem.Allocator, src_path: []const u8, dest_path: []const u8) !void {
+    var pbuf: [4096]u8 = undefined;
+    const n = @min(src_path.len, pbuf.len - 1);
+    @memcpy(pbuf[0..n], src_path[0..n]);
+    pbuf[n] = 0;
+    const d = std.c.opendir(@ptrCast(&pbuf)) orelse return;
+    defer _ = std.c.closedir(d);
+    while (std.c.readdir(d)) |entry| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&entry.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        const src_child = try std.fs.path.join(alloc, &.{ src_path, name });
+        defer alloc.free(src_child);
+        const dest_child = try std.fs.path.join(alloc, &.{ dest_path, name });
+        defer alloc.free(dest_child);
+        switch (entry.type) {
+            std.c.DT.REG => {
+                const data = readFilePosix(alloc, src_child) orelse continue;
                 defer alloc.free(data);
-                const f = try dest.createFile(entry.name, .{ .truncate = true });
-                defer f.close();
-                try f.writeAll(data);
+                _ = writeFilePosix(dest_child, data);
             },
-            .directory => {
-                dest.makeDir(entry.name) catch {};
-                var sub_src = try src.openDir(entry.name, .{ .iterate = true });
-                defer sub_src.close();
-                var sub_dest = try dest.openDir(entry.name, .{});
-                defer sub_dest.close();
-                try copyDirAll(alloc, sub_src, sub_dest);
+            std.c.DT.DIR => {
+                makePath(dest_child);
+                try copyDirPosix(alloc, src_child, dest_child);
             },
             else => {},
         }

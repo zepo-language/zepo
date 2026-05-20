@@ -1,12 +1,49 @@
 const std = @import("std");
 
-pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
-    const stdout = std.Io.File.stdout();
-    const stderr = std.Io.File.stderr();
-    const cwd = std.Io.Dir.cwd();
+// zepo-n3h
+fn writeFilePosix(path: []const u8, data: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "wb") orelse return false;
+    defer _ = std.c.fclose(f);
+    _ = std.c.fwrite(data.ptr, 1, data.len, f);
+    return true;
+}
 
+fn makePath(path: []const u8) void {
+    var buf: [4096]u8 = undefined;
+    var i: usize = 0;
+    while (i <= path.len) : (i += 1) {
+        if (i == path.len or path[i] == '/') {
+            if (i == 0) continue;
+            @memcpy(buf[0..i], path[0..i]);
+            buf[i] = 0;
+            _ = std.c.mkdir(@ptrCast(&buf), 0o755);
+        }
+    }
+}
+
+fn accessExists(path: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    return std.c.access(@ptrCast(&pbuf), 0) == 0;
+}
+
+fn writeStdout(bytes: []const u8) void {
+    _ = std.c.write(1, bytes.ptr, bytes.len);
+}
+fn writeStderr(bytes: []const u8) void {
+    _ = std.c.write(2, bytes.ptr, bytes.len);
+}
+
+pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
     if (new_args.len == 0) {
-        try stderr.writeAll("Usage: zepo new <type> [name]\n  Types: module, lib, test, package\n  module  → modules/<name>.lisp         (requires project)\n  test    → tests/<name>_test.lisp      (requires project)\n  lib     → <name>/<name>.lisp          (standalone, single-file library)\n  package → <name>/src/main.lisp        (standalone, multi-module package)\n");
+        // zepo-n3h
+        writeStderr("Usage: zepo new <type> [name]\n  Types: module, lib, test, package\n  module  → modules/<name>.lisp         (requires project)\n  test    → tests/<name>_test.lisp      (requires project)\n  lib     → <name>/<name>.lisp          (standalone, single-file library)\n  package → <name>/src/main.lisp        (standalone, multi-module package)\n");
         std.process.exit(1);
     }
 
@@ -19,84 +56,85 @@ pub fn runNew(alloc: std.mem.Allocator, new_args: []const []const u8) !void {
 
     // 'package' and 'lib' are standalone — no project.lisp required.
     if (std.mem.eql(u8, kind, "package")) {
-        try newPackage(alloc, cwd, name, stdout, stderr);
+        try newPackage(alloc, name);
         return;
     }
     if (std.mem.eql(u8, kind, "lib")) {
-        try newLib(alloc, cwd, name, stdout, stderr);
+        try newLib(alloc, name);
         return;
     }
 
     // All other types must be run inside a project.
-    cwd.access("project.lisp", .{}) catch {
-        try stderr.writeAll("error: not inside a zepo project — run 'zepo init' first\n");
+    // zepo-n3h
+    if (!accessExists("project.lisp")) {
+        writeStderr("error: not inside a zepo project — run 'zepo init' first\n");
         std.process.exit(1);
-    };
+    }
 
     if (std.mem.eql(u8, kind, "module")) {
-        try newModule(alloc, cwd, name, stdout, stderr);
+        try newModule(alloc, name);
     } else if (std.mem.eql(u8, kind, "test")) {
-        try newTest(alloc, cwd, name, stdout, stderr);
+        try newTest(alloc, name);
     } else {
         var buf: [128]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&buf, "error: unknown type '{s}' — expected: module, lib, test, package\n", .{kind});
-        try stderr.writeAll(msg);
+        const msg = std.fmt.bufPrint(&buf, "error: unknown type '{s}' — expected: module, lib, test, package\n", .{kind}) catch "error: unknown type\n";
+        writeStderr(msg);
         std.process.exit(1);
     }
 }
 
+// zepo-n3h: read a line from stdin using std.c.read
 fn promptName(alloc: std.mem.Allocator, kind: []const u8) ![]const u8 {
-    const stdout = std.Io.File.stdout();
-    const stdin = std.Io.File.stdin();
-    var buf: [256]u8 = undefined;
-    var reader = stdin.reader(&buf);
-
     var prompt_buf: [64]u8 = undefined;
-    const prompt = try std.fmt.bufPrint(&prompt_buf, "{s} name: ", .{kind});
-    try stdout.writeAll(prompt);
+    const prompt = std.fmt.bufPrint(&prompt_buf, "{s} name: ", .{kind}) catch "name: ";
+    _ = std.c.write(1, prompt.ptr, prompt.len);
 
-    const line = (try reader.interface.takeDelimiter('\n')) orelse {
-        try stdout.writeAll("\n");
-        std.process.exit(1);
-    };
-    const trimmed = std.mem.trim(u8, line, " \t\r");
+    var line_buf: [256]u8 = undefined;
+    var len: usize = 0;
+    while (len < line_buf.len) {
+        var b: u8 = 0;
+        const n = std.c.read(0, @as([*]u8, @ptrCast(&b)), 1);
+        if (n <= 0) break;
+        if (b == '\n') break;
+        line_buf[len] = b;
+        len += 1;
+    }
+    _ = std.c.write(1, "\n", 1);
+    const trimmed = std.mem.trim(u8, line_buf[0..len], " \t\r");
     if (trimmed.len == 0) {
-        try std.Io.File.stderr().writeAll("error: name cannot be empty\n");
+        writeStderr("error: name cannot be empty\n");
         std.process.exit(1);
     }
     return alloc.dupe(u8, trimmed);
 }
 
-fn newModule(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
+fn newModule(alloc: std.mem.Allocator, name: []const u8) !void {
     const filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
     defer alloc.free(filename);
     const path = try std.fs.path.join(alloc, &.{ "modules", filename });
     defer alloc.free(path);
 
-    guardExists(cwd, path, stderr);
-    try cwd.makePath("modules");
-
-    const f = try cwd.createFile(path, .{ .truncate = true });
-    defer f.close();
+    guardExists(path);
+    makePath("modules");
 
     var content_buf: [256]u8 = undefined;
-    const content = try std.fmt.bufPrint(&content_buf,
+    const content = std.fmt.bufPrint(&content_buf,
         \\(module {s}
         \\  (export))
         \\
         \\; Add your exported definitions here.
         \\
-    , .{name});
-    try f.writeAll(content);
+    , .{name}) catch return error.NoSpaceLeft;
+    _ = writeFilePosix(path, content);
 
     var msg_buf: [128]u8 = undefined;
-    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}));
+    const msg = std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}) catch "created\n";
+    writeStdout(msg);
 }
 
-fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
-    // Standalone single-file library: <name>/<name>.lisp with (lib ...) container.
-    guardExists(cwd, name, stderr);
-    try cwd.makePath(name);
+fn newLib(alloc: std.mem.Allocator, name: []const u8) !void {
+    guardExists(name);
+    makePath(name);
 
     const lib_filename = try std.fmt.allocPrint(alloc, "{s}.lisp", .{name});
     defer alloc.free(lib_filename);
@@ -104,10 +142,8 @@ fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: s
     defer alloc.free(lib_path);
 
     {
-        const f = try cwd.createFile(lib_path, .{ .truncate = true });
-        defer f.close();
         var buf: [512]u8 = undefined;
-        try f.writeAll(try std.fmt.bufPrint(&buf,
+        const content = std.fmt.bufPrint(&buf,
             \\(lib {s}
             \\  :version "0.1.0"
             \\  :docstring ""
@@ -115,11 +151,12 @@ fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: s
             \\
             \\; Add your exported definitions here.
             \\
-        , .{name}));
+        , .{name}) catch return error.NoSpaceLeft;
+        _ = writeFilePosix(lib_path, content);
     }
 
     var msg_buf: [1024]u8 = undefined;
-    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf,
+    const msg = std.fmt.bufPrint(&msg_buf,
         \\created  {s}/
         \\         {s}
         \\
@@ -129,48 +166,44 @@ fn newLib(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: s
         \\  3. zepo install ./{s}
         \\  4. (import :libs ({s})) in your program
         \\
-    , .{ name, lib_path, lib_path, name, name, name }));
+    , .{ name, lib_path, lib_path, name, name, name }) catch "created\n";
+    writeStdout(msg);
 }
 
-fn newTest(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
+fn newTest(alloc: std.mem.Allocator, name: []const u8) !void {
     const filename = try std.fmt.allocPrint(alloc, "{s}_test.lisp", .{name});
     defer alloc.free(filename);
     const path = try std.fs.path.join(alloc, &.{ "tests", filename });
     defer alloc.free(path);
 
-    guardExists(cwd, path, stderr);
-    try cwd.makePath("tests");
-
-    const f = try cwd.createFile(path, .{ .truncate = true });
-    defer f.close();
+    guardExists(path);
+    makePath("tests");
 
     var content_buf: [256]u8 = undefined;
-    const content = try std.fmt.bufPrint(&content_buf,
+    const content = std.fmt.bufPrint(&content_buf,
         \\; Tests for {s}
         \\
         \\(assert #t) ; replace with real assertions
         \\
-    , .{name});
-    try f.writeAll(content);
+    , .{name}) catch return error.NoSpaceLeft;
+    _ = writeFilePosix(path, content);
 
     var msg_buf: [128]u8 = undefined;
-    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}));
+    const msg = std.fmt.bufPrint(&msg_buf, "created  {s}\n", .{path}) catch "created\n";
+    writeStdout(msg);
 }
 
-fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdout: std.Io.File, stderr: std.Io.File) !void {
-    // Layout: <name>/src/main.lisp — package entry point with (package ...) container.
-    guardExists(cwd, name, stderr);
+fn newPackage(alloc: std.mem.Allocator, name: []const u8) !void {
+    guardExists(name);
     const src_dir_path = try std.fs.path.join(alloc, &.{ name, "src" });
     defer alloc.free(src_dir_path);
-    try cwd.makePath(src_dir_path);
+    makePath(src_dir_path);
 
     const main_path = try std.fs.path.join(alloc, &.{ src_dir_path, "main.lisp" });
     defer alloc.free(main_path);
     {
-        const f = try cwd.createFile(main_path, .{ .truncate = true });
-        defer f.close();
         var buf: [512]u8 = undefined;
-        try f.writeAll(try std.fmt.bufPrint(&buf,
+        const content = std.fmt.bufPrint(&buf,
             \\(package {s}
             \\  :version "0.1.0"
             \\  :docstring "")
@@ -178,11 +211,12 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
             \\; Add modules to src/ and import them here.
             \\; (import :modules ({s}.core))
             \\
-        , .{ name, name }));
+        , .{ name, name }) catch return error.NoSpaceLeft;
+        _ = writeFilePosix(main_path, content);
     }
 
     var msg_buf: [1024]u8 = undefined;
-    try stdout.writeAll(try std.fmt.bufPrint(&msg_buf,
+    const msg = std.fmt.bufPrint(&msg_buf,
         \\created  {s}/
         \\         {s}
         \\
@@ -192,14 +226,16 @@ fn newPackage(alloc: std.mem.Allocator, cwd: std.fs.Dir, name: []const u8, stdou
         \\  3. zepo install ./{s}
         \\  4. (import :packages ({s})) in your program
         \\
-    , .{ name, main_path, main_path, src_dir_path, name, name }));
+    , .{ name, main_path, main_path, src_dir_path, name, name }) catch "created\n";
+    writeStdout(msg);
 }
 
-fn guardExists(cwd: std.fs.Dir, path: []const u8, stderr: std.Io.File) void {
-    if (cwd.access(path, .{})) |_| {
+// zepo-n3h
+fn guardExists(path: []const u8) void {
+    if (accessExists(path)) {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "error: '{s}' already exists\n", .{path}) catch "error: file already exists\n";
-        stderr.writeAll(msg) catch {};
+        writeStderr(msg);
         std.process.exit(1);
-    } else |_| {}
+    }
 }

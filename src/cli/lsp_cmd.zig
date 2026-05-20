@@ -1,6 +1,8 @@
 //! Minimal LSP server: textDocument/publishDiagnostics only.
 //! Communicates over stdin/stdout using JSON-RPC 2.0 with Content-Length framing.
 //! Handles: initialize, shutdown, exit, textDocument/didOpen, textDocument/didChange.
+// zepo-n3h: Zig 0.16 removed std.Io.File; stdin read via std.c.read(0,...),
+// stdout write via std.c.write(1,...).
 
 const std = @import("std");
 const zepo = @import("zepo");
@@ -8,7 +10,7 @@ const zepo = @import("zepo");
 const MAX_MSG_SIZE = 4 * 1024 * 1024;
 
 pub const LspDiag = struct {
-    start_line: u32, // 0-based (LSP convention)
+    start_line: u32,
     start_char: u32,
     end_line: u32,
     end_char: u32,
@@ -16,31 +18,52 @@ pub const LspDiag = struct {
     msg_owned: bool = false,
 };
 
-pub fn runLsp(alloc: std.mem.Allocator) !void {
-    const stdin = std.Io.File.stdin();
-    const stdout = std.Io.File.stdout();
-    var read_buf: [65536]u8 = undefined;
-    var file_reader = stdin.reader(&read_buf);
-    const reader = &file_reader.interface;
+// Read exactly `n` bytes from stdin into `buf`. Returns false on EOF/error.
+fn readExact(buf: []u8) bool {
+    var got: usize = 0;
+    while (got < buf.len) {
+        const n = std.c.read(0, buf[got..].ptr, buf.len - got);
+        if (n <= 0) return false;
+        got += @intCast(n);
+    }
+    return true;
+}
 
+// Read one line from stdin into `buf` (including newline). Returns slice, or null on EOF.
+fn readLine(buf: []u8) ?[]u8 {
+    var i: usize = 0;
+    while (i < buf.len) {
+        const n = std.c.read(0, buf[i..].ptr, 1);
+        if (n <= 0) return if (i > 0) buf[0..i] else null;
+        i += 1;
+        if (buf[i - 1] == '\n') return buf[0..i];
+    }
+    return buf[0..i];
+}
+
+fn lspWrite(s: []const u8) void {
+    _ = std.c.write(1, s.ptr, s.len);
+}
+
+pub fn runLsp(alloc: std.mem.Allocator) !void {
     while (true) {
-        const body = readMessage(alloc, reader) catch |e| switch (e) {
+        const body = readMessage(alloc) catch |e| switch (e) {
             error.EndOfStream => return,
             else => return e,
         };
         defer alloc.free(body);
 
-        const exit = try handleMessage(alloc, stdout, body);
+        const exit = try handleMessage(alloc, body);
         if (exit) return;
     }
 }
 
-fn readMessage(alloc: std.mem.Allocator, reader: anytype) ![]u8 {
+fn readMessage(alloc: std.mem.Allocator) ![]u8 {
     var content_length: usize = 0;
+    var line_buf: [4096]u8 = undefined;
 
-    // Read headers until blank line.
     while (true) {
-        const line = (try reader.takeDelimiter('\n')) orelse return error.EndOfStream;
+        const line = readLine(&line_buf) orelse return error.EndOfStream;
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
         if (trimmed.len == 0) break;
         if (std.mem.startsWith(u8, trimmed, "Content-Length:")) {
@@ -53,11 +76,14 @@ fn readMessage(alloc: std.mem.Allocator, reader: anytype) ![]u8 {
     if (content_length > MAX_MSG_SIZE) return error.MessageTooLarge;
 
     const body = try alloc.alloc(u8, content_length);
-    try reader.readSliceAll(body);
+    if (!readExact(body)) {
+        alloc.free(body);
+        return error.EndOfStream;
+    }
     return body;
 }
 
-fn handleMessage(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8) !bool {
+fn handleMessage(alloc: std.mem.Allocator, body: []const u8) !bool {
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch return false;
     defer parsed.deinit();
 
@@ -74,19 +100,18 @@ fn handleMessage(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8
 
     if (std.mem.eql(u8, method, "initialize")) {
         const id = obj.get("id") orelse std.json.Value{ .null = {} };
-        try sendResponse(alloc, stdout, id, "{\"capabilities\":{\"textDocumentSync\":1}}");
+        try sendResponse(alloc, id, "{\"capabilities\":{\"textDocumentSync\":1}}");
         return false;
     }
 
     if (std.mem.eql(u8, method, "shutdown")) {
         const id = obj.get("id") orelse std.json.Value{ .null = {} };
-        try sendResponse(alloc, stdout, id, "null");
+        try sendResponse(alloc, id, "null");
         return false;
     }
 
     if (std.mem.eql(u8, method, "exit")) return true;
 
-    // Notifications with params.
     const params_val = obj.get("params") orelse return false;
     const params = switch (params_val) {
         .object => |o| o,
@@ -97,7 +122,7 @@ fn handleMessage(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8
         const td = getObject(params, "textDocument") orelse return false;
         const uri = getString(td, "uri") orelse return false;
         const text = getString(td, "text") orelse return false;
-        try diagnoseAndPublish(alloc, stdout, uri, text);
+        try diagnoseAndPublish(alloc, uri, text);
         return false;
     }
 
@@ -115,20 +140,20 @@ fn handleMessage(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8
             else => return false,
         };
         const text = getString(first, "text") orelse return false;
-        try diagnoseAndPublish(alloc, stdout, uri, text);
+        try diagnoseAndPublish(alloc, uri, text);
         return false;
     }
 
     return false;
 }
 
-fn diagnoseAndPublish(alloc: std.mem.Allocator, stdout: std.Io.File, uri: []const u8, text: []const u8) !void {
+fn diagnoseAndPublish(alloc: std.mem.Allocator, uri: []const u8, text: []const u8) !void {
     var diags = try checkDocument(alloc, uri, text);
     defer {
         for (diags.items) |d| if (d.msg_owned) alloc.free(d.message);
         diags.deinit(alloc);
     }
-    try sendDiagnostics(alloc, stdout, uri, diags.items);
+    try sendDiagnostics(alloc, uri, diags.items);
 }
 
 pub fn checkDocument(alloc: std.mem.Allocator, uri: []const u8, src: []const u8) !std.ArrayListUnmanaged(LspDiag) {
@@ -163,8 +188,6 @@ pub fn checkDocument(alloc: std.mem.Allocator, uri: []const u8, src: []const u8)
             },
         };
 
-        // Top-level special forms are handled by eval, not the AST builder.
-        // Validate their structure here instead.
         if (isTopLevelSpecial(form)) {
             if (validateTopLevelSpecial(form)) |msg| {
                 const span = spans.get(form) orelse zepo.reader.Span{
@@ -194,7 +217,7 @@ fn spanToDiag(span: zepo.reader.Span, msg: []const u8, owned: bool) LspDiag {
     return .{ .start_line = sl, .start_char = sc, .end_line = el, .end_char = ec, .message = msg, .msg_owned = owned };
 }
 
-fn sendResponse(alloc: std.mem.Allocator, stdout: std.Io.File, id: std.json.Value, result_json: []const u8) !void {
+fn sendResponse(alloc: std.mem.Allocator, id: std.json.Value, result_json: []const u8) !void {
     var id_buf: [128]u8 = undefined;
     const id_str: []const u8 = switch (id) {
         .integer => |n| try std.fmt.bufPrint(&id_buf, "{d}", .{n}),
@@ -205,45 +228,47 @@ fn sendResponse(alloc: std.mem.Allocator, stdout: std.Io.File, id: std.json.Valu
         "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}",
         .{ id_str, result_json });
     defer alloc.free(body);
-    try sendRaw(alloc, stdout, body);
+    sendRaw(alloc, body);
 }
 
-fn sendDiagnostics(alloc: std.mem.Allocator, stdout: std.Io.File, uri: []const u8, diags: []const LspDiag) !void {
+fn sendDiagnostics(alloc: std.mem.Allocator, uri: []const u8, diags: []const LspDiag) !void {
     var arr: std.ArrayListUnmanaged(u8) = .empty;
     defer arr.deinit(alloc);
-    const w = arr.writer(alloc);
 
-    try w.writeByte('[');
+    try arr.append(alloc, '[');
     for (diags, 0..) |d, i| {
-        if (i > 0) try w.writeByte(',');
-        try w.print(
+        if (i > 0) try arr.append(alloc, ',');
+        var hbuf: [256]u8 = undefined;
+        const hdr = std.fmt.bufPrint(&hbuf,
             "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"severity\":1,\"message\":\"",
             .{ d.start_line, d.start_char, d.end_line, d.end_char },
-        );
+        ) catch continue;
+        try arr.appendSlice(alloc, hdr);
         for (d.message) |c| switch (c) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\r' => try w.writeAll("\\r"),
-            '\t' => try w.writeAll("\\t"),
-            else => try w.writeByte(c),
+            '"' => try arr.appendSlice(alloc, "\\\""),
+            '\\' => try arr.appendSlice(alloc, "\\\\"),
+            '\n' => try arr.appendSlice(alloc, "\\n"),
+            '\r' => try arr.appendSlice(alloc, "\\r"),
+            '\t' => try arr.appendSlice(alloc, "\\t"),
+            else => try arr.append(alloc, c),
         };
-        try w.writeAll("\"}");
+        try arr.appendSlice(alloc, "\"}");
     }
-    try w.writeByte(']');
+    try arr.append(alloc, ']');
 
     const body = try std.fmt.allocPrint(alloc,
         "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{{\"uri\":\"{s}\",\"diagnostics\":{s}}}}}",
         .{ uri, arr.items });
     defer alloc.free(body);
-    try sendRaw(alloc, stdout, body);
+    sendRaw(alloc, body);
 }
 
-fn sendRaw(alloc: std.mem.Allocator, stdout: std.Io.File, body: []const u8) !void {
-    const header = try std.fmt.allocPrint(alloc, "Content-Length: {d}\r\n\r\n", .{body.len});
-    defer alloc.free(header);
-    try stdout.writeAll(header);
-    try stdout.writeAll(body);
+fn sendRaw(alloc: std.mem.Allocator, body: []const u8) void {
+    var hbuf: [64]u8 = undefined;
+    const header = std.fmt.bufPrint(&hbuf, "Content-Length: {d}\r\n\r\n", .{body.len}) catch return;
+    lspWrite(header);
+    lspWrite(body);
+    _ = alloc;
 }
 
 fn getObject(obj: std.json.ObjectMap, key: []const u8) ?std.json.ObjectMap {
@@ -269,11 +294,9 @@ fn isTopLevelSpecial(v: zepo.Value) bool {
 fn validateTopLevelSpecial(v: zepo.Value) ?[]const u8 {
     const objects = zepo.runtime.objects;
     const value_mod = zepo.abi.value;
-    // All of these forms require at least one argument after the head.
     const rest = objects.pairCdr(v).*;
     if (value_mod.isNil(rest)) return "missing arguments";
     if (!objects.isPair(rest)) return "invalid form structure";
-    // Forms that require a symbol as first argument.
     const head = objects.pairCar(v).*;
     const head_name = objects.symbolName(head);
     const needs_symbol = [_][]const u8{ "module", "import", "package", "defmacro" };

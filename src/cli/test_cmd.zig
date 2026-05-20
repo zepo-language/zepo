@@ -2,6 +2,38 @@ const std = @import("std");
 const zepo = @import("zepo");
 const ProjectConfig = @import("project_config.zig").ProjectConfig;
 
+// zepo-n3h
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return null;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse return null;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2);
+    const size: usize = @intCast(@max(0, ftell(f)));
+    _ = fseek(f, 0, 0);
+    const buf = alloc.alloc(u8, size) catch return null;
+    _ = std.c.fread(buf.ptr, 1, size, f);
+    return buf;
+}
+
+const StderrWriter = struct {
+    pub fn writeAll(_: StderrWriter, bytes: []const u8) error{}!void {
+        _ = std.c.write(2, bytes.ptr, bytes.len);
+    }
+};
+
+fn writeStdout(bytes: []const u8) void {
+    _ = std.c.write(1, bytes.ptr, bytes.len);
+}
+fn writeStderr(bytes: []const u8) void {
+    _ = std.c.write(2, bytes.ptr, bytes.len);
+}
+
 pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_args: []const []const u8) !void {
     // Load project.lisp for module paths and test-dir (optional).
     var cfg_opt = ProjectConfig.loadOptional(alloc);
@@ -35,22 +67,27 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
         files.deinit(alloc);
     }
 
-    const stderr = std.Io.File.stderr();
-    var tests_dir = std.Io.Dir.cwd().openDir(test_dir_name, .{ .iterate = true }) catch {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "error: no {s}/ directory found — run from project root\n", .{test_dir_name}) catch "error: tests dir not found\n";
-        try stderr.writeAll(msg);
-        std.process.exit(1);
-    };
-    defer tests_dir.close();
+    // zepo-n3h: verify test dir exists
+    {
+        var pbuf: [4096]u8 = undefined;
+        const n = @min(test_dir_name.len, pbuf.len - 1);
+        @memcpy(pbuf[0..n], test_dir_name[0..n]);
+        pbuf[n] = 0;
+        const d = std.c.opendir(@ptrCast(&pbuf)) orelse {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error: no {s}/ directory found — run from project root\n", .{test_dir_name}) catch "error: tests dir not found\n";
+            writeStderr(msg);
+            std.process.exit(1);
+        };
+        _ = std.c.closedir(d);
+    }
 
-    try collectTests(alloc, tests_dir, test_dir_name, &files);
+    try collectTests(alloc, test_dir_name, &files);
 
     if (files.items.len == 0) {
-        const stdout = std.Io.File.stdout();
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "No test files found ({s}/**/*_test.lisp)\n", .{test_dir_name}) catch "No test files found\n";
-        try stdout.writeAll(msg);
+        writeStdout(msg);
         return;
     }
 
@@ -70,53 +107,59 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
         }
     }
 
-    const stdout = std.Io.File.stdout();
     var buf: [128]u8 = undefined;
-    const summary = try std.fmt.bufPrint(&buf, "\n{d} passed, {d} failed\n", .{ passed, failed });
-    try stdout.writeAll(summary);
+    const summary = std.fmt.bufPrint(&buf, "\n{d} passed, {d} failed\n", .{ passed, failed }) catch "\n?\n";
+    writeStdout(summary);
 
     if (failed > 0) std.process.exit(1);
 }
 
 fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) bool {
-    const stdout = std.Io.File.stdout();
     var buf: [512]u8 = undefined;
 
-    const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
-        const msg = std.fmt.bufPrint(&buf, "FAIL  {s}  (cannot read: {})\n", .{ path, e }) catch "FAIL\n";
-        stdout.writeAll(msg) catch {};
+    // zepo-n3h
+    const src = readFilePosix(alloc, path) orelse {
+        const msg = std.fmt.bufPrint(&buf, "FAIL  {s}  (cannot read file)\n", .{path}) catch "FAIL\n";
+        writeStdout(msg);
         return false;
     };
     defer alloc.free(src);
 
     _ = ctx.evalString(src, path) catch |e| {
         const msg = std.fmt.bufPrint(&buf, "FAIL  {s}  ({s})\n", .{ path, @errorName(e) }) catch "FAIL\n";
-        stdout.writeAll(msg) catch {};
-        ctx.printDiagnostic(std.Io.File.stderr(), e);
+        writeStdout(msg);
+        ctx.printDiagnostic(StderrWriter{}, e);
         return false;
     };
 
     const msg = std.fmt.bufPrint(&buf, "ok    {s}\n", .{path}) catch "ok\n";
-    stdout.writeAll(msg) catch {};
+    writeStdout(msg);
     return true;
 }
 
-fn collectTests(alloc: std.mem.Allocator, dir: std.fs.Dir, prefix: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        const full = try std.fs.path.join(alloc, &.{ prefix, entry.name });
-        switch (entry.kind) {
-            .file => {
-                if (std.mem.endsWith(u8, entry.name, "_test.lisp")) {
+// zepo-n3h: POSIX-based directory traversal
+fn collectTests(alloc: std.mem.Allocator, prefix: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
+    var pbuf: [4096]u8 = undefined;
+    const n = @min(prefix.len, pbuf.len - 1);
+    @memcpy(pbuf[0..n], prefix[0..n]);
+    pbuf[n] = 0;
+    const d = std.c.opendir(@ptrCast(&pbuf)) orelse return;
+    defer _ = std.c.closedir(d);
+    while (std.c.readdir(d)) |entry| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&entry.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        const full = try std.fs.path.join(alloc, &.{ prefix, name });
+        switch (entry.type) {
+            std.c.DT.REG => {
+                if (std.mem.endsWith(u8, name, "_test.lisp")) {
                     try out.append(alloc, full);
                 } else {
                     alloc.free(full);
                 }
             },
-            .directory => {
-                var sub = try dir.openDir(entry.name, .{ .iterate = true });
-                defer sub.close();
-                try collectTests(alloc, sub, full, out);
+            std.c.DT.DIR => {
+                try collectTests(alloc, full, out);
                 alloc.free(full);
             },
             else => alloc.free(full),

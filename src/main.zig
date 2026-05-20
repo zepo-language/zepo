@@ -50,7 +50,12 @@ const HELP =
 // zepo-op7: macOS main thread is capped at ~8MB stack, which limits zepo
 // recursion depth to ~5–8K non-tail frames. Run the real logic on a worker
 // thread with a large stack so user programs can recurse freely.
-pub fn main() !void {
+// zepo-8e6: Zig 0.16 removed std.process.argsAlloc; main now accepts
+// std.process.Init.Minimal so the runtime hands us the argv slice directly.
+var g_argv: std.process.Args.Vector = &.{};
+
+pub fn main(init: std.process.Init.Minimal) !void {
+    g_argv = init.args.vector;
     var result: anyerror!void = {};
     const t = try std.Thread.spawn(
         .{ .stack_size = 1024 * 1024 * 1024 },
@@ -65,19 +70,29 @@ fn workerMain(out: *anyerror!void) void {
     out.* = realMain();
 }
 
+fn collectArgs(alloc: std.mem.Allocator) ![]const []const u8 {
+    var list = std.ArrayListUnmanaged([]const u8).empty;
+    for (g_argv) |a| try list.append(alloc, std.mem.sliceTo(a, 0));
+    return list.toOwnedSlice(alloc);
+}
+
+// Minimal stderr writer for printDiagnostic (anytype).
+const StderrWriter = struct {
+    pub fn writeAll(_: *const StderrWriter, data: []const u8) !void {
+        _ = std.c.write(2, data.ptr, data.len);
+    }
+};
+
 fn realMain() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
-
-    const stdout = std.Io.File.stdout();
-    const stderr = std.Io.File.stderr();
+    const args = try collectArgs(alloc);
+    defer alloc.free(args);
 
     if (args.len < 2) {
-        try stdout.writeAll(HELP);
+        _ = std.c.write(1, HELP.ptr, HELP.len);
         return;
     }
 
@@ -91,7 +106,7 @@ fn realMain() !void {
     } else 1;
 
     if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-        try stdout.writeAll(HELP);
+        _ = std.c.write(1, HELP.ptr, HELP.len);
         return;
     }
 
@@ -122,7 +137,7 @@ fn realMain() !void {
 
     if (std.mem.eql(u8, arg, "install")) {
         if (args.len < 3) {
-            try stderr.writeAll("error: install requires a path argument\n");
+            _ = std.c.write(2, "error: install requires a path argument\n", 40);
             std.process.exit(1);
         }
         try install_cmd.runInstall(alloc, args[2]);
@@ -133,7 +148,7 @@ fn realMain() !void {
         if (args.len < 3) {
             // No file arg: look for project.lisp and use entry + project name.
             var cfg = project_config.ProjectConfig.loadOptional(alloc) orelse {
-                try stderr.writeAll("error: build requires a .lisp file (or run from a project directory with project.lisp)\n");
+                _ = std.c.write(2, "error: build requires a .lisp file (or run from a project directory with project.lisp)\n", 87);
                 std.process.exit(1);
             };
             defer cfg.deinit();
@@ -173,14 +188,7 @@ fn realMain() !void {
         for (path_dirs.items) |d| alloc.free(d);
         path_dirs.deinit(alloc);
     }
-    if (std.fs.selfExePathAlloc(alloc)) |exe| {
-        defer alloc.free(exe);
-        if (std.fs.path.dirname(exe)) |exe_dir| {
-            if (std.fs.path.join(alloc, &.{ exe_dir, "../../lib" })) |p| {
-                try path_dirs.append(alloc, p);
-            } else |_| {}
-        }
-    } else |_| {}
+    // zepo-n3h: selfExePathAlloc removed in Zig 0.16; exe-relative lib path skipped.
     // ~/.local/lib/zepo/ + packages listed in packages.lisp manifest
     const installed_start = path_dirs.items.len;
     try project_config.appendGlobalPaths(alloc, &path_dirs);
@@ -199,7 +207,7 @@ fn realMain() !void {
     ctx.module_path = path_dirs.items;
 
     if (cmd_start >= args.len) {
-        try stderr.writeAll("error: --max-regs requires a script or command\n");
+        _ = std.c.write(2, "error: --max-regs requires a script or command\n", 47);
         std.process.exit(1);
     }
     const interp_arg = args[cmd_start];
@@ -227,14 +235,31 @@ fn setProgramMode(syms: *zepo.runtime.SymbolTable, globals: *zepo.runtime.Global
     globals.set(sym, zepo.abi.value.TRUE) catch {};
 }
 
+// zepo-8e6: Zig 0.16 removed std.Io.Dir; read file via POSIX fopen/fread.
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
 fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) !void {
-    const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
-        std.debug.print("error: cannot read '{s}': {}\n", .{ path, e });
+    var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse {
+        std.debug.print("error: cannot read '{s}': file not found\n", .{path});
+        std.process.exit(1);
+    };
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2); // SEEK_END
+    const size: usize = @intCast(ftell(f));
+    _ = fseek(f, 0, 0); // SEEK_SET
+    const src = alloc.alloc(u8, size) catch {
+        std.debug.print("error: out of memory reading '{s}'\n", .{path});
         std.process.exit(1);
     };
     defer alloc.free(src);
+    _ = std.c.fread(src.ptr, 1, size, f);
+    const sw = StderrWriter{};
     _ = ctx.evalString(src, path) catch |e| {
-        ctx.printDiagnostic(std.Io.File.stderr(), e);
+        ctx.printDiagnostic(&sw, e);
         std.process.exit(1);
     };
 }

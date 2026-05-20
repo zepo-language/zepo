@@ -3,6 +3,35 @@ const zepo = @import("zepo");
 const readline = @import("readline.zig");
 const ProjectConfig = @import("project_config.zig").ProjectConfig;
 
+// zepo-n3h
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return null;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse return null;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2);
+    const size: usize = @intCast(@max(0, ftell(f)));
+    _ = fseek(f, 0, 0);
+    const buf = alloc.alloc(u8, size) catch return null;
+    _ = std.c.fread(buf.ptr, 1, size, f);
+    return buf;
+}
+
+const StderrWriter = struct {
+    pub fn writeAll(_: StderrWriter, bytes: []const u8) error{}!void {
+        _ = std.c.write(2, bytes.ptr, bytes.len);
+    }
+};
+
+fn writeStdout(bytes: []const u8) void {
+    _ = std.c.write(1, bytes.ptr, bytes.len);
+}
+
 fn completeSymbol(
     prefix: []const u8,
     ctx_ptr: ?*anyopaque,
@@ -26,8 +55,6 @@ fn completeSymbol(
 }
 
 pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload: []const []const u8) !void {
-    const stdout = std.Io.File.stdout();
-
     // Apply project.lisp module paths if present.
     var cfg_opt = ProjectConfig.loadOptional(alloc);
     defer if (cfg_opt) |*c| c.deinit();
@@ -47,15 +74,16 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
 
     // Pre-load any files passed on the command line.
     for (preload) |path| {
-        const src = std.Io.Dir.cwd().readFileAlloc(alloc, path, 16 * 1024 * 1024) catch |e| {
+        // zepo-n3h
+        const src = readFilePosix(alloc, path) orelse {
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "error: cannot read '{s}': {}\n", .{ path, e }) catch "error: cannot read file\n";
-            stdout.writeAll(msg) catch {};
+            const msg = std.fmt.bufPrint(&buf, "error: cannot read '{s}'\n", .{path}) catch "error: cannot read file\n";
+            writeStdout(msg);
             continue;
         };
         defer alloc.free(src);
         _ = ctx.evalString(src, path) catch |e| {
-            ctx.printDiagnostic(std.Io.File.stderr(), e);
+            ctx.printDiagnostic(StderrWriter{}, e);
         };
     }
 
@@ -75,7 +103,11 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
 
     var depth: i32 = 0;
 
-    try stdout.writeAll("Zepo REPL  (Ctrl-D to exit, Ctrl-C to cancel)\n");
+    // zepo-n3h
+    {
+        const msg = "Zepo REPL  (Ctrl-D to exit, Ctrl-C to cancel)\n";
+        writeStdout(msg);
+    }
 
     while (true) {
         const prompt = if (depth == 0) "> " else "  ";
@@ -83,7 +115,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
             error.Interrupted => {
                 input.clearRetainingCapacity();
                 depth = 0;
-                try stdout.writeAll("\n");
+                writeStdout("\n");
                 continue;
             },
             else => return e,
@@ -115,7 +147,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
                 continue;
             }
             const result = ctx.evalString(input.items, "<repl>") catch |e| {
-                ctx.printDiagnostic(std.Io.File.stderr(), e);
+                ctx.printDiagnostic(StderrWriter{}, e);
                 input.clearRetainingCapacity();
                 continue;
             };
@@ -123,11 +155,12 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
             defer buf.deinit(alloc);
             zepo.prims.io.displayValue(&buf, alloc, result) catch {};
             try buf.append(alloc, '\n');
-            try stdout.writeAll(buf.items);
+            writeStdout(buf.items);
             input.clearRetainingCapacity();
         }
     }
 
     history.save();
-    try stdout.writeAll("\nBye.\n");
+    // zepo-n3h
+    writeStdout("\nBye.\n");
 }

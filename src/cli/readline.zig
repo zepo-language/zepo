@@ -1,15 +1,15 @@
 //! Minimal line editor: raw-mode input, persistent history, tab completion.
 //! Falls back to plain line reading when stdin is not a TTY.
+// zepo-n3h: Zig 0.16 removed std.Io.File; all terminal I/O uses std.c.read/write on fd 0/1.
 
 const std = @import("std");
 const posix = std.posix;
 
+extern "c" fn fgets(s: [*]u8, n: c_int, stream: *std.c.FILE) ?[*:0]u8;
+
 const HISTORY_MAX = 500;
 
 /// Callback type for tab completion.
-/// Given the current word prefix, appends matching completions to `out`.
-/// Strings appended to `out` must be valid for the duration of the call;
-/// readline will free them with `alloc` after use.
 pub const CompleteFn = *const fn (
     prefix: []const u8,
     ctx: ?*anyopaque,
@@ -45,13 +45,15 @@ pub const History = struct {
 
     pub fn load(h: *History) void {
         const path = h.path orelse return;
-        const f = std.fs.openFileAbsolute(path, .{}) catch return;
-        defer f.close();
-        var buf: [4096]u8 = undefined;
-        var fr = f.reader(&buf);
-        const r = &fr.interface;
-        while (true) {
-            const line = r.takeDelimiter('\n') catch break orelse break;
+        var pbuf: [4096]u8 = undefined;
+        if (path.len >= pbuf.len) return;
+        @memcpy(pbuf[0..path.len], path);
+        pbuf[path.len] = 0;
+        const f = std.c.fopen(@ptrCast(&pbuf), "r") orelse return;
+        defer _ = std.c.fclose(f);
+        var line_buf: [4096]u8 = undefined;
+        while (fgets(&line_buf, @intCast(line_buf.len), f) != null) {
+            const line = std.mem.sliceTo(&line_buf, 0);
             const t = std.mem.trim(u8, line, "\r\n");
             if (t.len > 0) h.add(t) catch {};
         }
@@ -59,18 +61,31 @@ pub const History = struct {
 
     pub fn save(h: *const History) void {
         const path = h.path orelse return;
-        const f = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch return;
-        defer f.close();
+        var pbuf: [4096]u8 = undefined;
+        if (path.len >= pbuf.len) return;
+        @memcpy(pbuf[0..path.len], path);
+        pbuf[path.len] = 0;
+        const f = std.c.fopen(@ptrCast(&pbuf), "w") orelse return;
+        defer _ = std.c.fclose(f);
         for (h.entries.items) |line| {
-            f.writeAll(line) catch {};
-            f.writeAll("\n") catch {};
+            _ = std.c.fwrite(line.ptr, 1, line.len, f);
+            _ = std.c.fwrite("\n", 1, 1, f);
         }
     }
 };
 
+fn writeAll(s: []const u8) void {
+    _ = std.c.write(1, s.ptr, s.len);
+}
+
+fn readByte() ?u8 {
+    var b: u8 = 0;
+    const n = std.c.read(0, @as([*]u8, @ptrCast(&b)), 1);
+    return if (n == 1) b else null;
+}
+
 /// Read one line from stdin.
 /// Returns null on EOF (Ctrl-D on empty line) or error.Interrupted (Ctrl-C).
-/// Returned slice is caller-owned (allocated with `alloc`).
 pub fn readLine(
     alloc: std.mem.Allocator,
     prompt: []const u8,
@@ -78,19 +93,24 @@ pub fn readLine(
     complete_ctx: ?*anyopaque,
     complete_fn: ?CompleteFn,
 ) !?[]u8 {
-    const stdin = std.Io.File.stdin();
-    const stdout = std.Io.File.stdout();
-
     // Fallback: not a TTY (pipe / file redirect)
-    if (!posix.isatty(stdin.handle)) {
-        var buf: [4096]u8 = undefined;
-        var fr = stdin.reader(&buf);
-        const line = (try fr.interface.takeDelimiter('\n')) orelse return null;
-        return try alloc.dupe(u8, std.mem.trimRight(u8, line, "\r\n"));
+    if (std.c.isatty(0) == 0) {
+        var line_buf = std.ArrayListUnmanaged(u8).empty;
+        defer line_buf.deinit(alloc);
+        while (true) {
+            const b = readByte() orelse {
+                if (line_buf.items.len == 0) return null;
+                break;
+            };
+            if (b == '\n') break;
+            if (b == '\r') continue;
+            try line_buf.append(alloc, b);
+        }
+        return try line_buf.toOwnedSlice(alloc);
     }
 
     // Enter raw mode.
-    const orig = try posix.tcgetattr(stdin.handle);
+    const orig = try posix.tcgetattr(0);
     var raw = orig;
     raw.lflag.ECHO = false;
     raw.lflag.ICANON = false;
@@ -101,51 +121,43 @@ pub fn readLine(
     raw.oflag.OPOST = false;
     raw.cc[@intFromEnum(posix.V.MIN)] = 1;
     raw.cc[@intFromEnum(posix.V.TIME)] = 0;
-    try posix.tcsetattr(stdin.handle, .FLUSH, raw);
-    defer posix.tcsetattr(stdin.handle, .FLUSH, orig) catch {};
+    try posix.tcsetattr(0, .FLUSH, raw);
+    defer posix.tcsetattr(0, .FLUSH, orig) catch {};
 
     var line_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer line_buf.deinit(alloc);
     var cursor: usize = 0;
 
-    // History navigation: hist_pos == history.entries.len means "current input"
     const hist_base = history.entries.items.len;
     var hist_pos: usize = hist_base;
     var saved_input: std.ArrayListUnmanaged(u8) = .empty;
     defer saved_input.deinit(alloc);
 
-    try stdout.writeAll(prompt);
+    writeAll(prompt);
 
     while (true) {
-        var ch: [1]u8 = undefined;
-        const n = try stdin.read(&ch);
-        if (n == 0) return null;
-        const c = ch[0];
+        const c = readByte() orelse return null;
 
         switch (c) {
             '\r', '\n' => {
-                try stdout.writeAll("\r\n");
-                const result = try alloc.dupe(u8, line_buf.items);
-                return result;
+                writeAll("\r\n");
+                return try alloc.dupe(u8, line_buf.items);
             },
             // Ctrl-D
             4 => {
                 if (line_buf.items.len == 0) {
-                    try stdout.writeAll("\r\n");
+                    writeAll("\r\n");
                     return null;
                 }
-                // Delete forward
                 if (cursor < line_buf.items.len) {
-                    const rest = line_buf.items.len - cursor;
                     std.mem.copyForwards(u8, line_buf.items[cursor..], line_buf.items[cursor + 1 ..]);
                     line_buf.shrinkRetainingCapacity(line_buf.items.len - 1);
-                    _ = rest;
-                    try refresh(stdout, prompt, line_buf.items, cursor);
+                    refresh(prompt, line_buf.items, cursor);
                 }
             },
             // Ctrl-C
             3 => {
-                try stdout.writeAll("^C\r\n");
+                writeAll("^C\r\n");
                 return error.Interrupted;
             },
             // Backspace / Ctrl-H
@@ -154,29 +166,13 @@ pub fn readLine(
                     std.mem.copyForwards(u8, line_buf.items[cursor - 1 ..], line_buf.items[cursor..]);
                     line_buf.shrinkRetainingCapacity(line_buf.items.len - 1);
                     cursor -= 1;
-                    try refresh(stdout, prompt, line_buf.items, cursor);
+                    refresh(prompt, line_buf.items, cursor);
                 }
             },
-            // Ctrl-A
-            1 => {
-                cursor = 0;
-                try refresh(stdout, prompt, line_buf.items, cursor);
-            },
-            // Ctrl-E
-            5 => {
-                cursor = line_buf.items.len;
-                try refresh(stdout, prompt, line_buf.items, cursor);
-            },
-            // Ctrl-K
-            11 => {
-                line_buf.shrinkRetainingCapacity(cursor);
-                try refresh(stdout, prompt, line_buf.items, cursor);
-            },
-            // Ctrl-L — clear screen
-            12 => {
-                try stdout.writeAll("\x1b[2J\x1b[H");
-                try refresh(stdout, prompt, line_buf.items, cursor);
-            },
+            1 => { cursor = 0; refresh(prompt, line_buf.items, cursor); },           // Ctrl-A
+            5 => { cursor = line_buf.items.len; refresh(prompt, line_buf.items, cursor); }, // Ctrl-E
+            11 => { line_buf.shrinkRetainingCapacity(cursor); refresh(prompt, line_buf.items, cursor); }, // Ctrl-K
+            12 => { writeAll("\x1b[2J\x1b[H"); refresh(prompt, line_buf.items, cursor); }, // Ctrl-L
             // Tab — completion
             9 => {
                 if (complete_fn) |cfn| {
@@ -188,31 +184,28 @@ pub fn readLine(
                     }
                     cfn(word, complete_ctx, alloc, &matches);
                     if (matches.items.len == 1) {
-                        // Single match: complete in place
                         const suffix = matches.items[0][word.len..];
-                        const insert_pos = cursor;
-                        try line_buf.insertSlice(alloc, insert_pos, suffix);
+                        try line_buf.insertSlice(alloc, cursor, suffix);
                         cursor += suffix.len;
-                        try refresh(stdout, prompt, line_buf.items, cursor);
+                        refresh(prompt, line_buf.items, cursor);
                     } else if (matches.items.len > 1) {
-                        // Multiple: show list
-                        try stdout.writeAll("\r\n");
+                        writeAll("\r\n");
                         for (matches.items) |m| {
-                            try stdout.writeAll(m);
-                            try stdout.writeAll("  ");
+                            writeAll(m);
+                            writeAll("  ");
                         }
-                        try stdout.writeAll("\r\n");
-                        try refresh(stdout, prompt, line_buf.items, cursor);
+                        writeAll("\r\n");
+                        refresh(prompt, line_buf.items, cursor);
                     }
                 }
             },
             // Escape sequence
             '\x1b' => {
                 var seq: [3]u8 = undefined;
-                const sn = stdin.read(seq[0..2]) catch 0;
+                const sn = std.c.read(0, &seq, 2);
                 if (sn < 2 or seq[0] != '[') continue;
                 switch (seq[1]) {
-                    'A' => { // Up — history prev
+                    'A' => { // Up
                         if (hist_pos == hist_base) {
                             saved_input.clearRetainingCapacity();
                             try saved_input.appendSlice(alloc, line_buf.items);
@@ -222,10 +215,10 @@ pub fn readLine(
                             line_buf.clearRetainingCapacity();
                             try line_buf.appendSlice(alloc, history.entries.items[hist_pos]);
                             cursor = line_buf.items.len;
-                            try refresh(stdout, prompt, line_buf.items, cursor);
+                            refresh(prompt, line_buf.items, cursor);
                         }
                     },
-                    'B' => { // Down — history next
+                    'B' => { // Down
                         if (hist_pos < hist_base) {
                             hist_pos += 1;
                             line_buf.clearRetainingCapacity();
@@ -235,68 +228,48 @@ pub fn readLine(
                                 try line_buf.appendSlice(alloc, history.entries.items[hist_pos]);
                             }
                             cursor = line_buf.items.len;
-                            try refresh(stdout, prompt, line_buf.items, cursor);
+                            refresh(prompt, line_buf.items, cursor);
                         }
                     },
-                    'C' => { // Right
-                        if (cursor < line_buf.items.len) {
-                            cursor += 1;
-                            try refresh(stdout, prompt, line_buf.items, cursor);
-                        }
-                    },
-                    'D' => { // Left
-                        if (cursor > 0) {
-                            cursor -= 1;
-                            try refresh(stdout, prompt, line_buf.items, cursor);
-                        }
-                    },
-                    'H' => { // Home
-                        cursor = 0;
-                        try refresh(stdout, prompt, line_buf.items, cursor);
-                    },
-                    'F' => { // End
-                        cursor = line_buf.items.len;
-                        try refresh(stdout, prompt, line_buf.items, cursor);
-                    },
-                    '3' => { // Delete (3~)
-                        _ = stdin.read(seq[2..3]) catch {};
+                    'C' => { if (cursor < line_buf.items.len) { cursor += 1; refresh(prompt, line_buf.items, cursor); } },
+                    'D' => { if (cursor > 0) { cursor -= 1; refresh(prompt, line_buf.items, cursor); } },
+                    'H' => { cursor = 0; refresh(prompt, line_buf.items, cursor); },
+                    'F' => { cursor = line_buf.items.len; refresh(prompt, line_buf.items, cursor); },
+                    '3' => {
+                        _ = std.c.read(0, seq[2..3].ptr, 1);
                         if (cursor < line_buf.items.len) {
                             std.mem.copyForwards(u8, line_buf.items[cursor..], line_buf.items[cursor + 1 ..]);
                             line_buf.shrinkRetainingCapacity(line_buf.items.len - 1);
-                            try refresh(stdout, prompt, line_buf.items, cursor);
+                            refresh(prompt, line_buf.items, cursor);
                         }
                     },
                     else => {},
                 }
             },
-            // Printable characters
             32...126 => {
                 try line_buf.insert(alloc, cursor, c);
                 cursor += 1;
-                try refresh(stdout, prompt, line_buf.items, cursor);
+                refresh(prompt, line_buf.items, cursor);
             },
             else => {},
         }
     }
 }
 
-fn refresh(stdout: std.Io.File, prompt: []const u8, buf: []const u8, cursor: usize) !void {
-    // \r: go to col 0, write prompt + buf, clear to EOL, reposition cursor.
-    try stdout.writeAll("\r");
-    try stdout.writeAll(prompt);
-    try stdout.writeAll(buf);
-    try stdout.writeAll("\x1b[K"); // clear to end of line
-    // Move cursor left by (buf.len - cursor) positions
+fn refresh(prompt: []const u8, buf: []const u8, cursor: usize) void {
+    writeAll("\r");
+    writeAll(prompt);
+    writeAll(buf);
+    writeAll("\x1b[K");
     const tail = buf.len - cursor;
     if (tail > 0) {
         var tmp: [32]u8 = undefined;
-        const mv = try std.fmt.bufPrint(&tmp, "\x1b[{d}D", .{tail});
-        try stdout.writeAll(mv);
+        const mv = std.fmt.bufPrint(&tmp, "\x1b[{d}D", .{tail}) catch return;
+        writeAll(mv);
     }
 }
 
 fn currentWord(s: []const u8) []const u8 {
-    // Return the last whitespace-delimited token (the prefix to complete).
     var i = s.len;
     while (i > 0 and s[i - 1] != ' ' and s[i - 1] != '(' and s[i - 1] != '\t') i -= 1;
     return s[i..];

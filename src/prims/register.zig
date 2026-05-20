@@ -136,6 +136,7 @@ const TABLE: []const Entry = &.{
     make("format", -1, io_mod.primFormat),
     make("exit", -1, io_mod.primExit),
     make("argv", 0, io_mod.primArgv),
+    make("read-line", 0, io_mod.primReadLine), // zepo-8e6
 
     make("file-read-string", 1, sys_mod.primFileReadString),
     make("file-write-string", 2, sys_mod.primFileWriteString),

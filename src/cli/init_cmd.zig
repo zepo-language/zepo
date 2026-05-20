@@ -1,38 +1,79 @@
 const std = @import("std");
 
-pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
-    const stdout = std.Io.File.stdout();
-    const stderr = std.Io.File.stderr();
+// zepo-n3h
+extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
 
+fn writeFilePosix(path: []const u8, data: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "wb") orelse return false;
+    defer _ = std.c.fclose(f);
+    _ = std.c.fwrite(data.ptr, 1, data.len, f);
+    return true;
+}
+
+fn makePath(path: []const u8) void {
+    var buf: [4096]u8 = undefined;
+    var i: usize = 0;
+    while (i <= path.len) : (i += 1) {
+        if (i == path.len or path[i] == '/') {
+            if (i == 0) continue;
+            @memcpy(buf[0..i], path[0..i]);
+            buf[i] = 0;
+            _ = std.c.mkdir(@ptrCast(&buf), 0o755);
+        }
+    }
+}
+
+fn accessExists(path: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    return std.c.access(@ptrCast(&pbuf), 0) == 0;
+}
+
+fn writeStdout(bytes: []const u8) void {
+    _ = std.c.write(1, bytes.ptr, bytes.len);
+}
+fn writeStderr(bytes: []const u8) void {
+    _ = std.c.write(2, bytes.ptr, bytes.len);
+}
+
+pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
     // If a directory name was given, create it and work inside it.
     if (extra_args.len > 0) {
         const dir_name = extra_args[0];
-        std.Io.Dir.cwd().makePath(dir_name) catch |e| {
-            var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "error: cannot create directory '{s}': {s}\n", .{ dir_name, @errorName(e) }) catch "error: cannot create directory\n";
-            try stderr.writeAll(msg);
-            std.process.exit(1);
-        };
-        try std.posix.chdir(dir_name);
+        // zepo-n3h
+        makePath(dir_name);
+        var cbuf: [4096]u8 = undefined;
+        if (dir_name.len < cbuf.len) {
+            @memcpy(cbuf[0..dir_name.len], dir_name);
+            cbuf[dir_name.len] = 0;
+            _ = std.c.chdir(@ptrCast(&cbuf));
+        }
     }
 
-    const cwd = std.Io.Dir.cwd();
-
     // Error if project.lisp already exists.
-    if (cwd.access("project.lisp", .{})) |_| {
-        try stderr.writeAll("error: project.lisp already exists — already a zepo project\n");
+    // zepo-n3h
+    if (accessExists("project.lisp")) {
+        writeStderr("error: project.lisp already exists — already a zepo project\n");
         std.process.exit(1);
-    } else |_| {}
+    }
 
     // Infer project name from CWD.
-    const cwd_path = try std.fs.realpathAlloc(alloc, ".");
-    defer alloc.free(cwd_path);
-    const name = std.fs.path.basename(cwd_path);
+    // zepo-n3h
+    var cwdbuf: [4096]u8 = undefined;
+    const cwd_ptr = getcwd(&cwdbuf, cwdbuf.len);
+    const cwd_str: []const u8 = if (cwd_ptr) |p| std.mem.sliceTo(p, 0) else ".";
+    const cwd_owned = try alloc.dupe(u8, cwd_str);
+    defer alloc.free(cwd_owned);
+    const name = std.fs.path.basename(cwd_owned);
 
     // Write project.lisp.
     {
-        const f = try cwd.createFile("project.lisp", .{ .truncate = true });
-        defer f.close();
         var buf: [512]u8 = undefined;
         const content = try std.fmt.bufPrint(&buf,
             \\(project
@@ -43,14 +84,15 @@ pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
             \\  (test-dir "tests"))
             \\
         , .{name});
-        try f.writeAll(content);
+        if (!writeFilePosix("project.lisp", content)) {
+            writeStderr("error: cannot write project.lisp\n");
+            std.process.exit(1);
+        }
     }
 
     // Create src/main.lisp.
-    try cwd.makePath("src");
+    makePath("src");
     {
-        const f = try cwd.createFile("src/main.lisp", .{ .truncate = true });
-        defer f.close();
         var buf: [256]u8 = undefined;
         const content = try std.fmt.bufPrint(&buf,
             \\(define (main)
@@ -59,13 +101,13 @@ pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
             \\(main)
             \\
         , .{name});
-        try f.writeAll(content);
+        _ = writeFilePosix("src/main.lisp", content);
     }
 
     // Create modules/, lib/, and tests/.
-    try cwd.makePath("modules");
-    try cwd.makePath("lib");
-    try cwd.makePath("tests");
+    makePath("modules");
+    makePath("lib");
+    makePath("tests");
 
     var msg_buf: [256]u8 = undefined;
     const msg = try std.fmt.bufPrint(&msg_buf,
@@ -79,5 +121,5 @@ pub fn runInit(alloc: std.mem.Allocator, extra_args: []const []const u8) !void {
         \\Run: zepo run
         \\
     , .{name});
-    try stdout.writeAll(msg);
+    writeStdout(msg);
 }

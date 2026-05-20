@@ -9,6 +9,38 @@
 
 const std = @import("std");
 
+// zepo-n3h
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return null;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "rb") orelse return null;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, 2);
+    const size: usize = @intCast(@max(0, ftell(f)));
+    _ = fseek(f, 0, 0);
+    const buf = alloc.alloc(u8, size) catch return null;
+    _ = std.c.fread(buf.ptr, 1, size, f);
+    return buf;
+}
+
+fn writeFilePosix(path: []const u8, data: []const u8) bool {
+    var pbuf: [4096]u8 = undefined;
+    if (path.len >= pbuf.len) return false;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&pbuf), "wb") orelse return false;
+    defer _ = std.c.fclose(f);
+    _ = std.c.fwrite(data.ptr, 1, data.len, f);
+    return true;
+}
+
+extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
+
 pub const ProjectConfig = struct {
     name: []const u8,
     version: []const u8,
@@ -23,7 +55,8 @@ pub const ProjectConfig = struct {
 
     /// Load project.lisp from CWD. Returns null silently if not found.
     pub fn loadOptional(alloc: std.mem.Allocator) ?ProjectConfig {
-        const src = std.Io.Dir.cwd().readFileAlloc(alloc, "project.lisp", 64 * 1024) catch return null;
+        // zepo-n3h
+        const src = readFilePosix(alloc, "project.lisp") orelse return null;
         defer alloc.free(src);
         return parse(alloc, src);
     }
@@ -31,9 +64,10 @@ pub const ProjectConfig = struct {
     /// Load and parse project.lisp from CWD.
     /// Returns null (with error written to stderr) if not found or malformed.
     pub fn load(alloc: std.mem.Allocator) ?ProjectConfig {
-        const stderr = std.Io.File.stderr();
-        const src = std.Io.Dir.cwd().readFileAlloc(alloc, "project.lisp", 64 * 1024) catch {
-            stderr.writeAll("error: no project.lisp found — run 'zepo init' first\n") catch {};
+        // zepo-n3h
+        const src = readFilePosix(alloc, "project.lisp") orelse {
+            const msg = "error: no project.lisp found — run 'zepo init' first\n";
+            _ = std.c.write(2, msg, msg.len);
             return null;
         };
         defer alloc.free(src);
@@ -71,8 +105,10 @@ pub const ProjectConfig = struct {
         existing: []const []const u8,
         path_buf: *std.ArrayListUnmanaged([]const u8),
     ) !void {
-        const cwd = std.Io.Dir.cwd().realpathAlloc(alloc, ".") catch null;
-        defer if (cwd) |p| alloc.free(p);
+        // zepo-n3h
+        var cwdbuf: [4096]u8 = undefined;
+        const cwd_ptr = getcwd(&cwdbuf, cwdbuf.len);
+        const cwd: ?[]const u8 = if (cwd_ptr) |p| std.mem.sliceTo(p, 0) else null;
 
         for (cfg.paths) |rel| {
             const abs = if (cwd) |base|
@@ -115,7 +151,8 @@ pub fn appendGlobalPaths(alloc: std.mem.Allocator, dirs: *std.ArrayListUnmanaged
     try dirs.append(alloc, base);
     const manifest_path = std.fs.path.join(alloc, &.{ base, "packages.lisp" }) catch return;
     defer alloc.free(manifest_path);
-    const src = std.Io.Dir.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch return;
+    // zepo-n3h
+    const src = readFilePosix(alloc, manifest_path) orelse return;
     defer alloc.free(src);
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
@@ -134,7 +171,8 @@ pub fn registerGlobalPackage(alloc: std.mem.Allocator, pkg_name: []const u8) !vo
     defer alloc.free(base);
     const manifest_path = std.fs.path.join(alloc, &.{ base, "packages.lisp" }) catch return;
     defer alloc.free(manifest_path);
-    const existing = std.Io.Dir.cwd().readFileAlloc(alloc, manifest_path, 64 * 1024) catch "";
+    // zepo-n3h
+    const existing = readFilePosix(alloc, manifest_path) orelse "";
     defer if (existing.len > 0) alloc.free(existing);
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
@@ -153,9 +191,8 @@ pub fn registerGlobalPackage(alloc: std.mem.Allocator, pkg_name: []const u8) !vo
     try out.appendSlice(alloc, " \"");
     try out.appendSlice(alloc, pkg_name);
     try out.appendSlice(alloc, "\")\n");
-    const f = try std.Io.Dir.cwd().createFile(manifest_path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(out.items);
+    // zepo-n3h
+    _ = writeFilePosix(manifest_path, out.items);
 }
 
 fn extractPaths(alloc: std.mem.Allocator, src: []const u8, marker: []const u8) ?[][]const u8 {
