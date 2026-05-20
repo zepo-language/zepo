@@ -59,16 +59,15 @@ fn deleteTree(path: []const u8) void {
     _ = system(cmd);
 }
 
-// build.zig written into the temp dir. Placeholders: {s}=src_dir, {s}=src_dir, {s}=binary_name.
+// build.zig written into the temp dir. Placeholders: {s}=src_dir, {s}=binary_name.
+// zepo-g3k: stdlib.lisp is copied into the temp dir so @embedFile works at build time.
 pub const BUILD_ZIG_TEMPLATE =
     \\const std = @import("std");
     \\pub fn build(b: *std.Build) void {{
     \\    const target = b.standardTargetOptions(.{{}});
     \\    const optimize = b.standardOptimizeOption(.{{}});
     \\    const lib_opts = b.addOptions();
-    \\    const stdlib_src = @import("std").fs.cwd().readFileAlloc(
-    \\        b.allocator, "{s}/lib/stdlib.lisp", 1 << 20,
-    \\    ) catch @panic("stdlib.lisp not found");
+    \\    const stdlib_src: []const u8 = @embedFile("stdlib.lisp");
     \\    lib_opts.addOption([]const u8, "stdlib_src", stdlib_src);
     \\    const zepo_mod = b.addModule("zepo", .{{
     \\        .root_source_file = .{{ .cwd_relative = "{s}/src/root.zig" }},
@@ -303,7 +302,20 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // ── Write build.zig ───────────────────────────────────────────────────────
-    const build_zig_src = try std.fmt.allocPrint(alloc, BUILD_ZIG_TEMPLATE, .{ src_dir, src_dir, binary_name });
+    // zepo-g3k: copy stdlib.lisp into temp dir so @embedFile("stdlib.lisp") resolves.
+    {
+        const stdlib_src_path = try std.fmt.allocPrint(alloc, "{s}/lib/stdlib.lisp", .{src_dir});
+        defer alloc.free(stdlib_src_path);
+        const stdlib_dst_path = try std.fmt.allocPrint(alloc, "{s}/stdlib.lisp", .{tmp_path});
+        defer alloc.free(stdlib_dst_path);
+        const stdlib_data = readFilePosix(alloc, stdlib_src_path) orelse {
+            writeMsg(2, "error: cannot read stdlib.lisp\n");
+            std.process.exit(1);
+        };
+        defer alloc.free(stdlib_data);
+        _ = writeFilePosix(stdlib_dst_path, stdlib_data);
+    }
+    const build_zig_src = try std.fmt.allocPrint(alloc, BUILD_ZIG_TEMPLATE, .{ src_dir, binary_name });
     defer alloc.free(build_zig_src);
     {
         const p = try std.fmt.allocPrint(alloc, "{s}/build.zig", .{tmp_path});
