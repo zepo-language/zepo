@@ -713,6 +713,33 @@ Arity `-1` means variadic (zero or more arguments).
 > these names at runtime via `define` or `set!` will not take effect inside
 > already-compiled call sites. Same trade-off as Chez/Racket.
 
+### Bitwise
+
+Bitwise primitives operate on integers. Float arguments are truncated to i64
+before the operation; the result is always an exact integer.
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `bitwise-and` | -1 | Bitwise AND; `(bitwise-and)` → `-1` (all bits set) |
+| `bitwise-or` | -1 | Bitwise OR; `(bitwise-or)` → `0` |
+| `bitwise-xor` | -1 | Bitwise XOR; `(bitwise-xor)` → `0` |
+| `bitwise-not` | 1 | Bitwise complement (one's complement) |
+| `arithmetic-shift` | 2 | Shift `n` left by `shift` bits; negative `shift` shifts right (arithmetic, sign-extending) |
+| `bit-count` | 1 | Population count — number of 1-bits in the binary representation |
+
+```scheme
+(bitwise-and 12 10)         ; => 8    ; 1100 & 1010 = 1000
+(bitwise-or  12 10)         ; => 14   ; 1100 | 1010 = 1110
+(bitwise-xor 12 10)         ; => 6    ; 1100 ^ 1010 = 0110
+(bitwise-not 0)             ; => -1
+(arithmetic-shift 1 4)      ; => 16   ; 1 << 4
+(arithmetic-shift 256 -4)   ; => 16   ; 256 >> 4
+(bit-count 255)             ; => 8    ; eight 1-bits
+(bitwise-and)               ; => -1   ; identity
+(bitwise-or)                ; => 0    ; identity
+(bitwise-xor)               ; => 0    ; identity
+```
+
 ### Comparison
 
 All accept two or more arguments and return `#t` if the relation holds for
