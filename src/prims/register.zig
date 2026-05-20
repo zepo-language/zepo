@@ -37,6 +37,7 @@ const bitwise_prims = @import("bitwise.zig"); // zepo-qny
 const signal_prims = @import("signal.zig"); // zepo-6qx
 const bytevec_prims = @import("bytevec.zig"); // zepo-9qg
 const process_prims = @import("process.zig"); // zepo-wgt
+const fiber_prims = @import("fiber_prims.zig"); // zepo-0bo
 
 const Entry = struct {
     name: []const u8,
@@ -288,6 +289,9 @@ const TABLE: []const Entry = &.{
     make("process-recv-all",     1, process_prims.primProcessRecvAll),
     make("process-wait",         1, process_prims.primProcessWait),
     make("process-kill",         2, process_prims.primProcessKill),
+
+    // zepo-0bo
+    make("yield", 0, fiber_prims.primYield),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {

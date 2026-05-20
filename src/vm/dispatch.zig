@@ -42,6 +42,8 @@ const Frame = frame_mod.Frame;
 const fiber_mod = @import("fiber.zig");
 pub const FiberState = fiber_mod.FiberState;
 pub const FiberStatus = fiber_mod.FiberStatus;
+const sched_mod = @import("sched.zig");
+pub const Scheduler = sched_mod.Scheduler;
 
 pub const PrimFn = *const fn (vm: *VM, args: []const Value) LispError!Value;
 
@@ -75,6 +77,12 @@ pub const VM = struct {
     // main execution context is running; >= 1 means a spawned fiber is active.
     fibers: std.ArrayListUnmanaged(*FiberState) = .empty,
     current_fiber_idx: usize = 0,
+    // zepo-0bo: when the main fiber is suspended (a spawned fiber is active),
+    // its call stack is snapshotted here so GC can still walk its roots.
+    main_cs_snapshot: CallStack = .{ .frames = .empty, .regs = .empty, .allocator = undefined },
+    // zepo-0bo: set by the (yield) primitive; dispatch returns .yielded on the
+    // next iteration boundary, leaving the frame intact for resumption.
+    yield_requested: bool = false,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -108,6 +116,8 @@ pub const VM = struct {
             .compiled_fns = compiled_fns,
             .call_stack = cs,
             .allocator = allocator,
+            // zepo-0bo: empty snapshot; allocator must be valid for safe deinit.
+            .main_cs_snapshot = CallStack.init(allocator),
         };
     }
 
@@ -123,6 +133,8 @@ pub const VM = struct {
             vm.error_msg = null;
         }
         vm.call_stack.deinit();
+        // zepo-0bo: free main fiber snapshot if it holds a saved call stack.
+        vm.main_cs_snapshot.deinit();
         // zepo-4yr: free all spawned fiber states.
         for (vm.fibers.items) |fs| fs.deinit();
         vm.fibers.deinit(vm.allocator);
@@ -155,6 +167,8 @@ pub const VM = struct {
 
         // Active fiber's call stack (mirrors vm.call_stack for the running fiber).
         visitCallStack(&vm.call_stack, visitor, visitor_ctx);
+        // zepo-0bo: main fiber's snapshot (non-empty only when a spawned fiber runs).
+        visitCallStack(&vm.main_cs_snapshot, visitor, visitor_ctx);
         // zepo-4yr: suspended fibers — their registers must also be GC roots.
         for (vm.fibers.items) |fs| {
             visitCallStack(&fs.call_stack, visitor, visitor_ctx);
@@ -187,6 +201,36 @@ pub const VM = struct {
 
     fn unrootSafepoint(vm: *VM, prev_len: usize) void {
         vm.gc.roots.extra.shrinkRetainingCapacity(prev_len);
+    }
+
+    // zepo-0bo: resume a fiber whose frame is already on vm.call_stack.
+    // Runs the trampoline without pushing a new frame. Used by the scheduler
+    // after a context switch to continue a previously-yielded fiber.
+    pub fn resumeExecFn(vm: *VM) LispError!Value {
+        trampoline: while (true) {
+            const result = vm.dispatch() catch |e| return e;
+            switch (result) {
+                .value => |v| {
+                    _ = vm.call_stack.pop();
+                    return v;
+                },
+                .tail_call => |tc| {
+                    _ = vm.call_stack.pop();
+                    const base: u32 = @intCast(vm.call_stack.regs.items.len);
+                    try vm.call_stack.pushFast(.{
+                        .func = tc.func,
+                        .pc = 0,
+                        .base = base,
+                        .caller_base = base,
+                        .closure_val = tc.closure_val,
+                        .dst_reg = frame_mod.outermost_sentinel,
+                    }, tc.func.num_regs);
+                    try vm.setupCallArgs(tc.func, tc.args, base, false);
+                    continue :trampoline;
+                },
+                .yielded => return error.FiberYielded,
+            }
+        }
     }
 
     // zepo-4yr: allocate a new FiberState and register it with the VM.
@@ -264,8 +308,10 @@ pub const VM = struct {
     /// Entry: run the function with given fn_id, passing `args`.
     pub fn run(vm: *VM, fn_id: u32, args: []const Value) LispError!Value {
         if (fn_id >= vm.compiled_fns.len) return error.InvalidForm;
-        const func = &vm.compiled_fns[fn_id];
-        return vm.execFn(func, value_mod.NIL, args);
+        // zepo-0bo: route through scheduler so spawned fibers work.
+        var sched = sched_mod.Scheduler.init(vm);
+        defer sched.deinit();
+        return sched.runMain(fn_id, args);
     }
 
     /// Execute a CompiledFn. Supports tail calls via a trampoline loop.
@@ -319,23 +365,28 @@ pub const VM = struct {
                 return e;
             };
 
-            if (result == .tail_call) {
-                // Pop current frame then restart with new func/args.
-                // zepo-1p4: args already live in tc_args_buf — just point
-                // args_src at it. The next trampoline iteration places them
-                // into the new frame's regs before re-entering dispatch, so
-                // a subsequent TAIL_CALL overwriting tc_args_buf is safe.
-                _ = vm.call_stack.pop();
-                func = result.tail_call.func;
-                closure_val = result.tail_call.closure_val;
-                args_src = result.tail_call.args;
-                args_len = args_src.len;
-                args_in_regs = false;
-                continue :trampoline;
+            switch (result) {
+                .tail_call => |tc| {
+                    // Pop current frame then restart with new func/args.
+                    // zepo-1p4: args already live in tc_args_buf — just point
+                    // args_src at it. The next trampoline iteration places them
+                    // into the new frame's regs before re-entering dispatch, so
+                    // a subsequent TAIL_CALL overwriting tc_args_buf is safe.
+                    _ = vm.call_stack.pop();
+                    func = tc.func;
+                    closure_val = tc.closure_val;
+                    args_src = tc.args;
+                    args_len = args_src.len;
+                    args_in_regs = false;
+                    continue :trampoline;
+                },
+                .value => |v| {
+                    _ = vm.call_stack.pop();
+                    return v;
+                },
+                // zepo-0bo: fiber yielded — frame stays on stack for resumption.
+                .yielded => return error.FiberYielded,
             }
-
-            _ = vm.call_stack.pop();
-            return result.value;
         }
     }
 
@@ -346,6 +397,8 @@ pub const VM = struct {
             closure_val: Value,
             args: []const Value,
         },
+        // zepo-0bo: fiber requested a cooperative yield; frame is left intact.
+        yielded,
     };
 
     /// Tail-call out-buffer. Using a thread-local-ish static buffer would be
@@ -358,7 +411,18 @@ pub const VM = struct {
     // recursing via execFn. RETURN and TAIL_CALL at non-outermost frames are
     // handled here; at the outermost frame they signal execFn via DispatchResult.
     fn dispatch(vm: *VM) LispError!DispatchResult {
-        const outermost_idx = vm.call_stack.frames.items.len - 1;
+        // zepo-0bo: in a resume path, inner CALL frames may already be on the
+        // stack above the entry frame. Scan from the top to find the nearest
+        // frame marked outermost_sentinel (always the execFn/resumeExecFn entry).
+        const outermost_idx: usize = blk: {
+            const frames = vm.call_stack.frames.items;
+            var i = frames.len;
+            while (i > 0) {
+                i -= 1;
+                if (frames[i].dst_reg == frame_mod.outermost_sentinel) break :blk i;
+            }
+            break :blk frames.len - 1;
+        };
         var func = vm.call_stack.currentFrame().func;
         var pc: u32 = vm.call_stack.currentFrame().pc;
         var code = func.code;
@@ -588,7 +652,15 @@ pub const VM = struct {
                     if (objects.isPrim(fn_val)) {
                         const raw = objects.primFnPtr(fn_val);
                         const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
-                        vm.call_stack.reg(a).* = try pfn(vm, args_slice);
+                        const prim_val = try pfn(vm, args_slice);
+                        // zepo-0bo: (yield) sets this flag; save PC and return yielded.
+                        if (vm.yield_requested) {
+                            vm.yield_requested = false;
+                            vm.call_stack.reg(a).* = prim_val;
+                            vm.call_stack.currentFrame().pc = pc;
+                            return DispatchResult.yielded;
+                        }
+                        vm.call_stack.reg(a).* = prim_val;
                     } else if (objects.isClosure(fn_val)) {
                         // zepo-5wg: push logical frame, continue in same C frame.
                         const fn_id = objects.closureCodePtr(fn_val);

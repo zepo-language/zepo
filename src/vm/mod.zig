@@ -3,6 +3,7 @@
 pub const frame = @import("frame.zig");
 pub const dispatch = @import("dispatch.zig");
 pub const fiber = @import("fiber.zig");
+pub const sched = @import("sched.zig");
 
 pub const Frame = frame.Frame;
 pub const CallStack = frame.CallStack;
@@ -10,9 +11,11 @@ pub const VM = dispatch.VM;
 pub const PrimFn = dispatch.PrimFn;
 pub const FiberState = fiber.FiberState;
 pub const FiberStatus = fiber.FiberStatus;
+pub const Scheduler = sched.Scheduler;
 
 test {
     _ = frame;
     _ = dispatch;
     _ = fiber;
+    _ = sched;
 }
