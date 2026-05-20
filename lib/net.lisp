@@ -1,22 +1,15 @@
 ; lib/net.lisp — high-level TCP helpers built on tcp-* primitives.
+; zepo-nj6: tcp-recv returns eof-object on close; tcp-recv-line is a built-in.
 (module net
-  (export tcp-recv-all tcp-recv-line with-tcp-connection tcp-serve)
+  (export tcp-recv-all with-tcp-connection tcp-serve)
 
   ; Read from socket until EOF, return accumulated string.
   (define (tcp-recv-all sock)
     (let loop ((acc ""))
       (let ((chunk (tcp-recv sock 4096)))
-        (if (= (string-length chunk) 0)
+        (if (eof-object? chunk)
             acc
             (loop (string-append acc chunk))))))
-
-  ; Read one line from socket (up to and including \n). Returns "" on EOF.
-  (define (tcp-recv-line sock)
-    (let loop ((acc ""))
-      (let ((b (tcp-recv sock 1)))
-        (cond ((= (string-length b) 0) acc)
-              ((equal? b "\n") (string-append acc "\n"))
-              (#t (loop (string-append acc b)))))))
 
   ; Connect, call (thunk socket), then close — even if thunk raises.
   (define (with-tcp-connection host port thunk)
@@ -30,16 +23,18 @@
             (tcp-close sock)
             result)))))
 
-  ; Accept-loop: listen on port, call (handler conn) for each connection.
-  ; handler is responsible for using the conn; tcp-serve closes it after.
+  ; Accept-loop: listen on port, spawn a fiber per connection.
+  ; handler is called in a new fiber with the accepted conn.
+  ; tcp-serve closes conn after handler returns or raises.
   ; Runs forever — wrap in with-exception-handler to stop.
   (define (tcp-serve port handler)
     (let ((server (tcp-listen port)))
       (let loop ()
         (let ((conn (tcp-accept server)))
-          (with-exception-handler
-            (lambda (e) (tcp-close conn))
-            (lambda ()
-              (handler conn)
-              (tcp-close conn))))
+          (spawn (lambda ()
+                   (with-exception-handler
+                     (lambda (e) (tcp-close conn))
+                     (lambda ()
+                       (handler conn)
+                       (tcp-close conn))))))
         (loop)))))

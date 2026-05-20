@@ -2193,92 +2193,158 @@ not ok 2 - assertion failed
 
 ---
 
+## Fibers
+
+Zepo has cooperative green threads called *fibers*. Fibers share a single OS thread; they yield control voluntarily at `(yield)`, `(sleep ...)`, and any blocking I/O call. The scheduler uses `poll(2)` so blocked fibers never burn CPU.
+
+### Primitives
+
+#### `(spawn thunk)`
+Create and schedule a new fiber that will call `(thunk)` with no arguments. Returns a fiber handle immediately; the thunk runs on the next scheduler step.
+```scheme
+(define f (spawn (lambda () (+ 1 2))))
+```
+
+#### `(yield)`
+Yield control to the scheduler, allowing other fibers to run. The current fiber is re-enqueued and resumes shortly.
+```scheme
+(yield)
+```
+
+#### `(sleep seconds)`
+Park the current fiber for `seconds` (integer or float). The scheduler uses `poll(2)` with a timeout — no busy-waiting.
+```scheme
+(sleep 1)       ; sleep 1 second
+(sleep 0.25)    ; sleep 250 ms
+```
+
+#### `(fiber-join handle)`
+Suspend the current fiber until the fiber identified by `handle` completes. Returns the fiber's result value. If the target fiber errored, raises `UserError`.
+```scheme
+(define f (spawn (lambda () 42)))
+(fiber-join f)   ; => 42
+```
+
+#### `(fiber? obj)`
+Return `#t` if `obj` is a fiber handle.
+
+#### `(fiber-done? handle)`
+Return `#t` if the fiber has completed successfully.
+
+#### `(fiber-errored? handle)`
+Return `#t` if the fiber terminated with an error.
+
+#### `(fiber-result handle)`
+Return the fiber's result (if done) or error value (if errored). Raises `ContractViolation` if the fiber is still running.
+
+### Concurrency pattern
+
+All TCP I/O primitives are non-blocking. When a socket would block, the calling fiber is suspended and re-scheduled when the fd is ready. This means you can write straightforward sequential code inside each fiber:
+
+```scheme
+; Echo server: one fiber per connection
+(define (handle-conn conn)
+  (let loop ()
+    (let ((line (tcp-recv-line conn)))
+      (if (eof-object? line) (tcp-close conn)
+          (begin
+            (tcp-send conn (string-append line "\n"))
+            (loop))))))
+
+(define srv (tcp-listen 8080))
+(let accept-loop ()
+  (let ((conn (tcp-accept srv)))
+    (spawn (lambda () (handle-conn conn))))
+  (accept-loop))
+```
+
+---
+
 ## TCP Networking
 
-TCP networking primitives are always available. The `lib/net.lisp` module provides higher-level helpers.
+All TCP primitives are non-blocking. When a socket call would block (EAGAIN), the current fiber yields and the scheduler calls `poll(2)`; the fiber resumes when the fd is ready. Use `spawn` to handle multiple connections concurrently.
 
 ### Primitives
 
 #### `(tcp-socket? obj)`
-Return `#t` if `obj` is a TCP socket, otherwise `#f`.
+Return `#t` if `obj` is a TCP connection socket.
 
 #### `(tcp-server? obj)`
-Return `#t` if `obj` is a TCP server socket, otherwise `#f`.
-
-#### `(tcp-connect host port)`
-Connect to a TCP server at `host` (string) and `port` (number). Return a socket on success. Raise `TcpError` on failure.
-```scheme
-(define sock (tcp-connect "localhost" 8080))
-```
-
-#### `(tcp-send socket str)`
-Send string `str` over `socket`. Return number of bytes sent. Raise `TcpError` on failure.
-```scheme
-(tcp-send sock "Hello, server!")   ; => 14
-```
-
-#### `(tcp-recv socket max-bytes)`
-Receive up to `max-bytes` from `socket`. Return a string. Empty string indicates EOF (connection closed).
-```scheme
-(tcp-recv sock 1024)   ; => "Hello, client!"
-(tcp-recv sock 1024)   ; => "" (EOF after repeated calls)
-```
+Return `#t` if `obj` is a TCP server socket.
 
 #### `(tcp-listen port)`
-Create a server socket listening on `port` (number). Return a server socket. Raise `TcpError` on failure.
+Create a non-blocking server socket listening on `port` (integer). Returns a server handle. Raises `IOError` on failure.
 ```scheme
 (define srv (tcp-listen 8080))
 ```
 
-#### `(tcp-accept server-socket)`
-Accept an incoming connection on a server socket. Return a connected socket. Raises `TcpError` on failure or if the server is not actually a server socket.
+#### `(tcp-accept server)`
+Accept one incoming connection on `server`. Returns a connection socket. Yields the current fiber if no connection is pending yet.
 ```scheme
-(define client-sock (tcp-accept srv))
+(define conn (tcp-accept srv))
 ```
 
-#### `(tcp-close socket-or-server)`
-Close a socket or server socket. Return `nil`. Raise `TcpError` on failure.
+#### `(tcp-connect host port)`
+Connect to `host` (string) at `port` (integer). Returns a connection socket. Raises `IOError` on failure. The connect itself is synchronous; use `spawn` to avoid blocking other fibers.
+```scheme
+(define sock (tcp-connect "127.0.0.1" 8080))
+```
+
+#### `(tcp-send conn str)`
+Send all bytes of `str` over `conn`. Yields if the socket buffer is full, resuming when space is available. Returns `#void`.
+```scheme
+(tcp-send sock "Hello\n")
+```
+
+#### `(tcp-recv conn max-bytes)`
+Receive up to `max-bytes` from `conn`. Returns a string, or the `eof-object` when the connection is closed. Yields if no data is available.
+```scheme
+(tcp-recv sock 4096)          ; => "some data"
+(eof-object? (tcp-recv sock 1)) ; => #t when closed
+```
+
+#### `(tcp-recv-line conn)`
+Read bytes from `conn` until a `\n` is found. Returns the line without the newline, or the `eof-object` at connection close. Buffers internally so partial reads across yields work correctly. Yields when waiting for data.
+```scheme
+(tcp-recv-line sock)   ; => "one line"
+```
+
+#### `(tcp-close conn-or-server)`
+Close a connection or server socket. The GC finalizer also closes it automatically, but explicit close is preferred to release fds promptly.
 ```scheme
 (tcp-close sock)
 (tcp-close srv)
 ```
 
-### Helper functions
+### Helper functions (`lib/net.lisp`)
 
-The `lib/net.lisp` module (imported with `(import net)`) provides these utilities:
+Import with `(import net)`.
 
-#### `(tcp-recv-all socket)`
-Receive until EOF, returning all data as a single string.
+#### `(tcp-recv-all conn)`
+Read from `conn` until EOF, return all data as one string.
 ```scheme
 (import net)
-(tcp-recv-all sock)   ; => accumulated string until EOF
+(tcp-recv-all sock)   ; => "full response body"
 ```
 
-#### `(tcp-recv-line socket)`
-Receive until a newline or EOF, returning one line (without the newline).
-```scheme
-(import net)
-(tcp-recv-line sock)   ; => "one line"
-```
-
-#### `(with-tcp-connection host port f)`
-Open a connection to `host:port`, call function `f` with the socket, and close the socket. Return the result of `f`.
+#### `(with-tcp-connection host port thunk)`
+Open a connection, call `(thunk sock)`, close the socket, return the result.
 ```scheme
 (import net)
 (with-tcp-connection "example.com" 80
   (lambda (sock)
     (tcp-send sock "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
-    (tcp-recv sock 4096)))
+    (tcp-recv-all sock)))
 ```
 
 #### `(tcp-serve port handler)`
-Create a server listening on `port`, accept connections in a loop, and call `handler` with each socket. Return never (runs forever).
+Listen on `port`, spawn a fiber for each accepted connection, call `(handler conn)` in that fiber. Runs forever.
 ```scheme
 (import net)
 (tcp-serve 8080
-  (lambda (sock)
-    (tcp-send sock "Hello!")
-    (tcp-close sock)))
+  (lambda (conn)
+    (tcp-send conn "hello\n")
+    (tcp-close conn)))
 ```
 
 ---
