@@ -13,6 +13,7 @@ const VM = vm_mod.VM;
 const errs = @import("../runtime/errors.zig");
 const net_prims = @import("net.zig");
 const regex_prims = @import("regex.zig");
+const process_prims = @import("process.zig"); // zepo-wgt
 const LispError = errs.LispError;
 
 /// Render `v` into `out` as an appendable stream of bytes.
@@ -121,6 +122,14 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
         // zepo-s4p
         if (tag == TAG_INPUT_PORT) {
             try out.appendSlice(allocator, "#<input-port>");
+            return;
+        }
+        // zepo-wgt
+        if (tag == process_prims.TAG_PROCESS) {
+            const pp: *process_prims.ProcessPayload = @alignCast(@ptrCast(objects.foreignPayload(v)));
+            const s = try std.fmt.allocPrint(allocator, "#<process:{d}>", .{pp.pid});
+            defer allocator.free(s);
+            try out.appendSlice(allocator, s);
             return;
         }
         try out.appendSlice(allocator, "#<foreign>");

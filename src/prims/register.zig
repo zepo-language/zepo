@@ -36,6 +36,7 @@ const debug_prims = @import("debug.zig");
 const bitwise_prims = @import("bitwise.zig"); // zepo-qny
 const signal_prims = @import("signal.zig"); // zepo-6qx
 const bytevec_prims = @import("bytevec.zig"); // zepo-9qg
+const process_prims = @import("process.zig"); // zepo-wgt
 
 const Entry = struct {
     name: []const u8,
@@ -275,6 +276,18 @@ const TABLE: []const Entry = &.{
     make("bytevector-u32le-set!",   3, bytevec_prims.primBytevectorU32LeSet),
     make("file-read-bytes",         1, io_mod.primFileReadBytes),
     make("file-write-bytes",        2, io_mod.primFileWriteBytes),
+
+    // zepo-wgt: process-spawn with pipes
+    make("process-spawn",       -1, process_prims.primProcessSpawn),
+    make("process?",             1, process_prims.primProcessQ),
+    make("process-pid",          1, process_prims.primProcessPid),
+    make("process-send",         2, process_prims.primProcessSend),
+    make("process-close-stdin",  1, process_prims.primProcessCloseStdin),
+    make("process-recv",         2, process_prims.primProcessRecv),
+    make("process-recv-line",    1, process_prims.primProcessRecvLine),
+    make("process-recv-all",     1, process_prims.primProcessRecvAll),
+    make("process-wait",         1, process_prims.primProcessWait),
+    make("process-kill",         2, process_prims.primProcessKill),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
