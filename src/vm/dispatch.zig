@@ -43,6 +43,7 @@ const fiber_mod = @import("fiber.zig");
 pub const FiberState = fiber_mod.FiberState;
 pub const FiberStatus = fiber_mod.FiberStatus;
 const sched_mod = @import("sched.zig");
+const channel_mod = @import("../prims/channel_prims.zig"); // zepo-s64
 pub const Scheduler = sched_mod.Scheduler;
 
 pub const PrimFn = *const fn (vm: *VM, args: []const Value) LispError!Value;
@@ -89,6 +90,8 @@ pub const VM = struct {
     park_on_yield: bool = false,
     // zepo-i19: active scheduler pointer, set by Scheduler.runMain
     scheduler: ?*sched_mod.Scheduler = null,
+    // zepo-s64: live channels — GC traces Values inside them via vmRootVisit.
+    channels: std.ArrayListUnmanaged(*channel_mod.Channel) = .empty,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -144,6 +147,8 @@ pub const VM = struct {
         // zepo-4yr: free all spawned fiber states.
         for (vm.fibers.items) |fs| fs.deinit();
         vm.fibers.deinit(vm.allocator);
+        // zepo-s64: channel list (channel memory freed by GC finalizers).
+        vm.channels.deinit(vm.allocator);
     }
 
     /// Register the VM's register stack and frame closures as GC roots.
@@ -182,6 +187,11 @@ pub const VM = struct {
             visitor(visitor_ctx, &fs.error_val);
         }
         visitor(visitor_ctx, &vm.raised_val);
+        // zepo-s64: Values queued in channels and parked senders.
+        for (vm.channels.items) |ch| {
+            for (ch.buf.items) |*v| visitor(visitor_ctx, v);
+            for (ch.send_waiters.items) |*sw| visitor(visitor_ctx, &sw.val);
+        }
         // Compiled-function constant pools hold heap Values (strings, symbols,
         // etc.) that are not referenced by any register while dormant. Without
         // tracing them the GC can collect a constant the moment it leaves the
@@ -422,6 +432,7 @@ pub const VM = struct {
         // frame marked outermost_sentinel (always the execFn/resumeExecFn entry).
         const outermost_idx: usize = blk: {
             const frames = vm.call_stack.frames.items;
+            std.debug.assert(frames.len > 0);
             var i = frames.len;
             while (i > 0) {
                 i -= 1;
@@ -771,6 +782,21 @@ pub const VM = struct {
                             return e;
                         };
                         vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                        // zepo-s64: prim in tail position may park/block-yield.
+                        // Handle before returning .value so the fiber isn't
+                        // falsely marked done. On park-resume, the synthetic
+                        // RETURN emitted after TAIL_CALL delivers reg[a]=v.
+                        if (vm.yield_requested) {
+                            vm.yield_requested = false;
+                            if (vm.block_on_yield and !vm.park_on_yield) {
+                                vm.call_stack.currentFrame().pc = pc - 1;
+                            } else {
+                                vm.call_stack.reg(a).* = v;
+                                vm.call_stack.currentFrame().pc = pc;
+                                vm.park_on_yield = false;
+                            }
+                            return DispatchResult.yielded;
+                        }
                         if (at_outermost) return DispatchResult{ .value = v };
                         // zepo-5wg: non-outermost prim tail call — pop, write result.
                         const dst = vm.call_stack.currentFrame().dst_reg;

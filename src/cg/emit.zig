@@ -550,6 +550,10 @@ const FnEmit = struct {
                 }
                 if (x.args.len > 255) return error.TooManyArgs;
                 try c.emitInstr(bytecode.encode(.TAIL_CALL, base, @intCast(x.args.len), 0));
+                // zepo-s64: synthetic RETURN so park-yield can resume here.
+                // Dead in normal execution; reached only when a prim in tail
+                // position parks and the scheduler resumes this fiber.
+                try c.emitInstr(bytecode.encode(.RETURN, base, 0, 0));
                 c.next_phys_reg = c.call_temp_base;
             },
             .ret => |x| try c.emitInstr(bytecode.encode(.RETURN, c.phys(x.src), 0, 0)),
@@ -610,6 +614,8 @@ const FnEmit = struct {
         }
         if (arg_regs.len > 255) return error.TooManyArgs;
         try c.emitInstr(bytecode.encode(.TAIL_CALL, base, @intCast(arg_regs.len), 0));
+        // zepo-s64: synthetic RETURN for park-yield resume (see tail_call emission above).
+        try c.emitInstr(bytecode.encode(.RETURN, base, 0, 0));
         c.next_phys_reg = c.call_temp_base;
     }
 

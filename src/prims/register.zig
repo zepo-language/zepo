@@ -38,6 +38,7 @@ const signal_prims = @import("signal.zig"); // zepo-6qx
 const bytevec_prims = @import("bytevec.zig"); // zepo-9qg
 const process_prims = @import("process.zig"); // zepo-wgt
 const fiber_prims = @import("fiber_prims.zig"); // zepo-0bo
+const channel_prims = @import("channel_prims.zig"); // zepo-s64
 
 const Entry = struct {
     name: []const u8,
@@ -302,6 +303,12 @@ const TABLE: []const Entry = &.{
     make("fiber-errored?",  1, fiber_prims.primFiberErroredQ),
     make("fiber-result",    1, fiber_prims.primFiberResult),
     make("fiber-join",      1, fiber_prims.primFiberJoin),
+    // zepo-s64
+    make("make-channel",    -1, channel_prims.primMakeChannel),
+    make("channel?",         1, channel_prims.primChannelQ),
+    make("channel-send!",    2, channel_prims.primChannelSend),
+    make("channel-recv!",    1, channel_prims.primChannelRecv),
+    make("channel-empty?",   1, channel_prims.primChannelEmptyQ),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
