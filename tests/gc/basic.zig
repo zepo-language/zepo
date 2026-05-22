@@ -202,3 +202,66 @@ test "fixnum and char round trip through GC" {
     try std.testing.expectEqual(@as(i63, -12345), value_mod.fixnumVal(pairCar(v)));
     try std.testing.expectEqual(@as(u21, 'Z'), value_mod.charVal(pairCdr(v)));
 }
+
+// zepo-svu: regression test for the drain-loop fix in collect() step 3.5.
+//
+// Scenario: object A reaches PROMOTE_AGE and is promoted during a minor GC.
+// A points to young pair B which points to young pair C (neither B nor C is
+// directly rooted — only reachable through A). During step 3.5, scanning
+// promoted-A calls forwardSlot on A.cdr, which copies B into to-space. B's
+// CDR (pointing at C) must then also be forwarded. Without the drain loop that
+// was added for zepo-svu, B in to-space retains a stale from-space CDR; after
+// the flip and debug-mode zeroing, traversal of B.cdr hits zeroed memory and
+// the list is corrupted.
+test "zepo-svu: promoted object interior scan drains to-space copies" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    var scope = gcmod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+
+    // Allocate A = (1 . NIL) and root it. B and C are created later so they
+    // remain young when A is promoted.
+    const a_slot = scope.push(try makePair(&gc, value_mod.fixnum(1), value_mod.NIL));
+
+    // Age A to PROMOTE_AGE without promoting it yet (needs one more GC to promote).
+    var n: usize = 0;
+    while (n < gcmod.nursery.PROMOTE_AGE) : (n += 1) {
+        try gc.minor();
+    }
+    // A is still in the nursery (age == PROMOTE_AGE; the next GC will promote).
+    try std.testing.expect(!gc.old_gen.contains(value_mod.ptrVal(a_slot.*)));
+
+    // Build chain B = (2 . C), C = (3 . NIL). No extra roots; only A.cdr will
+    // keep B and C live. Allocating 2 pairs won't fill the nursery, so no
+    // auto-GC occurs and the un-rooted Values are safe for these two lines.
+    const c_val = try makePair(&gc, value_mod.fixnum(3), value_mod.NIL);
+    const b_val = try makePair(&gc, value_mod.fixnum(2), c_val);
+
+    // Attach B to A. A is in nursery (not old-gen) so no write barrier needed.
+    setPairCdr(a_slot.*, b_val);
+
+    // This minor GC promotes A (age == PROMOTE_AGE). B and C are young (age 0)
+    // so they are copied into to-space during step 3.5's scan of promoted-A.
+    // The drain loop must scan B after it lands in to-space so that B.cdr → C
+    // is also forwarded; without it B.cdr remains a stale from-space pointer.
+    try gc.minor();
+    try gcmod.Verifier.verify(&gc);
+
+    // A must be in old-gen now.
+    const a_final = a_slot.*;
+    try std.testing.expect(gc.old_gen.contains(value_mod.ptrVal(a_final)));
+
+    // B must be reachable from A and have car=2.
+    const b_from_a = pairCdr(a_final);
+    try std.testing.expect(value_mod.isPtr(b_from_a));
+    try std.testing.expectEqual(@as(i63, 2), value_mod.fixnumVal(pairCar(b_from_a)));
+
+    // C must be reachable from B and have car=3, cdr=NIL.
+    const c_from_b = pairCdr(b_from_a);
+    try std.testing.expect(value_mod.isPtr(c_from_b));
+    try std.testing.expectEqual(@as(i63, 3), value_mod.fixnumVal(pairCar(c_from_b)));
+    try std.testing.expect(!value_mod.isPtr(pairCdr(c_from_b)));
+}

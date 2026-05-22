@@ -200,7 +200,18 @@ fn forwardSlot(ctx: *CopyCtx, slot: *Value) void {
         // avoid leaving the heap in a partially-collected state.
         const end_addr = @intFromPtr(ctx.to_bump) + sz_bytes;
         if (end_addr > @intFromPtr(ctx.to_end)) {
-            if (ctx.old_gen.promoteRaw(obj, sz_bytes)) |p| break :blk p else |e| {
+            // zepo-svu: queue for interior scan just like the normal promote
+            // path does. Without this, the force-promoted object's body fields
+            // remain as stale from-space pointers — traversal reads forwarding
+            // headers and interprets kind bits from target addresses, producing
+            // either CdrOfNonPair or (via garbage kind bits that match .pair)
+            // a circular list.
+            if (ctx.old_gen.promoteRaw(obj, sz_bytes)) |p| {
+                ctx.promoted.append(ctx.old_gen.allocator, p) catch {
+                    ctx.err = error.OutOfMemory;
+                };
+                break :blk p;
+            } else |e| {
                 ctx.err = e;
                 return;
             }
@@ -255,10 +266,24 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     //     Index-based loop handles cascading promotions: scanning one promoted
     //     object may promote additional objects, which are appended and then
     //     visited in subsequent iterations.
+    //
+    //     zepo-svu: a promoted object's interior scan (forwardSlot) may copy
+    //     young nursery cells into to-space when to-space has room (freed up
+    //     by earlier force-promotions). Step 3's Cheney loop has already
+    //     finished, so those copies would never be scanned — their CDR slots
+    //     would remain stale from-space pointers and corrupt after the flip.
+    //     Fix: drain any new to-space copies after each promoted-object scan.
     {
         var pi: usize = 0;
         while (pi < ctx.promoted.items.len) : (pi += 1) {
             cheneyScanObj(&ctx, ctx.promoted.items[pi]);
+            // Drain new to-space copies produced by the scan above.
+            while (@intFromPtr(ctx.scan) < @intFromPtr(ctx.to_bump)) {
+                const obj: *ObjHeader = @ptrCast(@alignCast(ctx.scan));
+                const sz = objectSizeBytes(obj);
+                cheneyScanObj(&ctx, obj);
+                ctx.scan = @ptrFromInt(@intFromPtr(ctx.scan) + sz);
+            }
         }
         ctx.promoted.deinit(og.allocator);
     }

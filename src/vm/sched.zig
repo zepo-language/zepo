@@ -1,4 +1,5 @@
 // zepo-0bo: cooperative fiber scheduler with poll(2) backing
+// zepo-8ou: incremental major GC steps run between fiber switches
 //! Drives round-robin execution of fibers. When all fibers are blocked on I/O,
 //! calls poll(2) to sleep until an fd is ready. Context-switches are O(1)
 //! struct swaps — no heap copies of call stacks.
@@ -225,6 +226,7 @@ pub const Scheduler = struct {
                     break :blk null;
                 }
                 // Real error.
+                std.debug.print("[sched] fiber {} error: {}\n", .{ next, e });
                 if (next == MAIN_FIBER) return e;
                 const fs_err = vm.fibers.items[next];
                 fs_err.status = .errored;
@@ -248,6 +250,17 @@ pub const Scheduler = struct {
                     // zepo-i19: wake fibers blocked in (fiber-join) on this one
                     for (fs.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
                     fs.waiters.clearRetainingCapacity();
+                }
+            }
+
+            // zepo-8ou: incremental major GC step between fiber switches.
+            // vm.call_stack is empty here (scheduler invariant), so no
+            // live Values are on the call stack — a safe point for marking.
+            if (vm.gc.needsMajor()) {
+                vm.gc.markBegin() catch {};
+            } else if (vm.gc.mark_phase == .marking) {
+                if (vm.gc.markStep(256)) {
+                    vm.gc.sweepAndFinish();
                 }
             }
         }

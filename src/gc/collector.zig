@@ -38,6 +38,13 @@ pub const NoCollectGuard = struct {
     }
 };
 
+// zepo-8ou: incremental major GC trigger at 50% old-gen usage.
+const OLD_GEN_TRIGGER_BYTES: usize = oldgen_mod.OLD_GEN_SIZE / 2;
+/// Budget (objects traced) per incremental marking step in the scheduler.
+const MARK_STEP_BUDGET: usize = 256;
+
+pub const MarkPhase = enum { idle, marking };
+
 pub const GC = struct {
     allocator: std.mem.Allocator,
     nursery: Nursery,
@@ -53,6 +60,10 @@ pub const GC = struct {
     major_count: u64 = 0,
     /// Subsystem trace flags read from ZEPO_TRACE at init time.
     trace: TraceFlags = .{},
+    // zepo-8ou: incremental major GC state.
+    /// Gray object worklist: objects seen but whose children haven't been traced.
+    gray: std.ArrayListUnmanaged(*ObjHeader) = .empty,
+    mark_phase: MarkPhase = .idle,
 
     pub fn init(allocator: std.mem.Allocator) !GC {
         var nursery = try Nursery.init();
@@ -71,6 +82,7 @@ pub const GC = struct {
     }
 
     pub fn deinit(gc: *GC) void {
+        gc.gray.deinit(gc.allocator); // zepo-8ou
         // Run finalizers on every live foreign handle before tearing down
         // oldgen storage — otherwise std-allocator-backed FFI payloads leak
         // when the host shuts down with live handles.
@@ -133,6 +145,9 @@ pub const GC = struct {
         const body_words: usize = 3;
         const p = gc.old_gen.alloc(body_words) orelse return error.OutOfMemory;
         p.* = ObjHeader.init(.foreign, .old_gen, @intFromEnum(Kind.foreign), @intCast(body_words));
+        // zepo-8ou: foreign objects have no Value children, so marking them
+        // black immediately is safe and prevents them being swept mid-mark.
+        if (gc.mark_phase == .marking) p.setMark();
         const body: [*]u64 = @ptrFromInt(@intFromPtr(p) + WORD);
         body[0] = payload_bits;
         body[1] = @intFromPtr(deinit_fn);
@@ -151,13 +166,20 @@ pub const GC = struct {
                 );
             }
         }
+        // zepo-8ou: if an incremental major mark is in progress, complete it
+        // before running the nursery collector. Running the Cheney forwarder
+        // while marking could promote nursery objects to old-gen as white
+        // (unmarked) objects with the mark bit not set, violating the
+        // tri-color invariant. Completing mark+sweep first avoids the issue.
+        if (gc.mark_phase == .marking) {
+            gc.finishMark();
+            gc.sweepAndFinish();
+        }
         if (gc.trace.gc) {
             const used_before = gc.nursery.used();
             const roots_n = gc.roots.extra.items.len;
             try nursery_mod.collect(&gc.nursery, &gc.old_gen, &gc.cards, &gc.roots);
             gc.minor_count += 1;
-            const promoted = gc.old_gen.usedBytes();
-            _ = promoted;
             std.debug.print(
                 "[gc] minor #{d}  nursery {d}/{d} bytes ({d}%)  roots={d}\n",
                 .{
@@ -237,17 +259,147 @@ pub const GC = struct {
     }
 
     /// Write barrier. Call before storing `new_val` into `*field_ptr` when
-    /// `field_ptr` lives inside `obj`. If obj is in old-gen and new_val is a
-    /// young pointer, mark the containing card.
+    /// `field_ptr` lives inside `obj`. Maintains:
+    ///   (a) generational invariant: marks card when old-gen stores young ptr.
+    ///   (b) zepo-8ou tri-color invariant (SATB): during incremental marking,
+    ///       if a black old-gen slot is overwritten, the OLD value is grayed so
+    ///       the snapshot taken at markBegin is preserved.
     pub inline fn writeBarrier(gc: *GC, obj: *ObjHeader, field_ptr: *Value, new_val: Value) void {
         if (obj.space() != .old_gen) return;
-        if (!value_mod.isPtr(new_val)) return;
-        const tgt = value_mod.ptrVal(new_val);
-        if (gc.nursery.contains(tgt)) {
-            // Mark the card containing the FIELD, not the object header.
-            // For large objects spanning multiple cards, a write to a distant
-            // field lives in a different card than the header.
-            gc.cards.markCard(@intFromPtr(field_ptr));
+        // (a) generational barrier — card marking for old→young
+        if (value_mod.isPtr(new_val)) {
+            const tgt = value_mod.ptrVal(new_val);
+            if (gc.nursery.contains(tgt)) {
+                gc.cards.markCard(@intFromPtr(field_ptr));
+            }
         }
+        // (b) SATB deletion barrier — gray the slot's OLD value before it is
+        // overwritten. Any old-gen object that was reachable at markBegin is
+        // kept alive even if all other references are removed during marking.
+        if (gc.mark_phase == .marking) {
+            const old_val = field_ptr.*;
+            if (value_mod.isPtr(old_val)) {
+                const old_tgt = value_mod.ptrVal(old_val);
+                if (gc.old_gen.contains(old_tgt) and !old_tgt.marked()) {
+                    old_tgt.setMark();
+                    gc.gray.append(gc.allocator, old_tgt) catch {};
+                }
+            }
+        }
+    }
+
+    // ── zepo-8ou: Incremental major GC ────────────────────────────────────────
+
+    /// Push `obj` to the gray worklist if it is a white old-gen object.
+    /// "White" means unmarked; marking it here transitions it to gray.
+    fn pushGray(gc: *GC, obj: *ObjHeader) void {
+        if (!gc.old_gen.contains(obj)) return;
+        if (obj.marked()) return;
+        obj.setMark();
+        gc.gray.append(gc.allocator, obj) catch {};
+    }
+
+    /// RootVisitor callback: gray any old-gen pointer found in a root slot.
+    fn grayRootSlot(ctx_raw: *anyopaque, slot: *Value) void {
+        const gc: *GC = @ptrCast(@alignCast(ctx_raw));
+        const v = slot.*;
+        if (!value_mod.isPtr(v)) return;
+        gc.pushGray(value_mod.ptrVal(v));
+    }
+
+    /// Trace the children of a gray old-gen object, pushing white old-gen
+    /// children to the gray worklist. Transitions the object from gray to black.
+    fn traceObjGray(gc: *GC, h: *ObjHeader) void {
+        const desc = layout_mod.layoutForKind(h.kind());
+        const body: [*]u64 = @ptrCast(@alignCast(@as([*]u8, @ptrCast(h)) + WORD));
+        const nwords: usize = @intCast(h.sizeWords());
+        for (desc.value_offsets) |off| {
+            if (off < nwords) gc.grayValueWord(body[off]);
+        }
+        if (desc.all_slots_are_values) {
+            var i: usize = desc.value_slots_start;
+            while (i < nwords) : (i += 1) gc.grayValueWord(body[i]);
+        }
+    }
+
+    inline fn grayValueWord(gc: *GC, raw: u64) void {
+        const v: Value = @bitCast(raw);
+        if (!value_mod.isPtr(v)) return;
+        gc.pushGray(value_mod.ptrVal(v));
+    }
+
+    /// Begin an incremental major GC cycle. Runs a minor GC first (with
+    /// mark_phase still .idle) to evacuate the nursery, then snapshots all
+    /// roots into the gray worklist.
+    pub fn markBegin(gc: *GC) !void {
+        std.debug.assert(gc.mark_phase == .idle);
+        // Nursery must be empty before we snapshot roots: promoted objects
+        // land in old-gen where they are reachable from the root scan.
+        // mark_phase is still .idle here so minor() runs unconditionally.
+        try gc.minor();
+        gc.mark_phase = .marking;
+        gc.gray.clearRetainingCapacity();
+        gc.roots.visitAll(@ptrCast(gc), grayRootSlot);
+        // zepo-svu: the write barrier only fires for old-gen objects, so
+        // nursery→old-gen edges are not recorded in the card table. Scan
+        // every live nursery cell to gray any old-gen objects reachable
+        // only through the nursery; without this, they'd be swept as
+        // unreachable even though live values still reference them.
+        {
+            var scan: [*]u8 = gc.nursery.from_start;
+            const bump = gc.nursery.bump;
+            while (@intFromPtr(scan) < @intFromPtr(bump)) {
+                const obj: *ObjHeader = @ptrCast(@alignCast(scan));
+                gc.traceObjGray(obj);
+                scan = @ptrFromInt(@intFromPtr(scan) + nursery_mod.objectSizeBytes(obj));
+            }
+        }
+        if (gc.trace.gc) {
+            std.debug.print("[gc] mark-begin  old-gen {d} bytes  gray={d}\n", .{
+                gc.old_gen.usedBytes(), gc.gray.items.len,
+            });
+        }
+    }
+
+    /// Process up to `budget` gray objects. Returns true when the gray
+    /// worklist is empty (marking complete). Call sweepAndFinish() then.
+    pub fn markStep(gc: *GC, budget: usize) bool {
+        std.debug.assert(gc.mark_phase == .marking);
+        var i: usize = 0;
+        while (i < budget and gc.gray.items.len > 0) : (i += 1) {
+            const obj = gc.gray.pop().?;
+            gc.traceObjGray(obj);
+        }
+        return gc.gray.items.len == 0;
+    }
+
+    /// Drain the gray worklist completely (emergency / pre-minor path).
+    pub fn finishMark(gc: *GC) void {
+        while (gc.gray.items.len > 0) {
+            const obj = gc.gray.pop().?;
+            gc.traceObjGray(obj);
+        }
+    }
+
+    /// Sweep old-gen and reset marking state. Must be called after the gray
+    /// worklist is empty (markStep returned true, or finishMark was called).
+    pub fn sweepAndFinish(gc: *GC) void {
+        std.debug.assert(gc.mark_phase == .marking);
+        gc.old_gen.sweep();
+        gc.major_count += 1;
+        gc.mark_phase = .idle;
+        gc.gray.clearRetainingCapacity();
+        if (gc.trace.gc) {
+            std.debug.print("[gc] major #{d} (incremental)  old-gen {d} bytes\n", .{
+                gc.major_count, gc.old_gen.usedBytes(),
+            });
+        }
+    }
+
+    /// Whether old-gen has grown past the trigger threshold and a new
+    /// incremental mark cycle should be started by the scheduler.
+    pub fn needsMajor(gc: *const GC) bool {
+        return gc.mark_phase == .idle and
+            gc.old_gen.usedBytes() > OLD_GEN_TRIGGER_BYTES;
     }
 };
