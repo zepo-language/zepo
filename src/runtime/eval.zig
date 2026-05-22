@@ -280,6 +280,9 @@ pub const EvalContext = struct {
         if (isHeadSymbol(form, "defmacro")) {
             return macros.evalDefmacro(ctx, form);
         }
+        if (isHeadSymbol(form, "define-syntax")) { // zepo-ajf
+            return macros.evalDefineSyntax(ctx, form);
+        }
 
         return ctx.evalNonModuleForm(form);
     }

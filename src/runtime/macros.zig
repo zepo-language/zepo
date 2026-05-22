@@ -12,6 +12,7 @@ const HandleScope = gc_mod.HandleScope;
 const runtime_objects = @import("objects.zig");
 const eval = @import("eval.zig");
 const EvalContext = eval.EvalContext;
+const syntax_rules = @import("syntax_rules.zig"); // zepo-ajf
 
 pub fn evalDefmacro(ctx: *EvalContext, form: Value) !Value {
     const objs = runtime_objects;
@@ -41,6 +42,43 @@ pub fn evalDefmacro(ctx: *EvalContext, form: Value) !Value {
     try ctx.currentEnv().define(sym, closure_slot.*);
 
     // Register the name as a macro.
+    const name_copy = try ctx.allocator.dupe(u8, name);
+    try ctx.macro_names.put(name_copy, {});
+
+    return value_mod.NIL;
+}
+
+// zepo-ajf ─────────────────────────────────────────────────────────────────
+
+/// Handle (define-syntax name transformer-expr).
+/// The transformer-expr is NOT evaluated; it must be a (syntax-rules ...) form.
+/// The form is stored directly in the global env so the GC roots it.
+pub fn evalDefineSyntax(ctx: *EvalContext, form: Value) !Value {
+    const objs = runtime_objects;
+    // form = (define-syntax name (syntax-rules ...))
+    const rest = objs.pairCdr(form).*;
+    if (!objs.isPair(rest)) return error.InvalidSpecialForm;
+    const name_v = objs.pairCar(rest).*;
+    if (!objs.isSymbol(name_v)) return error.InvalidSpecialForm;
+    const name = objs.symbolName(name_v);
+    const sr_rest = objs.pairCdr(rest).*;
+    if (!objs.isPair(sr_rest)) return error.InvalidSpecialForm;
+    const sr_form = objs.pairCar(sr_rest).*;
+    // Validate: must be (syntax-rules ...).
+    if (!objs.isPair(sr_form)) return error.InvalidSpecialForm;
+    if (!objs.isSymbol(objs.pairCar(sr_form).*)) return error.InvalidSpecialForm;
+    if (!std.mem.eql(u8, objs.symbolName(objs.pairCar(sr_form).*), "syntax-rules"))
+        return error.InvalidSpecialForm;
+
+    // Store the (syntax-rules ...) form in globals under the macro name.
+    var scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&scope);
+    defer ctx.gc.roots.popHandleScope();
+    const sr_slot = scope.push(sr_form);
+    const sym = try ctx.symbols.intern(name);
+    try ctx.currentEnv().define(sym, sr_slot.*);
+
+    // Mark as a macro.
     const name_copy = try ctx.allocator.dupe(u8, name);
     try ctx.macro_names.put(name_copy, {});
 
@@ -85,6 +123,16 @@ pub fn macroExpand(ctx: *EvalContext, form: Value) anyerror!Value {
             const transformer = ctx.currentEnv().lookup(sym) orelse
                 ctx.globals.lookup(sym) orelse
                 return error.UnboundVariable;
+
+            // zepo-ajf: if the transformer is a (syntax-rules ...) form,
+            // use pattern matching instead of calling a closure.
+            if (isSyntaxRulesForm(transformer)) {
+                const result = try syntax_rules.applySyntaxRules(
+                    transformer, form, ctx.symbols, ctx.gc, ctx.allocator,
+                );
+                return macroExpand(ctx, result);
+            }
+
             // Call the transformer with unevaluated args (GC-safe: args rooted above).
             const result = try ctx.vm.?.callValue(transformer, args.items);
             // Re-expand: macros may expand to other macro calls.
@@ -94,6 +142,14 @@ pub fn macroExpand(ctx: *EvalContext, form: Value) anyerror!Value {
 
     // Recurse into all subforms.
     return macroExpandList(ctx, form);
+}
+
+/// Returns true if `v` is a (syntax-rules ...) transformer form.
+fn isSyntaxRulesForm(v: Value) bool {
+    if (!runtime_objects.isPair(v)) return false;
+    const hd = runtime_objects.pairCar(v).*;
+    if (!runtime_objects.isSymbol(hd)) return false;
+    return std.mem.eql(u8, runtime_objects.symbolName(hd), "syntax-rules");
 }
 
 pub fn macroExpandList(ctx: *EvalContext, form: Value) anyerror!Value {
