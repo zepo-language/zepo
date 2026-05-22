@@ -14,6 +14,7 @@ pub const CardTable = collector.CardTable;
 pub const RootSet = collector.RootSet;
 pub const HandleScope = collector.HandleScope;
 pub const Verifier = verifier.Verifier;
+pub const MarkPhase = collector.MarkPhase;
 
 test {
     _ = collector;

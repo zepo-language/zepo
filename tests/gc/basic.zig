@@ -10,6 +10,7 @@ const ObjHeader = abi.ObjHeader;
 const value_mod = abi.value;
 const header_mod = abi.header;
 const Kind = abi.Kind;
+const MarkPhase = gcmod.MarkPhase;
 
 /// Build a pair with car/cdr. Caller must ensure GC roots are set up before
 /// calling so that allocation-induced minor GC preserves the inputs.
@@ -201,6 +202,149 @@ test "fixnum and char round trip through GC" {
     const v = slot.*;
     try std.testing.expectEqual(@as(i63, -12345), value_mod.fixnumVal(pairCar(v)));
     try std.testing.expectEqual(@as(u21, 'Z'), value_mod.charVal(pairCdr(v)));
+}
+
+// zepo-8ou: incremental major GC tests ──────────────────────────────────────
+
+test "incremental mark+sweep frees unreachable old-gen objects" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    // Allocate 100 pairs directly in old-gen with no roots. markBegin will
+    // find nothing to gray; sweepAndFinish should reclaim all 100.
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        const h = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+        h.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+        const body: [*]Value = @ptrCast(@alignCast(@as([*]u8, @ptrCast(h)) + 8));
+        body[0] = value_mod.fixnum(@intCast(i));
+        body[1] = value_mod.NIL;
+    }
+
+    try gc.markBegin();
+    while (!gc.markStep(16)) {} // small budget to exercise multi-step path
+    gc.sweepAndFinish();
+    try gcmod.Verifier.verify(&gc);
+
+    // After sweep the size-class-0 free list must be non-empty.
+    try std.testing.expect(gc.old_gen.free_lists[0] != null);
+}
+
+test "incremental mark+sweep preserves rooted old-gen objects" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    var scope = gcmod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+
+    // Allocate pair P in old-gen and root it. markBegin should gray P; after
+    // sweepAndFinish P must still be accessible with its original values.
+    const h = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+    h.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+    const body: [*]Value = @ptrCast(@alignCast(@as([*]u8, @ptrCast(h)) + 8));
+    body[0] = value_mod.fixnum(77);
+    body[1] = value_mod.fixnum(88);
+    const root = scope.push(value_mod.fromPtr(h));
+
+    try gc.markBegin();
+    while (!gc.markStep(16)) {}
+    gc.sweepAndFinish();
+    try gcmod.Verifier.verify(&gc);
+
+    // P must survive with its original body.
+    try std.testing.expect(value_mod.isPtr(root.*));
+    const ph = value_mod.ptrVal(root.*);
+    const pb: [*]Value = @ptrCast(@alignCast(@as([*]u8, @ptrCast(ph)) + 8));
+    try std.testing.expectEqual(@as(i63, 77), value_mod.fixnumVal(pb[0]));
+    try std.testing.expectEqual(@as(i63, 88), value_mod.fixnumVal(pb[1]));
+}
+
+test "incremental: SATB write barrier saves overwritten old-gen reference" {
+    // Setup: old-gen pair P points to old-gen pair Q.  P is rooted; Q is only
+    // reachable through P.  After markBegin, P is gray (queued) but not yet
+    // traced.  We overwrite P.cdr = NIL via the write barrier — SATB grays Q
+    // before the overwrite takes effect.  sweepAndFinish must keep Q alive
+    // because SATB grayed it, even though no root or live old-gen slot
+    // references Q anymore.
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    var scope = gcmod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+
+    // Q first so we can pass its address to P.
+    const qh = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+    qh.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+    const qb: [*]Value = @ptrCast(@alignCast(@as([*]u8, @ptrCast(qh)) + 8));
+    qb[0] = value_mod.fixnum(99);
+    qb[1] = value_mod.NIL;
+
+    const ph = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+    ph.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+    const pb: [*]Value = @ptrCast(@alignCast(@as([*]u8, @ptrCast(ph)) + 8));
+    pb[0] = value_mod.fixnum(1);
+    pb[1] = value_mod.fromPtr(qh); // P.cdr = Q
+
+    // Root P only.
+    _ = scope.push(value_mod.fromPtr(ph));
+
+    // Begin marking: P is pushed to gray; Q is NOT yet grayed (it's only
+    // reachable through P which hasn't been traced yet).
+    try gc.markBegin();
+
+    // Overwrite P.cdr = NIL through the write barrier.  SATB must gray Q
+    // (the old value) before we lose the reference.
+    gc.writeBarrier(ph, @ptrCast(&pb[1]), value_mod.NIL);
+    pb[1] = value_mod.NIL;
+
+    // Drain marking.
+    while (!gc.markStep(16)) {}
+    gc.sweepAndFinish();
+    try gcmod.Verifier.verify(&gc);
+
+    // Q must still be a valid live pair (not reclaimed): its kind bits must
+    // still encode .pair.  Old-gen does not move objects, so qh is still valid.
+    try std.testing.expect(qh.kind() == .pair);
+    try std.testing.expectEqual(@as(i63, 99), value_mod.fixnumVal(qb[0]));
+}
+
+test "minor GC during incremental marking completes mark phase cleanly" {
+    // minor() must detect mark_phase == .marking, drain the gray list, sweep,
+    // then run the Cheney nursery collection — all in one call, with no
+    // corruption visible through the rooted old-gen object.
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    var scope = gcmod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+
+    // Allocate a rooted old-gen pair; it must survive the embedded sweep.
+    const oh = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+    oh.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+    const ob: [*]Value = @ptrCast(@alignCast(@as([*]u8, @ptrCast(oh)) + 8));
+    ob[0] = value_mod.fixnum(55);
+    ob[1] = value_mod.NIL;
+    _ = scope.push(value_mod.fromPtr(oh));
+
+    try gc.markBegin();
+    _ = gc.markStep(1); // partial progress — leave mark phase open
+
+    // minor() should finishMark + sweepAndFinish, then run Cheney collection.
+    try gc.minor();
+
+    try std.testing.expectEqual(gcmod.MarkPhase.idle, gc.mark_phase);
+    try gcmod.Verifier.verify(&gc);
+
+    // Rooted old-gen pair must have survived the embedded sweep.
+    try std.testing.expect(gc.old_gen.contains(value_mod.ptrVal(scope.handles[0])));
+    try std.testing.expectEqual(@as(i63, 55), value_mod.fixnumVal(ob[0]));
 }
 
 // zepo-svu: regression test for the drain-loop fix in collect() step 3.5.
