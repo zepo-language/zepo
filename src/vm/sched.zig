@@ -114,7 +114,7 @@ pub const Scheduler = struct {
     // Safe to call from any thread. No-op if the pipe is not initialized.
     pub fn wake(sched: *Scheduler) void {
         if (sched.wakeup_write_fd < 0) return;
-        const one: u8 = 1;
+        const one: [1]u8 = .{1};
         _ = write(sched.wakeup_write_fd, &one, 1);
     }
 
@@ -259,6 +259,11 @@ pub const Scheduler = struct {
         defer vm.scheduler = null;
         // zepo-1aw: ensure wakeup pipe is ready before entering the event loop.
         sched.initWakeupFd() catch {};
+        // zepo-oav: re-enqueue runnable fibers from prior run() calls so fibers
+        // spawned in a previous top-level form get dispatched this run.
+        for (vm.fibers.items, 0..) |fs, i| {
+            if (fs.status == .runnable) try sched.run_queue.append(sched.allocator, i);
+        }
 
         // Run main fiber. If it never yields, we're done immediately.
         const first: ?Value = vm.execFn(func, value_mod.NIL, initial_args) catch |e| blk: {

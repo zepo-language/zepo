@@ -396,11 +396,6 @@ pub const EvalContext = struct {
         var compiler = Compiler.initWithGc(&ctx.arena, &ctx.program, ctx.symbols, ctx.gc, ctx.allocator);
         const fn_id = try compiler.compileExpr(root_id);
 
-        // Incrementally emit only newly compiled functions (O(new) not O(total)).
-        if (ctx.vm) |*v| {
-            v.deinit();
-            ctx.vm = null;
-        }
         // Save positions before emitAppend so we can compute the actual
         // ctx.compiled index for fn_id. When .zbc fns have been appended
         // directly to ctx.compiled (bypassing the IR program), ctx.compiled
@@ -410,16 +405,27 @@ pub const EvalContext = struct {
         const emitted_base = ctx.emitter.emitted_count;
         try ctx.emitter.emitAppend(&ctx.program, &ctx.compiled);
         no_gc.release(); // AST/IR pipeline done; VM may now allocate freely.
-        // The VM always sees the currently-active env — if we're inside a
-        // module, that's the module's env; the top-level globals become the
-        // read-only fallback so the module body can call prims/prelude.
-        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
-        if (ctx.current_module != null) {
-            ctx.vm.?.fallback_globals = ctx.globals;
+        // zepo-oav: update compiled_fns in-place to preserve live fibers across
+        // forms. Recreating via VM.deinit()+VM.init() frees all FiberStates,
+        // invalidating foreign handles stored in globals from prior forms.
+        if (ctx.vm) |*v| {
+            v.compiled_fns = ctx.compiled.items;
+            v.globals = ctx.currentEnv();
+            if (ctx.current_module != null) {
+                v.fallback_globals = ctx.globals;
+            }
+        } else {
+            // The VM always sees the currently-active env — if we're inside a
+            // module, that's the module's env; the top-level globals become the
+            // read-only fallback so the module body can call prims/prelude.
+            ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
+            if (ctx.current_module != null) {
+                ctx.vm.?.fallback_globals = ctx.globals;
+            }
+            ctx.vm.?.do_import = vmImportCallback;
+            ctx.vm.?.do_import_ctx = ctx;
+            ctx.vm.?.installAsRoot();
         }
-        ctx.vm.?.do_import = vmImportCallback;
-        ctx.vm.?.do_import_ctx = ctx;
-        ctx.vm.?.installAsRoot();
 
         // Actual index in ctx.compiled where the thunk was emitted.
         const actual_fn_id: u32 = @intCast(compiled_base + (fn_id - emitted_base));

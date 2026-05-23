@@ -44,6 +44,7 @@ pub const FiberState = struct {
             .result = value_mod.NIL,
             .error_val = value_mod.NIL,
             .allocator = allocator,
+            .waiters = .empty,
         };
         return fs;
     }

@@ -187,11 +187,7 @@ pub const VM = struct {
             visitor(visitor_ctx, &fs.error_val);
         }
         visitor(visitor_ctx, &vm.raised_val);
-        // zepo-s64: Values queued in channels and parked senders.
-        for (vm.channels.items) |ch| {
-            for (ch.buf.items) |*v| visitor(visitor_ctx, v);
-            for (ch.send_waiters.items) |*sw| visitor(visitor_ctx, &sw.val);
-        }
+        // zepo-oju: channel buf/send_waiters hold ChannelValue (non-GC) — no tracing needed.
         // Compiled-function constant pools hold heap Values (strings, symbols,
         // etc.) that are not referenced by any register while dormant. Without
         // tracing them the GC can collect a constant the moment it leaves the

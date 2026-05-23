@@ -57,7 +57,6 @@ pub fn primSpawn(vm: *VM, args: []const Value) LispError!Value {
     const sched = vm.scheduler orelse return error.ContractViolation;
     try sched.enqueue(fiber_idx);
 
-    // Store *FiberState as payload — valid for the VM's lifetime (system alloc).
     return try objects.makeForeign(vm.gc, fs, null, TAG_FIBER);
 }
 
@@ -139,7 +138,6 @@ pub fn primFiberJoin(vm: *VM, args: []const Value) LispError!Value {
         .done => return fs.result,
         .errored => return error.UserError,
         .runnable, .blocked => {
-            // Determine our scheduler index.
             const my_sched_idx: usize = if (vm.current_fiber_idx == 0)
                 sched_mod.MAIN_FIBER
             else
