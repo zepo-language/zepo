@@ -248,3 +248,175 @@ test "portable: rejects cycle" {
     const head = try runtime.makePair(&gc, value_mod.fixnum(1), tail);
     try checkPortable(head, alloc);
 }
+
+// ── ChannelValue: GC-free staging type for cross-worker channel messages ──────
+//
+// Values in transit between workers are serialized into a ChannelValue tree
+// that lives in the channel's own allocator (no GC heap involvement).
+// Any receiving VM deserializes back to a live Value on its own GC heap.
+
+pub const ChannelValue = union(enum) {
+    nil,
+    eof,
+    boolean: bool,
+    fixnum: i63,
+    char: u21,
+    float: f64,
+    string: []u8,      // allocator-owned bytes
+    symbol: []u8,      // symbol name, interned on deserialize
+    bytevector: []u8,  // allocator-owned bytes
+    pair: struct { car: *ChannelValue, cdr: *ChannelValue },
+    vector: []*ChannelValue, // allocator-owned slice
+};
+
+/// Serialize `val` into a `ChannelValue` tree using `alloc`.
+/// Caller must eventually call `freeChannelValue` on the result.
+/// Returns `error.NonPortableValue` for closures, ports, or other
+/// non-portable types.
+pub fn serializeToChannel(val: Value, alloc: std.mem.Allocator) anyerror!*ChannelValue {
+    const cv = try alloc.create(ChannelValue);
+    errdefer alloc.destroy(cv);
+
+    if (value_mod.isNil(val)) { cv.* = .nil; return cv; }
+    if (value_mod.isEof(val)) { cv.* = .eof; return cv; }
+    if (val == value_mod.TRUE)  { cv.* = .{ .boolean = true };  return cv; }
+    if (val == value_mod.FALSE) { cv.* = .{ .boolean = false }; return cv; }
+    if (value_mod.isFixnum(val)) { cv.* = .{ .fixnum = value_mod.fixnumVal(val) }; return cv; }
+    if (value_mod.isChar(val))   { cv.* = .{ .char = value_mod.charVal(val) };     return cv; }
+
+    if (!value_mod.isPtr(val)) { alloc.destroy(cv); return error.NonPortableValue; }
+
+    if (runtime.isFloat(val)) {
+        cv.* = .{ .float = runtime.floatVal(val) };
+        return cv;
+    }
+    if (runtime.isString(val)) {
+        cv.* = .{ .string = try alloc.dupe(u8, runtime.stringBytes(val)) };
+        return cv;
+    }
+    if (runtime.isSymbol(val)) {
+        cv.* = .{ .symbol = try alloc.dupe(u8, runtime.symbolName(val)) };
+        return cv;
+    }
+    if (runtime.isBytevector(val)) {
+        cv.* = .{ .bytevector = try alloc.dupe(u8, runtime.bytevectorBytes(val)) };
+        return cv;
+    }
+    if (runtime.isPair(val)) {
+        const car = try serializeToChannel(runtime.pairCar(val).*, alloc);
+        errdefer freeChannelValue(car, alloc);
+        const cdr = try serializeToChannel(runtime.pairCdr(val).*, alloc);
+        cv.* = .{ .pair = .{ .car = car, .cdr = cdr } };
+        return cv;
+    }
+    if (runtime.isVector(val)) {
+        const len = runtime.vectorLen(val);
+        const elems = try alloc.alloc(*ChannelValue, len);
+        errdefer alloc.free(elems);
+        var n: usize = 0;
+        errdefer for (elems[0..n]) |e| freeChannelValue(e, alloc);
+        while (n < len) : (n += 1)
+            elems[n] = try serializeToChannel(runtime.vectorGet(val, n), alloc);
+        cv.* = .{ .vector = elems };
+        return cv;
+    }
+
+    alloc.destroy(cv);
+    return error.NonPortableValue;
+}
+
+/// Reconstruct a `Value` on `dst_gc`/`dst_syms` from a `ChannelValue`.
+/// Does not free `cv` — caller must call `freeChannelValue` after use.
+pub fn deserializeFromChannel(
+    cv: *const ChannelValue,
+    dst_gc: *GC,
+    dst_syms: *SymbolTable,
+) anyerror!Value {
+    return switch (cv.*) {
+        .nil      => value_mod.NIL,
+        .eof      => value_mod.EOF_VAL,
+        .boolean  => |b| if (b) value_mod.TRUE else value_mod.FALSE,
+        .fixnum   => |n| value_mod.fixnum(n),
+        .char     => |c| value_mod.char(c),
+        .float    => |f| runtime.makeFloat(dst_gc, f),
+        .string   => |s| runtime.makeString(dst_gc, s),
+        .symbol   => |s| dst_syms.intern(s),
+        .bytevector => |b| blk: {
+            const bv = try runtime.makeBytevector(dst_gc, b.len, 0);
+            @memcpy(runtime.bytevectorBytes(bv), b);
+            break :blk bv;
+        },
+        .pair => |p| blk: {
+            var scope = HandleScope{};
+            dst_gc.roots.pushHandleScope(&scope);
+            defer dst_gc.roots.popHandleScope();
+            const car_slot = scope.push(try deserializeFromChannel(p.car, dst_gc, dst_syms));
+            const cdr_slot = scope.push(try deserializeFromChannel(p.cdr, dst_gc, dst_syms));
+            break :blk runtime.makePairFromSlots(dst_gc, car_slot, cdr_slot);
+        },
+        .vector => |elems| blk: {
+            var dst_vec = try runtime.makeVector(dst_gc, elems.len, value_mod.NIL);
+            const prev_extra = dst_gc.roots.extra.items.len;
+            try dst_gc.roots.extra.append(dst_gc.allocator, &dst_vec);
+            defer dst_gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+            for (elems, 0..) |e, i| {
+                const elem = try deserializeFromChannel(e, dst_gc, dst_syms);
+                runtime.vectorSet(dst_gc, dst_vec, i, elem);
+            }
+            break :blk dst_vec;
+        },
+    };
+}
+
+/// Recursively free a `ChannelValue` tree using `alloc`.
+pub fn freeChannelValue(cv: *ChannelValue, alloc: std.mem.Allocator) void {
+    switch (cv.*) {
+        .string, .symbol, .bytevector => |b| alloc.free(b),
+        .pair => |p| {
+            freeChannelValue(p.car, alloc);
+            freeChannelValue(p.cdr, alloc);
+        },
+        .vector => |elems| {
+            for (elems) |e| freeChannelValue(e, alloc);
+            alloc.free(elems);
+        },
+        else => {},
+    }
+    alloc.destroy(cv);
+}
+
+test "ChannelValue: roundtrip serialize/deserialize" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+
+    // fixnum
+    {
+        const cv = try serializeToChannel(value_mod.fixnum(77), alloc);
+        defer freeChannelValue(cv, alloc);
+        const v = try deserializeFromChannel(cv, &gc, &syms);
+        try std.testing.expectEqual(value_mod.fixnum(77), v);
+    }
+    // string
+    {
+        const s = try runtime.makeString(&gc, "world");
+        const cv = try serializeToChannel(s, alloc);
+        defer freeChannelValue(cv, alloc);
+        const v = try deserializeFromChannel(cv, &gc, &syms);
+        try std.testing.expectEqualStrings("world", runtime.stringBytes(v));
+    }
+    // list (1 2 3)
+    {
+        const c = try runtime.makePair(&gc, value_mod.fixnum(3), value_mod.NIL);
+        const b = try runtime.makePair(&gc, value_mod.fixnum(2), c);
+        const a = try runtime.makePair(&gc, value_mod.fixnum(1), b);
+        const cv = try serializeToChannel(a, alloc);
+        defer freeChannelValue(cv, alloc);
+        const v = try deserializeFromChannel(cv, &gc, &syms);
+        try std.testing.expectEqual(value_mod.fixnum(1), runtime.pairCar(v).*);
+        try std.testing.expectEqual(value_mod.fixnum(2), runtime.pairCar(runtime.pairCdr(v).*).*);
+        try std.testing.expectEqual(value_mod.fixnum(3), runtime.pairCar(runtime.pairCdr(runtime.pairCdr(v).*).*).*);
+    }
+}

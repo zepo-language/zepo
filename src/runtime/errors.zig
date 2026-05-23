@@ -31,6 +31,8 @@ pub const LispError = error{
     ImportNameConflict,
     ImportNameNotExported,
     ExportNotDefined,
+    // zepo-oju: channel-send! received a non-portable value (closure, port, etc.)
+    NonPortableValue,
     // zepo-0bo: used internally to signal a cooperative fiber yield through
     // the Zig error path. Not catchable by user-level (guard ...).
     FiberYielded,

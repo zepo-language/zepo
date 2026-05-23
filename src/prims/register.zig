@@ -303,12 +303,15 @@ const TABLE: []const Entry = &.{
     make("fiber-errored?",  1, fiber_prims.primFiberErroredQ),
     make("fiber-result",    1, fiber_prims.primFiberResult),
     make("fiber-join",      1, fiber_prims.primFiberJoin),
-    // zepo-s64
-    make("make-channel",    -1, channel_prims.primMakeChannel),
-    make("channel?",         1, channel_prims.primChannelQ),
-    make("channel-send!",    2, channel_prims.primChannelSend),
-    make("channel-recv!",    1, channel_prims.primChannelRecv),
-    make("channel-empty?",   1, channel_prims.primChannelEmptyQ),
+    // zepo-s64 / zepo-oju
+    make("make-channel",        -1, channel_prims.primMakeChannel),
+    make("channel?",             1, channel_prims.primChannelQ),
+    make("channel-send!",        2, channel_prims.primChannelSend),
+    make("channel-try-send!",    2, channel_prims.primChannelTrySend),
+    make("channel-recv!",        1, channel_prims.primChannelRecv),
+    make("channel-try-recv!",    1, channel_prims.primChannelTryRecv),
+    make("channel-close",        1, channel_prims.primChannelClose),
+    make("channel-empty?",       1, channel_prims.primChannelEmptyQ),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
