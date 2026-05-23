@@ -2,6 +2,7 @@
 
 pub const objects = @import("objects.zig");
 pub const symbols = @import("symbols.zig");
+pub const portable_value = @import("portable_value.zig"); // zepo-vhi
 pub const globals = @import("globals.zig");
 pub const module = @import("module.zig");
 pub const errors = @import("errors.zig");
@@ -20,6 +21,7 @@ pub const loadStdlib = bootstrap.loadStdlib;
 test {
     _ = objects;
     _ = symbols;
+    _ = portable_value;
     _ = globals;
     _ = module;
     _ = errors;
