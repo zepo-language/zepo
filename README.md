@@ -15,7 +15,7 @@ A Scheme-flavored Lisp implemented in Zig. Bytecode-compiled, garbage-collected,
 Zepo is a Scheme-style Lisp with:
 
 - Mostly R7RS-style core forms and exceptions
-- Unhygienic `defmacro` macros in the Common Lisp tradition
+- `defmacro` (unhygienic, Common Lisp style) and `define-syntax` / `syntax-rules` (hygienic, R7RS style)
 - A fixed, opinionated standard library compiled into the binary
 
 The language is evolving; minor breaking changes are still possible while it's pre-1.0.
@@ -194,17 +194,11 @@ Zepo supports compile-time code transformation via `defmacro` and quasiquote.
 
 ### Macro hygiene
 
-Zepo's macros are *unhygienic* in the Common Lisp sense: a macro is a function from unevaluated forms to a new form, and any identifiers it introduces are plain symbols. This means introduced bindings can accidentally capture, or be captured by, names at the call site.
+Zepo has two macro systems:
 
-For example:
+**`defmacro`** is *unhygienic* in the Common Lisp sense: a macro is a function from unevaluated forms to a new form, and any identifiers it introduces are plain symbols. Macro-introduced bindings can accidentally capture names at the call site. Use `gensym` when you need a safe temporary name.
 
-```lisp
-(defmacro my-or (a b)
-  `(let ((t ,a))      ; `t` is a normal symbol
-     (if t t ,b)))
-```
-
-If the caller uses a local `t`, it will be captured by the macro's internal `let`. The current workaround is to use a clearly "reserved" naming convention (e.g. `%my-or-temp%`) for macro-introduced locals to avoid collisions. Alternatively, use `gensym` to generate a fresh symbol guaranteed not to appear in user source.
+**`define-syntax` / `syntax-rules`** is *hygienic*: binding-site identifiers introduced by the macro template (in `let`, `lambda`, `define`, etc.) are automatically renamed to fresh symbols, so they can never capture — or be captured by — variables at the call site.
 
 ### Quasiquote syntax
 
@@ -248,6 +242,38 @@ Example: a macro that swaps two variables:
 (swap! x y)
 (display x)  ; => 2
 ```
+
+### define-syntax / syntax-rules — hygienic pattern macros
+
+`define-syntax` binds a pattern-based transformer. Patterns are tried in order;
+the first match expands to the corresponding template. Ellipsis (`...`) matches
+zero or more sub-forms.
+
+```lisp
+(define-syntax when
+  (syntax-rules ()
+    ((_ test body ...)
+     (if test (begin body ...)))))
+
+(define-syntax and
+  (syntax-rules ()
+    ((_)        #t)
+    ((_ e)      e)
+    ((_ e1 e2 ...)
+     (if e1 (and e2 ...) #f))))
+
+; Hygiene: 't' inside the template is renamed fresh — safe even if caller has a 't'
+(define-syntax or
+  (syntax-rules ()
+    ((_ e1 e2)
+     (let ((t e1))
+       (if t t e2)))))
+
+(define t 99)
+(or #f t)   ; => 99  (not #f)
+```
+
+See the [reference](docs/reference.md) for full pattern syntax, literals, and examples.
 
 ## Exceptions
 

@@ -667,6 +667,125 @@ builds code templates:
 Macros can call macros, including themselves. The macro system fully supports
 lexical scope and closures, allowing sophisticated meta-programming.
 
+### `define-syntax` and `syntax-rules`
+
+`define-syntax` binds a name to a pattern-based transformer. Unlike `defmacro`,
+it is **hygienic**: names introduced by the macro body cannot capture variables
+from the call site, and call-site variables cannot be shadowed by the macro's
+internal bindings.
+
+```scheme
+(define-syntax name
+  (syntax-rules (literal ...)
+    ((pattern) template)
+    ...))
+```
+
+`syntax-rules` takes a list of **literals** and one or more **clauses**, each a
+`(pattern template)` pair. When the macro is used, patterns are tried in order;
+the first match expands to the corresponding template.
+
+**Pattern syntax:**
+
+| Pattern element | Meaning |
+|-----------------|---------|
+| `_` | Matches anything, binds nothing |
+| `name` | Pattern variable — matches anything, binds the matched form |
+| `literal` | Matches only that exact symbol (must appear in the literals list) |
+| `(p1 p2 ...)` | Matches a list |
+| `(p ... rest)` | `p ...` matches zero or more forms; `rest` matches the remainder |
+
+**Template syntax:**
+
+| Template element | Meaning |
+|------------------|---------|
+| `name` | Substituted with the form bound to the pattern variable |
+| `(t ...)` | Expands `t` once per element matched by the preceding `...` pattern variable |
+| Any other symbol | Inserted literally (renamed for hygiene if it is a binding site) |
+
+**Basic example — `when`:**
+
+```scheme
+(define-syntax when
+  (syntax-rules ()
+    ((_ test body ...)
+     (if test (begin body ...)))))
+
+(when (> x 0)
+  (display x)
+  (newline))
+```
+
+**Ellipsis — `and`:**
+
+Ellipsis (`...`) matches zero or more sub-forms and expands them in the template:
+
+```scheme
+(define-syntax and
+  (syntax-rules ()
+    ((_)        #t)
+    ((_ e)      e)
+    ((_ e1 e2 ...)
+     (if e1 (and e2 ...) #f))))
+
+(and #t #t #t)   ; => #t
+(and #t #f #t)   ; => #f
+(and)            ; => #t
+```
+
+**Literals — matching specific keywords:**
+
+Symbols listed in the literals list match only themselves, not arbitrary forms:
+
+```scheme
+(define-syntax my-case-lambda
+  (syntax-rules (=>)
+    ((_ (=> result)) result)))
+
+(my-case-lambda (=> 42))   ; => 42
+```
+
+**Hygiene — `or`:**
+
+Macro-introduced bindings are automatically renamed so they never capture
+call-site variables:
+
+```scheme
+(define-syntax or
+  (syntax-rules ()
+    ((_ e1 e2)
+     (let ((t e1))       ; 't' is renamed fresh — cannot shadow user's 't'
+       (if t t e2)))))
+
+(define t 99)
+(or #f t)   ; => 99  (not #f — user's 't' is safe)
+```
+
+**`swap!` with hygiene:**
+
+```scheme
+(define-syntax swap!
+  (syntax-rules ()
+    ((_ a b)
+     (let ((tmp a))
+       (set! a b)
+       (set! b tmp)))))
+
+(define x 1)
+(define y 2)
+(swap! x y)
+; x => 2, y => 1
+```
+
+**`defmacro` vs `define-syntax`:**
+
+| | `defmacro` | `define-syntax` |
+|-|-----------|-----------------|
+| Style | Procedural — write Scheme code that returns code | Declarative — pattern / template rules |
+| Hygiene | Manual (use `gensym` when needed) | Automatic |
+| Ellipsis | Manual recursion | Built-in `...` |
+| Best for | Complex transformations, computed templates | Most everyday macros |
+
 ---
 
 ## Primitives
