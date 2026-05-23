@@ -2379,6 +2379,188 @@ All TCP I/O primitives are non-blocking. When a socket would block, the calling 
 
 ---
 
+## Channels
+
+Channels are thread-safe FIFO queues for passing values between fibers or across worker OS threads. A channel can be unbuffered (capacity 0, rendezvous semantics) or buffered (capacity N).
+
+Only **portable values** can cross a channel between workers: `nil`, booleans, fixnums, floats, chars, strings, symbols, bytevectors, pairs/lists of portable values, vectors of portable values. Non-portable values (closures, ports, fibers, foreign objects, cyclic structures) raise `NonPortableValue`. Within a single-threaded fiber context all values pass through fine because no copy is needed.
+
+### Primitives
+
+#### `(make-channel [capacity])` → channel
+Create a channel with optional buffer size (default 0 — unbuffered). Capacity 0 means sender and receiver must rendezvous: the sender parks until a receiver is ready.
+
+```scheme
+(define ch (make-channel))    ; unbuffered
+(define ch (make-channel 8))  ; buffered, 8 slots
+```
+
+#### `(channel? obj)` → bool
+Return `#t` if `obj` is a channel.
+
+#### `(channel-send! ch val)` → `#void`
+Send `val` to `ch`. If the buffer is full (or the channel is unbuffered and no receiver is waiting), the calling fiber parks until space is available. Raises `ContractViolation` if the channel is closed.
+
+#### `(channel-recv! ch)` → value
+Receive the next value from `ch`. If the channel is empty, the calling fiber parks until a value arrives. Raises `ContractViolation` if the channel is closed and empty.
+
+#### `(channel-try-send! ch val)` → bool
+Non-blocking send. Returns `#t` if the value was delivered, `#f` if the channel is full. Raises `ContractViolation` if the channel is closed.
+
+#### `(channel-try-recv! ch)` → value | `#f`
+Non-blocking receive. Returns the value if one is available, `#f` if the channel is empty.
+
+#### `(channel-close ch)` → `#void`
+Close the channel. Any fibers parked in `channel-recv!` are woken and will see `ContractViolation`. Subsequent sends also raise `ContractViolation`.
+
+#### `(channel-empty? ch)` → bool
+Return `#t` if the channel has no buffered values and no parked senders.
+
+### Patterns
+
+**Producer/consumer pipeline:**
+```scheme
+(define ch (make-channel 4))
+
+(spawn (lambda ()                      ; producer
+  (let loop ((i 0))
+    (channel-send! ch i)
+    (loop (+ i 1)))))
+
+(let loop ()                           ; consumer (main fiber)
+  (display (channel-recv! ch)) (newline)
+  (loop))
+```
+
+**Fan-out: distribute work across N fibers:**
+```scheme
+(define work-ch (make-channel 16))
+
+(define (worker id)
+  (let loop ()
+    (let ((item (channel-recv! work-ch)))
+      (display (list id item)) (newline)
+      (loop))))
+
+(spawn (lambda () (worker 0)))
+(spawn (lambda () (worker 1)))
+(spawn (lambda () (worker 2)))
+```
+
+---
+
+## Workers
+
+Workers are OS threads, each with a completely isolated VM instance (own GC heap, symbol table, global environment, stdlib). They communicate with the spawning VM exclusively through shared `Channel` objects.
+
+Because workers have separate heaps, only **portable values** (see Channels above) can transit channels between a worker and its parent. The worker's lambda is supplied as a Lisp source string evaluated fresh in the worker's stdlib context.
+
+### Primitives
+
+#### `(spawn-worker code-string channel ...)` → worker-handle
+Spawn a new OS thread. `code-string` is evaluated in the worker's fresh stdlib context; it must produce a callable whose arity matches the number of `channel` arguments. The callable is immediately invoked with the channels.
+
+```scheme
+(define result-ch (make-channel 1))
+(define w (spawn-worker
+  "(lambda (out)
+    (channel-send! out (* 6 7)))"
+  result-ch))
+(display (channel-recv! result-ch))   ; => 42
+```
+
+#### `(worker? obj)` → bool
+Return `#t` if `obj` is a worker handle.
+
+#### `(worker-alive? handle)` → bool
+Return `#t` if the worker OS thread is still running.
+
+```scheme
+(sleep 0.1)
+(display (worker-alive? w))   ; => #f  (if the lambda returned)
+```
+
+#### `(worker-stop handle)` → `#void`
+Request the worker to stop by setting its stop flag. The worker is responsible for checking `(worker-stopping?)` and exiting cleanly.
+
+#### `(worker-stopping?)` → bool
+Called **inside a worker** to check whether `worker-stop` has been requested. Returns `#f` in non-worker contexts. Use this to implement cooperative cancellation.
+
+```scheme
+(define ctl-ch (make-channel 0))
+(define w (spawn-worker
+  "(lambda (ctl)
+    (let loop ((n 0))
+      (if (worker-stopping?)
+          (channel-send! ctl n)   ; report how far we got
+          (loop (+ n 1)))))"
+  ctl-ch))
+
+(sleep 0.05)
+(worker-stop w)
+(display (channel-recv! ctl-ch))   ; => some large number
+```
+
+### Worker pool example
+
+```scheme
+; A fixed pool of N workers sharing a single job channel.
+(define (make-worker-pool n worker-fn)
+  (define job-ch (make-channel 64))
+  (let loop ((i 0))
+    (when (< i n)
+      (spawn-worker worker-fn job-ch)
+      (loop (+ i 1))))
+  job-ch)
+
+; Each worker processes jobs until the channel is closed.
+(define pool-worker
+  "(lambda (jobs)
+    (let loop ()
+      (channel-send! jobs 'done)   ; replace with actual recv
+      (loop)))")
+
+; Submit work:
+;   (channel-send! job-ch my-item)
+; Shut down:
+;   (channel-close job-ch)
+```
+
+A realistic worker pool with results:
+
+```scheme
+(define job-ch    (make-channel 32))
+(define result-ch (make-channel 32))
+
+; Spawn 4 workers, each reading from job-ch and writing to result-ch.
+(define workers
+  (let loop ((i 0) (acc '()))
+    (if (= i 4) acc
+        (loop (+ i 1)
+              (cons (spawn-worker
+                      "(lambda (jobs out)
+                        (let loop ()
+                          (let ((x (channel-recv! jobs)))
+                            (channel-send! out (* x x))
+                            (loop))))"
+                      job-ch result-ch)
+                    acc)))))
+
+; Submit 20 jobs.
+(let loop ((i 0))
+  (when (< i 20)
+    (channel-send! job-ch i)
+    (loop (+ i 1))))
+
+; Collect 20 results.
+(let loop ((n 0))
+  (when (< n 20)
+    (display (channel-recv! result-ch)) (newline)
+    (loop (+ n 1))))
+```
+
+---
+
 ## TCP Networking
 
 All TCP primitives are non-blocking. When a socket call would block (EAGAIN), the current fiber yields and the scheduler calls `poll(2)`; the fiber resumes when the fd is ready. Use `spawn` to handle multiple connections concurrently.

@@ -22,7 +22,10 @@ The language is evolving; minor breaking changes are still possible while it's p
 
 ### Concurrency
 
-Zepo currently runs a single-threaded VM. Concurrency is achieved via external processes and shell integration rather than language-level threads or actors. (This may evolve in future versions.)
+Zepo has two concurrency layers:
+
+- **Fibers** — cooperative green threads sharing one OS thread. Yield at `(sleep ...)`, `(yield)`, and blocking I/O. Scheduled by a `poll(2)` event loop; no busy-waiting.
+- **Workers** — OS threads, each with a fully isolated VM (own GC, symbol table, globals). Communicate through `Channel` objects. Only portable values (numbers, strings, symbols, lists, vectors) can cross thread boundaries.
 
 ## Features
 
@@ -30,6 +33,11 @@ Zepo currently runs a single-threaded VM. Concurrency is achieved via external p
   - Bytecode compiler + register-based VM
   - Generational garbage collector
   - Lexical scope with closures and tail-call optimization
+
+- **Concurrency**
+  - Cooperative fibers with `poll(2)` scheduler (`spawn`, `yield`, `sleep`, `fiber-join`)
+  - OS-thread workers with isolated VMs (`spawn-worker`, `worker-stop`, `worker-stopping?`)
+  - Thread-safe channels for fiber and cross-worker communication (`make-channel`, `channel-send!`, `channel-recv!`)
 
 - **Tooling**
   - Module system with encapsulation
