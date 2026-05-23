@@ -39,6 +39,7 @@ const bytevec_prims = @import("bytevec.zig"); // zepo-9qg
 const process_prims = @import("process.zig"); // zepo-wgt
 const fiber_prims = @import("fiber_prims.zig"); // zepo-0bo
 const channel_prims = @import("channel_prims.zig"); // zepo-s64
+const worker_prims = @import("worker_prims.zig"); // zepo-b5h
 
 const Entry = struct {
     name: []const u8,
@@ -312,6 +313,13 @@ const TABLE: []const Entry = &.{
     make("channel-try-recv!",    1, channel_prims.primChannelTryRecv),
     make("channel-close",        1, channel_prims.primChannelClose),
     make("channel-empty?",       1, channel_prims.primChannelEmptyQ),
+
+    // zepo-b5h: worker primitives
+    make("spawn-worker",         -1, worker_prims.primSpawnWorker),
+    make("worker?",               1, worker_prims.primWorkerQ),
+    make("worker-alive?",         1, worker_prims.primWorkerAliveQ),
+    make("worker-stop",           1, worker_prims.primWorkerStop),
+    make("worker-stopping?",      0, worker_prims.primWorkerStoppingQ),
 };
 
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {

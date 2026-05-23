@@ -104,9 +104,13 @@ pub fn primMakeChannel(vm: *VM, args: []const Value) LispError!Value {
         break :blk @intCast(n);
     } else 0;
 
-    const ch = try vm.allocator.create(Channel);
-    ch.* = Channel.init(vm.allocator, capacity);
-    errdefer { ch.deinit(); vm.allocator.destroy(ch); }
+    // zepo-b5h: channels may be shared with worker OS threads; use c_allocator
+    // so cross-thread serialization/deserialization is safe (vm.allocator is
+    // a single-threaded DebugAllocator that must not be used from other threads).
+    const ch_alloc = std.heap.c_allocator;
+    const ch = try ch_alloc.create(Channel);
+    ch.* = Channel.init(ch_alloc, capacity);
+    errdefer { ch.deinit(); ch_alloc.destroy(ch); }
 
     return objects.makeForeign(vm.gc, ch, channelDeinit, TAG_CHANNEL);
 }

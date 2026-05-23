@@ -90,6 +90,9 @@ pub const VM = struct {
     park_on_yield: bool = false,
     // zepo-i19: active scheduler pointer, set by Scheduler.runMain
     scheduler: ?*sched_mod.Scheduler = null,
+    // zepo-b5h: stop flag for worker threads; set by workerThread before run.
+    // (worker-stopping?) checks this without needing a handle arg.
+    stop_flag: ?*std.atomic.Value(u32) = null,
     // zepo-s64: live channels — GC traces Values inside them via vmRootVisit.
     channels: std.ArrayListUnmanaged(*channel_mod.Channel) = .empty,
     /// The GC is informed of live VM registers via a root-visitor callback

@@ -91,7 +91,7 @@ pub const Scheduler = struct {
         sched.run_queue.deinit(sched.allocator);
         sched.blocked.deinit(sched.allocator);
         sched.sleeping.deinit(sched.allocator);
-        sched.pending_wakeups.deinit(sched.allocator);
+        sched.pending_wakeups.deinit(std.heap.c_allocator);
         if (sched.wakeup_read_fd >= 0) {
             _ = std.c.close(sched.wakeup_read_fd);
             _ = std.c.close(sched.wakeup_write_fd);
@@ -120,10 +120,12 @@ pub const Scheduler = struct {
 
     // zepo-1aw: thread-safe enqueue for cross-worker channel wakeups.
     // Appends fiber_idx to pending_wakeups and writes to the wakeup pipe.
+    // zepo-b5h: pending_wakeups uses c_allocator because this is called from
+    // worker OS threads; sched.allocator (DebugAllocator) is not thread-safe.
     pub fn enqueueFromThread(sched: *Scheduler, fiber_idx: usize) !void {
         _ = std.c.pthread_mutex_lock(&sched.pending_mu);
         defer _ = std.c.pthread_mutex_unlock(&sched.pending_mu);
-        try sched.pending_wakeups.append(sched.allocator, fiber_idx);
+        try sched.pending_wakeups.append(std.heap.c_allocator, fiber_idx);
         sched.wake();
     }
 
@@ -217,7 +219,7 @@ pub const Scheduler = struct {
         // zepo-1aw: drain wakeup pipe and flush pending_wakeups into run_queue.
         if (has_wakeup and pfds[0].revents != 0) {
             var buf: [64]u8 = undefined;
-            while (read(sched.wakeup_read_fd, &buf, buf.len) > 0) {}
+            _ = read(sched.wakeup_read_fd, &buf, buf.len);
             _ = std.c.pthread_mutex_lock(&sched.pending_mu);
             for (sched.pending_wakeups.items) |idx| try sched.run_queue.append(sched.allocator, idx);
             sched.pending_wakeups.clearRetainingCapacity();
@@ -282,7 +284,18 @@ pub const Scheduler = struct {
         // Invariant at loop top: vm.call_stack is empty (saved by saveCurrent).
         while (!main_done or sched.run_queue.items.len > 0 or sched.blocked.items.len > 0 or sched.sleeping.items.len > 0) {
             if (sched.run_queue.items.len == 0) {
-                if (sched.blocked.items.len == 0 and sched.sleeping.items.len == 0) break;
+                if (sched.blocked.items.len == 0 and sched.sleeping.items.len == 0) {
+                    // zepo-b5h: if main fiber is parked on a cross-thread channel
+                    // wait, poll the wakeup fd instead of breaking. Without this,
+                    // the scheduler exits before the worker fires the wakeup, leaving
+                    // vm.call_stack as a zero-capacity placeholder and causing
+                    // StackOverflow on the next top-level form.
+                    if (!main_done and sched.wakeup_read_fd >= 0) {
+                        try sched.pollAndWake();
+                        continue;
+                    }
+                    break;
+                }
                 try sched.pollAndWake();
                 continue;
             }
