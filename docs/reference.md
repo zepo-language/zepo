@@ -2541,6 +2541,8 @@ Request the worker to stop by setting its stop flag. The worker is responsible f
 #### `(worker-stopping?)` → bool
 Called **inside a worker** to check whether `worker-stop` has been requested. Returns `#f` in non-worker contexts. Use this to implement cooperative cancellation.
 
+**Automatic shutdown.** When the parent VM tears down (process exit, REPL session end), any still-running workers are stopped and joined before channel memory is reclaimed. You do not need an explicit drain loop just to avoid crashes — a sentinel-based shutdown is still recommended for graceful semantics, but a script that exits with live workers will exit cleanly.
+
 ```scheme
 (define ctl-ch (make-channel 0))
 (define w (spawn-worker

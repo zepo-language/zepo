@@ -193,6 +193,39 @@ test "vm: sleep returns without error for tiny duration" {
     _ = try rig.eval("(sleep 0.001)");
 }
 
+// ── Worker teardown (zepo-p5b) ────────────────────────────────────────────
+
+test "vm: worker parked on channel-recv shuts down cleanly at VM.deinit" {
+    // zepo-p5b: a worker parked on a cross-thread channel must not segfault
+    // (or hang) when the parent VM tears down without explicit shutdown.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit(); // <- the test: this must complete without crash/hang.
+    _ = try rig.eval(
+        \\(define ch (make-channel 4))
+        \\(spawn-worker
+        \\  "(lambda (c)
+        \\     (let loop ()
+        \\       (let ((x (channel-recv! c)))
+        \\         (when x (loop)))))"
+        \\  ch)
+    );
+    // No sentinel send, no worker-alive? drain — exercise the unhelpful exit path.
+}
+
+test "vm: worker that has not yet entered scheduler shuts down cleanly" {
+    // zepo-p5b: race-y case — parent tears down before the worker thread has
+    // finished stdlib load and published its wakeup_fd. stopAndJoin must
+    // tolerate a -1 wakeup_fd and still join cleanly.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define ch (make-channel 4))
+        \\(spawn-worker
+        \\  "(lambda (c) (channel-recv! c))"
+        \\  ch)
+    );
+}
+
 // ── Register pressure ──────────────────────────────────────────────────────
 
 test "vm: many local bindings in one frame" {

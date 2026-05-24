@@ -24,6 +24,7 @@ const GC = @import("../gc/collector.zig").GC;
 const channel_prims = @import("channel_prims.zig");
 const Channel = channel_prims.Channel;
 const register = @import("register.zig");
+const Scheduler = @import("../vm/sched.zig").Scheduler;
 
 pub const TAG_WORKER: u64 = 0xB57_0000_0001;
 
@@ -32,7 +33,34 @@ pub const WorkerState = struct {
     thread: std.Thread,
     done: std.atomic.Value(u32) = .init(0),
     stop_requested: std.atomic.Value(u32) = .init(0),
+    // zepo-p5b: write side of the worker scheduler's wakeup pipe. Published
+    // by workerThread before entering runMain; -1 once the scheduler exits.
+    wakeup_fd: std.atomic.Value(c_int) = .init(-1),
+    // zepo-p5b: ensures stopAndJoin runs exactly once even when both the
+    // explicit shutdown hook and the GC finalizer fire on the same worker.
+    joined: std.atomic.Value(u32) = .init(0),
 };
+
+// zepo-p5b: idempotent stop + join. Safe to call multiple times from any
+// context (shutdown hook, GC finalizer, or both — the first wins).
+fn stopAndJoin(ws: *WorkerState) void {
+    if (ws.joined.swap(1, .acq_rel) != 0) return;
+    ws.stop_requested.store(1, .release);
+    const fd = ws.wakeup_fd.load(.acquire);
+    if (fd >= 0) {
+        const one: [1]u8 = .{1};
+        _ = std.c.write(fd, &one, 1);
+    }
+    ws.thread.join();
+}
+
+// zepo-p5b: shutdown-hook entry point — invoked by VM.deinit before any
+// other resource teardown. Joins the worker thread but does NOT free the
+// WorkerState (the GC finalizer does that).
+fn workerShutdownHook(ptr: *anyopaque) void {
+    const ws: *WorkerState = @ptrCast(@alignCast(ptr));
+    stopAndJoin(ws);
+}
 
 const WorkerStart = struct {
     code: []const u8,
@@ -93,13 +121,24 @@ fn workerThread(start: *WorkerStart) void {
         const fn_id: u32 = @intCast(objects.closureCodePtr(fn_val));
         // zepo-b5h: expose the stop flag so (worker-stopping?) needs no handle.
         ctx.vm.?.stop_flag = &worker.stop_requested;
-        _ = ctx.vm.?.run(fn_id, chan_vals) catch {};
+        // zepo-p5b: run our own scheduler so we can publish the wakeup fd
+        // before entering the event loop. The parent's shutdown hook writes
+        // to this fd to break us out of poll(), then sets stop_flag so
+        // runMain returns at the top of the next loop iteration.
+        var sched = Scheduler.init(&ctx.vm.?);
+        defer sched.deinit();
+        sched.initWakeupFd() catch return;
+        worker.wakeup_fd.store(sched.wakeup_write_fd, .release);
+        defer worker.wakeup_fd.store(-1, .release);
+        _ = sched.runMain(fn_id, chan_vals) catch {};
     }
 }
 
 fn workerDeinit(ptr: ?*anyopaque) callconv(.c) void {
     const ws: *WorkerState = @ptrCast(@alignCast(ptr orelse return));
-    ws.thread.join();
+    // zepo-p5b: stopAndJoin is idempotent — if the VM's shutdown hook already
+    // joined this worker, this just falls through to free.
+    stopAndJoin(ws);
     ws.allocator.destroy(ws);
 }
 
@@ -146,6 +185,13 @@ pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
     };
 
     ws.thread = std.Thread.spawn(.{}, workerThread, .{start}) catch return error.OutOfMemory;
+
+    // zepo-p5b: register a shutdown hook so VM.deinit joins this worker
+    // before GC finalizers free channels the worker may still be using.
+    vm.registerShutdownHook(.{
+        .ctx = ws,
+        .func = workerShutdownHook,
+    }) catch return error.OutOfMemory;
 
     return objects.makeForeign(vm.gc, ws, workerDeinit, TAG_WORKER);
 }

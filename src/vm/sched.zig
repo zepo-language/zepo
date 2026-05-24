@@ -283,6 +283,14 @@ pub const Scheduler = struct {
 
         // Invariant at loop top: vm.call_stack is empty (saved by saveCurrent).
         while (!main_done or sched.run_queue.items.len > 0 or sched.blocked.items.len > 0 or sched.sleeping.items.len > 0) {
+            // zepo-p5b: stop_flag set by a worker shutdown — abandon any parked
+            // fibers and return immediately. Their bytecode state is owned by
+            // this VM (about to be deinit'd); any cross-thread waiter entries
+            // in shared channels are stale but harmless (the channels will be
+            // torn down after this scheduler exits and the worker is joined).
+            if (vm.stop_flag) |flag| {
+                if (flag.load(.acquire) != 0) return value_mod.NIL;
+            }
             if (sched.run_queue.items.len == 0) {
                 if (sched.blocked.items.len == 0 and sched.sleeping.items.len == 0) {
                     // zepo-b5h: if main fiber is parked on a cross-thread channel

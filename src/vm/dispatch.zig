@@ -48,6 +48,12 @@ pub const Scheduler = sched_mod.Scheduler;
 
 pub const PrimFn = *const fn (vm: *VM, args: []const Value) LispError!Value;
 
+// zepo-p5b: callback fired at VM.deinit top, before any other resource is freed.
+pub const ShutdownHook = struct {
+    ctx: *anyopaque,
+    func: *const fn (*anyopaque) void,
+};
+
 pub const VM = struct {
     gc: *GC,
     globals: *GlobalEnv,
@@ -95,6 +101,10 @@ pub const VM = struct {
     stop_flag: ?*std.atomic.Value(u32) = null,
     // zepo-s64: live channels — GC traces Values inside them via vmRootVisit.
     channels: std.ArrayListUnmanaged(*channel_mod.Channel) = .empty,
+    // zepo-p5b: shutdown hooks called at top of VM.deinit, before any other
+    // resource teardown. Used by spawn-worker to stop+join worker threads
+    // before GC finalizers free channel memory those threads may still touch.
+    shutdown_hooks: std.ArrayListUnmanaged(ShutdownHook) = .empty,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -134,6 +144,12 @@ pub const VM = struct {
     }
 
     pub fn deinit(vm: *VM) void {
+        // zepo-p5b: stop background work (worker threads) FIRST so their
+        // references to VM-owned resources (channels, in particular) are
+        // released before we tear those resources down.
+        for (vm.shutdown_hooks.items) |hook| hook.func(hook.ctx);
+        vm.shutdown_hooks.deinit(vm.allocator);
+
         if (vm.gc.roots.visit_ctx) |ctx| {
             if (ctx == @as(*anyopaque, @ptrCast(vm))) {
                 vm.gc.roots.visit_fn = null;
@@ -157,6 +173,13 @@ pub const VM = struct {
     /// Register the VM's register stack and frame closures as GC roots.
     /// Call this after VM.init so minor collections triggered from inside
     /// bytecode preserve live Values held in regs.
+    // zepo-p5b: register a callback to run at the top of VM.deinit. Used by
+    // spawn-worker to stop and join worker threads before channel memory is
+    // reclaimed by GC finalizers.
+    pub fn registerShutdownHook(vm: *VM, hook: ShutdownHook) !void {
+        try vm.shutdown_hooks.append(vm.allocator, hook);
+    }
+
     pub fn installAsRoot(vm: *VM) void {
         vm.gc.roots.visit_fn = vmRootVisit;
         vm.gc.roots.visit_ctx = @ptrCast(vm);
