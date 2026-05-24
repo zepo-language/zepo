@@ -105,6 +105,10 @@ pub const VM = struct {
     // resource teardown. Used by spawn-worker to stop+join worker threads
     // before GC finalizers free channel memory those threads may still touch.
     shutdown_hooks: std.ArrayListUnmanaged(ShutdownHook) = .empty,
+    // zepo-6cp: target capacity for call_stack.regs. Stored so vm.run can
+    // restore capacity if scheduler context switching left vm.call_stack
+    // as a fresh 0-capacity placeholder.
+    max_regs: usize = 0,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -140,6 +144,7 @@ pub const VM = struct {
             .allocator = allocator,
             // zepo-0bo: empty snapshot; allocator must be valid for safe deinit.
             .main_cs_snapshot = CallStack.init(allocator),
+            .max_regs = max_regs, // zepo-6cp
         };
     }
 
@@ -346,6 +351,13 @@ pub const VM = struct {
     /// Entry: run the function with given fn_id, passing `args`.
     pub fn run(vm: *VM, fn_id: u32, args: []const Value) LispError!Value {
         if (fn_id >= vm.compiled_fns.len) return error.InvalidForm;
+        // zepo-6cp: scheduler context switching can leave vm.call_stack as a
+        // freshly-init'd placeholder (capacity 0) if some fiber yielded last
+        // during the previous form. Restore capacity so execFn's entry frame
+        // push doesn't fail with StackOverflow. ensureTotalCapacity is a
+        // no-op if capacity already meets the target.
+        try vm.call_stack.regs.ensureTotalCapacity(vm.allocator, vm.max_regs);
+        try vm.call_stack.frames.ensureTotalCapacity(vm.allocator, 4096);
         // zepo-0bo: route through scheduler so spawned fibers work.
         var sched = sched_mod.Scheduler.init(vm);
         defer sched.deinit();

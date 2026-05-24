@@ -193,6 +193,52 @@ test "vm: sleep returns without error for tiny duration" {
     _ = try rig.eval("(sleep 0.001)");
 }
 
+// ── Cross-form call_stack capacity (zepo-6cp) ─────────────────────────────
+
+test "vm: top-level form after parked fiber across-form yield" {
+    // zepo-6cp: when a fiber parks at the end of one top-level form's
+    // evaluation, the scheduler exit leaves vm.call_stack as a fresh
+    // 0-capacity placeholder. The next top-level form's execFn entry-frame
+    // push must succeed (vm.run pre-reserves capacity).
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define ch (make-channel 1))
+        \\(spawn (lambda ()
+        \\  (let loop ((i 0))
+        \\    (when (< i 5)
+        \\      (channel-send! ch i)
+        \\      (loop (+ i 1))))))
+    );
+    // First recv may not yield; second one definitely consumes a buffered
+    // value from a fiber that parked. The previous bug surfaced at the
+    // SECOND top-level form's entry frame.
+    try expectInt(try rig.eval("(channel-recv! ch)"), 0);
+    try expectInt(try rig.eval("(channel-recv! ch)"), 1);
+    try expectInt(try rig.eval("(channel-recv! ch)"), 2);
+}
+
+test "vm: large recv loop with concurrent fiber sender" {
+    // zepo-6cp: previously overflowed the VM stack at N~100 because of the
+    // same root cause — scheduler context switching invariant violated.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define ch (make-channel 16))
+        \\(spawn (lambda ()
+        \\  (let loop ((i 0))
+        \\    (when (< i 5000)
+        \\      (channel-send! ch i)
+        \\      (loop (+ i 1))))))
+        \\(define result
+        \\  (let loop ((n 0) (acc 0))
+        \\    (if (= n 1000) acc
+        \\        (loop (+ n 1) (+ acc (channel-recv! ch))))))
+    );
+    // Sum 0..999 = 499500.
+    try expectInt(try rig.eval("result"), 499500);
+}
+
 // ── Worker teardown (zepo-p5b) ────────────────────────────────────────────
 
 test "vm: worker parked on channel-recv shuts down cleanly at VM.deinit" {
