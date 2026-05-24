@@ -78,6 +78,13 @@
       "  {\"type\":\"parallel\",     \"steps\":[<plan>, ...]}\n"
       "  {\"type\":\"final-answer\", \"from\":\"<id>\"}\n"
       "\n"
+      "Threading outputs between steps:\n"
+      "  An arg value that is the JSON object {\"input_id\":\"<step-id>\"}\n"
+      "  is replaced at execution time with the ok-value of that prior\n"
+      "  step. Use this to pass a retrieval tool's result into a\n"
+      "  synthesis tool's input. The object must be the whole arg value,\n"
+      "  not embedded inside a larger string.\n"
+      "\n"
       "Rules:\n"
       "- Never invent tools. Use only the tools listed above.\n"
       "- Prefer retrieval (tools whose name starts with \"retrieve_\") before synthesis.\n"
@@ -93,9 +100,33 @@
           (for-each
             (lambda (n)
               (set! acc
-                (string-append acc "  - " (symbol->string n) "\n")))
+                (string-append acc "  - " (symbol->string n)
+                               (format-tool-inputs (lookup-tool n))
+                               "\n")))
             names)
           acc))))
+
+  ; "(query: string, k: integer)" given a registry entry vector.
+  (define (format-tool-inputs entry)
+    (cond
+      ((not entry) "")
+      (else
+        (let ((inputs (vector-ref entry 1)))
+          (cond
+            ((null? inputs) "()")
+            (else
+              (let ((parts '()))
+                (for-each
+                  (lambda (kv)
+                    (set! parts
+                      (cons (string-append (symbol->string (car kv))
+                                           ": "
+                                           (symbol->string (cdr kv)))
+                            parts)))
+                  inputs)
+                (string-append "("
+                               (string-join (reverse parts) ", ")
+                               ")"))))))))
 
   (define (build-user-prompt goal context prev-out prev-err)
     (let ((base
