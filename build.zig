@@ -202,6 +202,16 @@ pub fn build(b: *std.Build) void {
     const macros_tests = b.addTest(.{ .root_module = macros_test_mod });
     const run_macros_tests = b.addRunArtifact(macros_tests);
 
+    // zepo-1hw: primitive module tests
+    const prims_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/runtime/prims_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const prims_tests = b.addTest(.{ .root_module = prims_test_mod });
+    const run_prims_tests = b.addRunArtifact(prims_tests);
+
     // zepo-xx8: macro expander tests
     const expander_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/expander_test.zig"),
@@ -374,6 +384,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_diagnostic_tests.step);
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_macros_tests.step);
+    test_step.dependOn(&run_prims_tests.step);
     test_step.dependOn(&run_expander_tests.step);
     test_step.dependOn(&run_vm_fiber_tests.step);
     test_step.dependOn(&run_syntax_rules_tests.step);
