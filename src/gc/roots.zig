@@ -5,10 +5,28 @@
 //! which forwards the slot (copying/promoting) and rewrites it in place.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
+const value_mod = abi.value;
 
 pub const RootVisitor = *const fn (ctx: *anyopaque, slot: *Value) void;
+
+// zepo-7fa
+/// Panic in debug builds if `v` is a forwarding pointer (moved object not re-rooted).
+/// No-op in release. Safe to call from any context — no GC reference needed.
+pub fn assertLive(v: Value) void {
+    if (builtin.mode != .Debug) return;
+    if (!value_mod.isPtr(v)) return;
+    const obj = value_mod.ptrVal(v);
+    if (obj.isForward()) {
+        std.debug.panic(
+            "assertLive failed: Value 0x{x} points to a forwarded object " ++
+                "(header=0x{x}). The Value was not rooted across a GC collection.",
+            .{ @as(u64, @bitCast(v)), obj.word },
+        );
+    }
+}
 
 pub const HANDLE_SCOPE_CAPACITY: usize = 32;
 
@@ -19,6 +37,7 @@ pub const HandleScope = struct {
 
     pub fn push(scope: *HandleScope, val: Value) *Value {
         std.debug.assert(scope.count < HANDLE_SCOPE_CAPACITY);
+        assertLive(val); // zepo-7fa
         scope.handles[scope.count] = val;
         const slot = &scope.handles[scope.count];
         scope.count += 1;

@@ -214,16 +214,7 @@ pub const GC = struct {
     /// debug builds; no-op in release.
     pub fn assertLive(gc: *GC, v: Value) void {
         _ = gc;
-        if (builtin.mode != .Debug) return;
-        if (!value_mod.isPtr(v)) return;
-        const obj = value_mod.ptrVal(v);
-        if (obj.isForward()) {
-            std.debug.panic(
-                "assertLive failed: Value 0x{x} points to a forwarded object " ++
-                    "(header=0x{x}). The Value was not rooted across a GC collection.",
-                .{ @as(u64, @bitCast(v)), obj.word },
-            );
-        }
+        roots_mod.assertLive(v); // zepo-7fa: delegates to free function in roots.zig
     }
 
     /// Ensure the nursery has at least `needed_bytes` of contiguous free space.

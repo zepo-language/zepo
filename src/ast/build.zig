@@ -4,6 +4,7 @@ const std = @import("std");
 const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
 const value_mod = abi.value;
+const gc_roots = @import("../gc/roots.zig"); // zepo-7fa
 
 const runtime = @import("../runtime/mod.zig");
 const objects = runtime.objects;
@@ -52,6 +53,7 @@ pub const Builder = struct {
     }
 
     pub fn build(b: *Builder, v: Value) BuildError!NodeId {
+        gc_roots.assertLive(v); // zepo-7fa
         return b.buildExpr(v);
     }
 
