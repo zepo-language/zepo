@@ -213,7 +213,11 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
         try buf.append(a, '{');
         const Ctx = struct { buf: *std.ArrayList(u8), a: std.mem.Allocator, first: bool, err: ?anyerror };
         var ctx2 = Ctx{ .buf = buf, .a = a, .first = true, .err = null };
-        ht_mod.forEach(v, &ctx2, struct {
+        // zepo-a72: forEach now takes a slot. JSON stringify is purely
+        // read-only (visitor only formats into a byte buffer; no Lisp
+        // allocation), so a local pointer is safe.
+        var v_local = v;
+        ht_mod.forEach(&v_local, &ctx2, struct {
             fn visit(raw: *anyopaque, k: Value, val: Value) void {
                 const c: *Ctx = @ptrCast(@alignCast(raw));
                 if (c.err != null) return;

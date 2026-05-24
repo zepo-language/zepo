@@ -218,14 +218,19 @@ pub fn delete(gc: *GC, vm: *VM, ht: Value, key: Value) LispError!bool {
 
 /// Visitor for iteration. Called once per occupied slot with (key, value).
 pub fn forEach(
-    ht: Value,
+    ht_slot: *Value,
     ctx: *anyopaque,
     visitor: *const fn (ctx: *anyopaque, k: Value, v: Value) void,
 ) void {
-    const back = backing(ht);
-    const cap = objects.vectorLen(back) / 2;
+    // zepo-a72: read ht and backing on every iteration via the caller's
+    // rooted slot. The visitor may call back into Lisp and trigger a GC
+    // that moves both the hash-table object and its backing vector.
+    // A by-value `ht: Value` parameter would go stale after the first
+    // GC and `backing(ht)` would return garbage on the next iteration.
+    const cap = objects.vectorLen(backing(ht_slot.*)) / 2;
     var i: usize = 0;
     while (i < cap) : (i += 1) {
+        const back = backing(ht_slot.*);
         const k = keyAt(back, i);
         if (k == value_mod.NIL or k == hash_mod.TOMBSTONE) continue;
         const v = valAt(back, i);

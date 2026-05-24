@@ -81,10 +81,15 @@ fn collectVisit(ctx_raw: *anyopaque, k: Value, v: Value) void {
 fn collectInto(vm: *VM, ht: Value, want_keys: bool) !Value {
     if (!hashtable.isHashTable(ht)) return error.TypeError;
     const len = hashtable.size(ht);
+    var scope = HandleScope{};
+    vm.gc.roots.pushHandleScope(&scope);
+    defer vm.gc.roots.popHandleScope();
+    const ht_slot = scope.push(ht);
     const vec = objects.makeVector(vm.gc, len, value_mod.NIL) catch return error.OutOfMemory;
-    var ctx = CollectCtx{ .vec = vec, .idx = 0, .want_keys = want_keys };
-    hashtable.forEach(ht, @ptrCast(&ctx), collectVisit);
-    return vec;
+    const vec_slot = scope.push(vec);
+    var ctx = CollectCtx{ .vec = vec_slot.*, .idx = 0, .want_keys = want_keys };
+    hashtable.forEach(ht_slot, @ptrCast(&ctx), collectVisit);
+    return vec_slot.*;
 }
 
 pub fn primHashKeys(vm: *VM, args: []const Value) LispError!Value {
@@ -127,23 +132,40 @@ fn alistVisit(ctx_raw: *anyopaque, k: Value, v: Value) void {
 pub fn primHashToAlist(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!hashtable.isHashTable(args[0])) return error.TypeError;
+    var scope = HandleScope{};
+    vm.gc.roots.pushHandleScope(&scope);
+    defer vm.gc.roots.popHandleScope();
+    const ht_slot = scope.push(args[0]);
     var ctx = AlistCtx{ .vm = vm, .acc = value_mod.NIL };
-    hashtable.forEach(args[0], @ptrCast(&ctx), alistVisit);
+    hashtable.forEach(ht_slot, @ptrCast(&ctx), alistVisit);
     if (ctx.err) |e| return e;
     return ctx.acc;
 }
 
+/// zepo-a72: ctx.f_slot points into a GC root (a HandleScope slot) so the
+/// callback closure survives any allocation the callback triggers. Without
+/// rooting, the slot in this struct would go stale after the first
+/// callback that GCs and subsequent iterations would see a forwarded
+/// pointer where they expect a closure, producing a confusing TypeError.
 const ForEachCtx = struct {
     vm: *VM,
-    f: Value,
+    f_slot: *Value,
     err: ?LispError = null,
 };
 
 fn forEachVisit(ctx_raw: *anyopaque, k: Value, v: Value) void {
     const c: *ForEachCtx = @ptrCast(@alignCast(ctx_raw));
     if (c.err != null) return;
-    const a = [_]Value{ k, v };
-    _ = c.vm.callValue(c.f, &a) catch |e| {
+    // zepo-a72: k and v come from the hash-table walker and live in
+    // foreign C-stack memory; push them as additional roots so the
+    // callback's allocations don't strand them either.
+    var scope = HandleScope{};
+    c.vm.gc.roots.pushHandleScope(&scope);
+    defer c.vm.gc.roots.popHandleScope();
+    const k_slot = scope.push(k);
+    const v_slot = scope.push(v);
+    const args = [_]Value{ k_slot.*, v_slot.* };
+    _ = c.vm.callValue(c.f_slot.*, &args) catch |e| {
         c.err = e;
     };
 }
@@ -151,8 +173,16 @@ fn forEachVisit(ctx_raw: *anyopaque, k: Value, v: Value) void {
 pub fn primHashForEach(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 2) return error.ArityMismatch;
     if (!hashtable.isHashTable(args[1])) return error.TypeError;
-    var ctx = ForEachCtx{ .vm = vm, .f = args[0] };
-    hashtable.forEach(args[1], @ptrCast(&ctx), forEachVisit);
+    // zepo-a72: root the callback closure across the walk so allocations
+    // inside the callback can't strand the f value (it lives in our ctx
+    // struct on the C stack, which isn't a GC root).
+    var scope = HandleScope{};
+    vm.gc.roots.pushHandleScope(&scope);
+    defer vm.gc.roots.popHandleScope();
+    const f_slot = scope.push(args[0]);
+    const ht_slot = scope.push(args[1]);
+    var ctx = ForEachCtx{ .vm = vm, .f_slot = f_slot };
+    hashtable.forEach(ht_slot, @ptrCast(&ctx), forEachVisit);
     if (ctx.err) |e| return e;
     return value_mod.NIL;
 }

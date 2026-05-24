@@ -947,8 +947,8 @@ pub const VM = struct {
                             continue;
                         }
                     }
-                    var args = [_]Value{ va, vb };
-                    vm.call_stack.reg(a).* = try arith_prims.primAdd(vm, args[0..]);
+                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
+                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .add);
                 },
                 .SUB2 => {
                     const a = bytecode.decodeA(instr);
@@ -963,8 +963,8 @@ pub const VM = struct {
                             continue;
                         }
                     }
-                    var args = [_]Value{ va, vb };
-                    vm.call_stack.reg(a).* = try arith_prims.primSub(vm, args[0..]);
+                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
+                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .sub);
                 },
                 .MUL2 => {
                     const a = bytecode.decodeA(instr);
@@ -985,8 +985,8 @@ pub const VM = struct {
                             }
                         }
                     }
-                    var args = [_]Value{ va, vb };
-                    vm.call_stack.reg(a).* = try arith_prims.primMul(vm, args[0..]);
+                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
+                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .mul);
                 },
                 .NUM_EQ2 => {
                     const a = bytecode.decodeA(instr);
@@ -1243,8 +1243,8 @@ pub const VM = struct {
                             continue;
                         }
                     }
-                    var args = [_]Value{ va, vb };
-                    vm.call_stack.reg(a).* = try arith_prims.primModulo(vm, args[0..]);
+                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
+                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .modulo);
                 },
                 .BR_IF_NUM_NLT_I => {
                     const a_reg = bytecode.decodeA(instr);
@@ -1289,6 +1289,39 @@ pub const VM = struct {
                 },
             }
         }
+    }
+
+    /// zepo-a72: shared slow-path for 2-arg float arithmetic invoked by
+    /// ADD2/SUB2/MUL2/MOD2 when the fixnum fast path doesn't apply. We
+    /// CANNOT pass a stack-local `[2]Value` array to the corresponding
+    /// prim (primAdd/primSub/...) because the prim may allocate a result
+    /// float, triggering a minor GC that moves the boxed-float operands
+    /// — the stack array is not a root, so the prim would dereference
+    /// forwarded objects and yield TypeError. Instead we read both
+    /// operands as f64 BEFORE any allocation, then alloc once at the end.
+    fn binaryFloatOp(vm: *VM, va: Value, vb: Value, op: enum { add, sub, mul, modulo }) LispError!Value {
+        if (!objects.isNumber(va) or !objects.isNumber(vb)) return error.TypeError;
+        const fa: f64 = if (value_mod.isFixnum(va))
+            @as(f64, @floatFromInt(value_mod.fixnumVal(va)))
+        else
+            objects.floatVal(va);
+        const fb: f64 = if (value_mod.isFixnum(vb))
+            @as(f64, @floatFromInt(value_mod.fixnumVal(vb)))
+        else
+            objects.floatVal(vb);
+        const result: f64 = switch (op) {
+            .add => fa + fb,
+            .sub => fa - fb,
+            .mul => fa * fb,
+            .modulo => blk: {
+                if (fb == 0) return error.DivisionByZero;
+                const r = @rem(fa, fb);
+                break :blk if (r == 0) 0
+                    else if ((r > 0) == (fb > 0)) r
+                    else r + fb;
+            },
+        };
+        return objects.makeFloat(vm.gc, result) catch return error.OutOfMemory;
     }
 
     /// zepo-9bi: Errors that should NEVER be intercepted by user handlers.

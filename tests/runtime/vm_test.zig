@@ -288,6 +288,69 @@ test "vm: many local bindings in one frame" {
     try expectInt(v, 210);
 }
 
+// ── GC-safe arith and hash-for-each (zepo-a72) ────────────────────────────
+
+test "vm: heavy float arithmetic in a loop survives GC" {
+    // zepo-a72 part 1: ADD2/MUL2/SUB2/MOD2 used to copy operands into a
+    // stack-local args array and pass it to the corresponding prim. The
+    // prim allocated a result float, which could trigger a minor GC and
+    // move the operands. The stack array was not a GC root, so after GC
+    // the prim dereferenced forwarded objects and threw TypeError.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    // Build two 768-element vectors of small floats and dot-product them.
+    // Allocates a fresh float per multiplication and per accumulator step,
+    // forcing nursery GC during the loop.
+    _ = try rig.eval(
+        \\(define (mk-vec n)
+        \\  (let ((v (make-vector n 0.0)))
+        \\    (let loop ((i 0))
+        \\      (when (< i n)
+        \\        (vector-set! v i (/ (+ i 1) 1000.0))
+        \\        (loop (+ i 1))))
+        \\    v))
+        \\(define (dot a b n)
+        \\  (let loop ((i 0) (acc 0))
+        \\    (if (= i n) acc
+        \\        (loop (+ i 1)
+        \\              (+ acc (* (vector-ref a i) (vector-ref b i)))))))
+        \\(define u (mk-vec 768))
+        \\(define result-a72-1 (dot u u 768))
+    );
+    // Just confirm we got a finite number — the value depends on the
+    // exact rounding, but it should be in a sensible range and definitely
+    // not throw.
+    try std.testing.expect(value_mod.isFixnum(try rig.eval("(integer? result-a72-1)")) or
+        !value_mod.isFalse(try rig.eval("(number? result-a72-1)")));
+}
+
+test "vm: hash-for-each with allocating callback survives GC" {
+    // zepo-a72 part 2: primHashForEach stored the callback closure in a
+    // C-stack struct that wasn't a GC root. The first callback that
+    // allocated would move the closure; subsequent iterations called the
+    // stale pointer and saw a forwarded object — neither closure nor
+    // prim — and reported TypeError out of CALL.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define h (make-hash-table))
+        \\(let loop ((i 0))
+        \\  (when (< i 50)
+        \\    (hash-set! h (number->string i) (make-vector 768 0.5))
+        \\    (loop (+ i 1))))
+        \\(define n 0)
+        \\(hash-for-each
+        \\  (lambda (k v)
+        \\    ; allocate enough floats to trigger a minor GC
+        \\    (let loop ((i 0) (acc 0))
+        \\      (when (< i 200)
+        \\        (loop (+ i 1) (+ acc (* (vector-ref v i) 0.1)))))
+        \\    (set! n (+ n 1)))
+        \\  h)
+    );
+    try expectInt(try rig.eval("n"), 50);
+}
+
 // ── Exception handling (zepo-9bi) ─────────────────────────────────────────
 
 test "vm: with-exception-handler catches synchronous raise" {
