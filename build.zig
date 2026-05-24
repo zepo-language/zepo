@@ -202,6 +202,21 @@ pub fn build(b: *std.Build) void {
     const macros_tests = b.addTest(.{ .root_module = macros_test_mod });
     const run_macros_tests = b.addRunArtifact(macros_tests);
 
+    // zepo-ue2: CLI project_config tests
+    const project_config_mod = b.createModule(.{
+        .root_source_file = b.path("src/cli/project_config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const cli_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/cli/project_config_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "project_config", .module = project_config_mod }},
+    });
+    const cli_tests = b.addTest(.{ .root_module = cli_test_mod });
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+
     // zepo-1hw: primitive module tests
     const prims_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/prims_test.zig"),
@@ -384,6 +399,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_diagnostic_tests.step);
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_macros_tests.step);
+    test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_prims_tests.step);
     test_step.dependOn(&run_expander_tests.step);
     test_step.dependOn(&run_vm_fiber_tests.step);
