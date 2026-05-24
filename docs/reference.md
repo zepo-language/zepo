@@ -786,18 +786,6 @@ call-site variables:
 | Ellipsis | Manual recursion | Built-in `...` |
 | Best for | Complex transformations, computed templates | Most everyday macros |
 
-**Known limitation (zepo-aua):** Paired ellipsis destructuring — where two pattern variables are captured from the same `...` sequence and must expand independently in the template — is not yet implemented. For example, this does not work:
-
-```scheme
-; NOT YET SUPPORTED — two vars (var, val) from one ellipsis:
-(define-syntax my-let
-  (syntax-rules ()
-    ((_ ((var val) ...) body)
-     ((lambda (var ...) body) val ...))))   ; ERROR: unbound var
-```
-
-Use explicit recursion via `defmacro` or a helper macro for this pattern until zepo-aua is resolved.
-
 ---
 
 ## Primitives

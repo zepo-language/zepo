@@ -325,6 +325,10 @@ fn renameSymIfBinder(
     syms: *SymbolTable,
 ) anyerror!Value {
     const name = objects.symbolName(sym);
+    // zepo-aua: never rename the ellipsis marker — it's a syntactic token
+    // that the template expander needs to see literally to recognize
+    // ellipsis patterns like (var ...).
+    if (std.mem.eql(u8, name, "...")) return sym;
     if (bindings.isPatternVar(name)) return sym; // pattern var, don't rename
     return rename.getOrCreate(name, syms);
 }

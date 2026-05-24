@@ -303,6 +303,39 @@ test "syntax-rules: dotimes loop macro" {
     try expectInt(try rig.eval("acc"), 10);
 }
 
+// ── Paired ellipsis (zepo-aua) ─────────────────────────────────────────────
+
+test "syntax-rules: paired ellipsis ((var val) ...) my-let" {
+    // zepo-aua: two pattern variables collected from a single ellipsis sequence
+    // must expand independently in the template.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define-syntax my-let
+        \\  (syntax-rules ()
+        \\    ((_ ((var val) ...) body)
+        \\     ((lambda (var ...) body) val ...))))
+    );
+    try expectInt(try rig.eval("(my-let ((x 1) (y 2)) (+ x y))"), 3);
+    try expectInt(try rig.eval("(my-let ((a 10) (b 20) (c 30)) (+ a b c))"), 60);
+    try expectInt(try rig.eval("(my-let ((p 5)) (my-let ((q 7)) (+ p q)))"), 12);
+}
+
+test "syntax-rules: paired ellipsis preserves outer bindings (hygiene)" {
+    // zepo-aua: paired-ellipsis macros must still respect outer scope.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define-syntax my-let
+        \\  (syntax-rules ()
+        \\    ((_ ((var val) ...) body)
+        \\     ((lambda (var ...) body) val ...))))
+    );
+    _ = try rig.eval("(define outer 100)");
+    try expectInt(try rig.eval("(my-let ((b 1)) (+ outer b))"), 101);
+    try expectInt(try rig.eval("outer"), 100); // unchanged
+}
+
 test "syntax-rules: pattern in stdlib when/unless" {
     // Verify stdlib when/unless (implemented via syntax-rules) work correctly.
     const rig = try Rig.init(std.testing.allocator);
