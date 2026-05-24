@@ -126,6 +126,19 @@ pub const Op = union(enum) {
     branch_if_num_nlt_i: struct { src: Reg, imm: i8, then_label: Label, else_label: Label },
     // zepo-8tx: 2-arg fixnum modulo.
     mod2: struct { dst: Reg, src1: Reg, src2: Reg },
+
+    // zepo-9bi: install an exception handler for the next body. handler is
+    // a closure invoked with the raised value when the body errors; dst is
+    // where the body's (or handler's) result lands; resume_label is where
+    // execution continues after the handler returns. POP_HANDLER undoes
+    // the install on normal body exit.
+    push_handler: struct { handler: Reg, dst: Reg, resume_label: Label },
+    pop_handler,
+
+    /// zepo-9bi: explicit register-to-register move. Needed by the
+    /// with-handler lowering to land the body's last expression into the
+    /// same register the handler writes to.
+    move: struct { dst: Reg, src: Reg },
 };
 
 pub const Function = struct {

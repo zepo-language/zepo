@@ -287,3 +287,83 @@ test "vm: many local bindings in one frame" {
     );
     try expectInt(v, 210);
 }
+
+// ── Exception handling (zepo-9bi) ─────────────────────────────────────────
+
+test "vm: with-exception-handler catches synchronous raise" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const v = try rig.eval(
+        \\(with-exception-handler
+        \\  (lambda (e) 99)
+        \\  (lambda () (raise "boom")))
+    );
+    try expectInt(v, 99);
+}
+
+test "vm: with-exception-handler returns body value when no error" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const v = try rig.eval(
+        \\(with-exception-handler
+        \\  (lambda (e) 0)
+        \\  (lambda () (+ 40 2)))
+    );
+    try expectInt(v, 42);
+}
+
+test "vm: yield inside protected body does NOT trigger the handler" {
+    // zepo-9bi: the bug was that (sleep ...) inside a guard fired the
+    // handler as if FiberYielded were a raised exception.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const v = try rig.eval(
+        \\(with-exception-handler
+        \\  (lambda (e) 'should-not-fire)
+        \\  (lambda () (sleep 0.01) 7))
+    );
+    try expectInt(v, 7);
+}
+
+test "vm: error raised AFTER a yield is still caught" {
+    // This is the case where the architectural fix matters: the handler
+    // must survive across the yield/resume cycle and still catch later
+    // errors. With the old prim+Zig-catch impl, this lost the handler.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const v = try rig.eval(
+        \\(with-exception-handler
+        \\  (lambda (e) 123)
+        \\  (lambda () (sleep 0.01) (raise "late")))
+    );
+    try expectInt(v, 123);
+}
+
+test "vm: code after with-exception-handler continues executing" {
+    // Prior partial fix skipped this. Validates the bytecode path lets
+    // control return to the enclosing dispatch context normally.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval("(define result-9bi-seq 0)");
+    _ = try rig.eval(
+        \\(begin
+        \\  (with-exception-handler
+        \\    (lambda (e) 'irrelevant)
+        \\    (lambda () (sleep 0.01) 'whatever))
+        \\  (set! result-9bi-seq 555))
+    );
+    try expectInt(try rig.eval("result-9bi-seq"), 555);
+}
+
+test "vm: guard macro catches via clause" {
+    // Confirms the stdlib `guard` macro inherits the fix.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const v = try rig.eval(
+        \\(guard (e ((string? e) 100)
+        \\          (else 200))
+        \\  (sleep 0.01)
+        \\  (raise "hello"))
+    );
+    try expectInt(v, 100);
+}

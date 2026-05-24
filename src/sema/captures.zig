@@ -62,6 +62,12 @@ pub const CaptureAnalyzer = struct {
             },
             .module_decl => unreachable,
             .import_stmt => {}, // no captures — import is a runtime side-effect
+            .with_handler => |wh| {
+                // zepo-9bi: handler and inlined body both contribute to
+                // captures of the enclosing function.
+                try c.walk(wh.handler);
+                for (wh.body) |bid| try c.walk(bid);
+            },
         }
     }
 
@@ -298,6 +304,11 @@ pub const CaptureAnalyzer = struct {
             },
             .module_decl => unreachable,
             .import_stmt => {}, // no captures — import is a runtime side-effect
+            .with_handler => |wh| {
+                // zepo-9bi: handler + inlined body both see the enclosing params.
+                try c.collectFree(wh.handler, params, free, mutated);
+                for (wh.body) |bid| try c.collectFree(bid, params, free, mutated);
+            },
         }
     }
 };

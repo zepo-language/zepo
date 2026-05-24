@@ -9,6 +9,25 @@ const Value = abi.Value;
 const value_mod = abi.value;
 const frame_mod = @import("frame.zig");
 const CallStack = frame_mod.CallStack;
+const bytecode = @import("../cg/bytecode.zig");
+const CompiledFn = bytecode.CompiledFn;
+
+/// zepo-9bi: an installed exception handler. Lives on the fiber so yields
+/// preserve it across context switches.
+/// - `handler_val` is the closure to invoke with the raised value.
+/// - `frame_depth` is `call_stack.frames.items.len` at PUSH_HANDLER time;
+///   on raise we pop frames down to this depth before invoking the handler.
+/// - `dst_reg` is the register in the resumed frame that should receive
+///   either the body's normal result or the handler's return value.
+/// - `resume_pc` / `resume_func` is where the frame at `frame_depth - 1`
+///   continues after the handler returns.
+pub const HandlerFrame = struct {
+    handler_val: Value,
+    frame_depth: u32,
+    dst_reg: u16,
+    resume_pc: u32,
+    resume_func: *CompiledFn,
+};
 
 pub const FiberStatus = enum {
     /// In the run queue, will be dispatched next round-robin turn.
@@ -23,6 +42,8 @@ pub const FiberStatus = enum {
 
 pub const FiberState = struct {
     call_stack: CallStack,
+    /// zepo-9bi: per-fiber exception-handler stack. Top = most recent.
+    handler_stack: std.ArrayListUnmanaged(HandlerFrame) = .empty,
     status: FiberStatus,
     /// Final value when status == .done.
     result: Value,
@@ -52,6 +73,7 @@ pub const FiberState = struct {
     pub fn deinit(fs: *FiberState) void {
         const alloc = fs.allocator;
         fs.call_stack.deinit();
+        fs.handler_stack.deinit(alloc);
         fs.waiters.deinit(alloc);
         alloc.destroy(fs);
     }

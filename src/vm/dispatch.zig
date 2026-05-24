@@ -109,6 +109,12 @@ pub const VM = struct {
     // restore capacity if scheduler context switching left vm.call_stack
     // as a fresh 0-capacity placeholder.
     max_regs: usize = 0,
+    // zepo-9bi: per-fiber exception-handler stack. Swapped in/out with
+    // call_stack by the scheduler. Lives here as the *active* stack;
+    // the main fiber's saved copy is in main_handler_snapshot, and other
+    // fibers' copies are in their FiberState.
+    handler_stack: std.ArrayListUnmanaged(fiber_mod.HandlerFrame) = .empty,
+    main_handler_snapshot: std.ArrayListUnmanaged(fiber_mod.HandlerFrame) = .empty,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -168,6 +174,9 @@ pub const VM = struct {
         vm.call_stack.deinit();
         // zepo-0bo: free main fiber snapshot if it holds a saved call stack.
         vm.main_cs_snapshot.deinit();
+        // zepo-9bi: free handler-stack storage (both active and snapshot).
+        vm.handler_stack.deinit(vm.allocator);
+        vm.main_handler_snapshot.deinit(vm.allocator);
         // zepo-4yr: free all spawned fiber states.
         for (vm.fibers.items) |fs| fs.deinit();
         vm.fibers.deinit(vm.allocator);
@@ -251,7 +260,17 @@ pub const VM = struct {
     // after a context switch to continue a previously-yielded fiber.
     pub fn resumeExecFn(vm: *VM) LispError!Value {
         trampoline: while (true) {
-            const result = vm.dispatch() catch |e| return e;
+            // zepo-9bi: inner loop re-enters dispatch in-place if a handler
+            // intercepted the error. continue :trampoline can't be used —
+            // that path would push a fresh frame for the original func.
+            var result: DispatchResult = undefined;
+            handler_retry: while (true) {
+                result = vm.dispatch() catch |e| {
+                    if (try vm.tryHandle(e)) continue :handler_retry;
+                    return e;
+                };
+                break;
+            }
             switch (result) {
                 .value => |v| {
                     _ = vm.call_stack.pop();
@@ -409,11 +428,19 @@ pub const VM = struct {
 
             try vm.setupCallArgs(func, args_src, base, args_in_regs);
 
-            const result = vm.dispatch() catch |e| {
-                // Leave frame on stack — printDiagnostic walks them for traces.
-                // VM is always torn down by EvalContext after an error.
-                return e;
-            };
+            // zepo-9bi: same retry shape as resumeExecFn — inner loop so a
+            // handler-intercepted error re-enters dispatch in-place rather
+            // than re-pushing a frame via :trampoline.
+            var result: DispatchResult = undefined;
+            handler_retry: while (true) {
+                result = vm.dispatch() catch |e| {
+                    if (try vm.tryHandle(e)) continue :handler_retry;
+                    // Leave frame on stack — printDiagnostic walks them for traces.
+                    // VM is always torn down by EvalContext after an error.
+                    return e;
+                };
+                break;
+            }
 
             switch (result) {
                 .tail_call => |tc| {
@@ -1237,8 +1264,104 @@ pub const VM = struct {
                     }
                     if (!pred_true) pc = bytecode.decodeBC(next_instr);
                 },
+                // zepo-9bi: install an exception handler. Encoding:
+                //   word1 = [PUSH_HANDLER][handler_reg][dst_reg][unused]
+                //   word2 = absolute resume pc within `func`.
+                .PUSH_HANDLER => {
+                    const handler_reg = bytecode.decodeA(instr);
+                    const dst_reg = bytecode.decodeB(instr);
+                    const resume_pc = code[pc]; // word2 is the raw pc
+                    pc += 1;
+                    try vm.handler_stack.append(vm.allocator, .{
+                        .handler_val = vm.call_stack.reg(handler_reg).*,
+                        .frame_depth = @intCast(vm.call_stack.frames.items.len),
+                        .dst_reg = dst_reg,
+                        .resume_pc = resume_pc,
+                        .resume_func = func,
+                    });
+                },
+                .POP_HANDLER => {
+                    // Normal exit from the protected body. Discard the
+                    // topmost handler frame; if the stack is empty we have
+                    // a compiler bug, but tolerate it in release builds.
+                    if (vm.handler_stack.items.len > 0)
+                        _ = vm.handler_stack.pop();
+                },
             }
         }
+    }
+
+    /// zepo-9bi: Errors that should NEVER be intercepted by user handlers.
+    /// FiberYielded is cooperative control flow; OOM/StackOverflow are
+    /// resource-exhaustion conditions that a Lisp handler can't sensibly
+    /// recover from with the heap in an unknown state.
+    fn isCatchable(err: LispError) bool {
+        return switch (err) {
+            error.FiberYielded => false,
+            error.OutOfMemory => false,
+            error.StackOverflow => false,
+            else => true,
+        };
+    }
+
+    /// zepo-9bi: If a handler is installed and `err` is catchable, unwind
+    /// the call stack to the handler's recorded depth, install the handler
+    /// closure as a freshly-pushed frame, and return `true` so the caller
+    /// re-enters dispatch. Returns `false` to mean "propagate `err`".
+    fn tryHandle(vm: *VM, err: LispError) LispError!bool {
+        if (!isCatchable(err)) return false;
+        if (vm.handler_stack.items.len == 0) return false;
+        const hf = vm.handler_stack.pop().?;
+
+        // Build the exception value. raise/error sets vm.raised_val; for
+        // synthetic errors (TypeError, ArityMismatch, ...) we wrap the
+        // error name or vm.error_msg in a string.
+        const exc_val = if (!value_mod.isNil(vm.raised_val))
+            vm.raised_val
+        else blk: {
+            const raw_msg: []const u8 = if (vm.error_msg) |m| m else @errorName(err);
+            break :blk objects.makeString(vm.gc, raw_msg) catch return error.OutOfMemory;
+        };
+        vm.raised_val = value_mod.NIL;
+        if (vm.error_msg) |m| {
+            vm.allocator.free(m);
+            vm.error_msg = null;
+        }
+
+        // Unwind to handler's recorded depth.
+        while (vm.call_stack.frames.items.len > hf.frame_depth) {
+            _ = vm.call_stack.pop();
+        }
+
+        // Caller frame resumes at the handler's resume_pc with the
+        // function it was compiled in (so cross-fn tail calls inside the
+        // body don't desync the resume point).
+        const top = vm.call_stack.currentFrame();
+        top.pc = hf.resume_pc;
+        top.func = hf.resume_func;
+
+        // Push the handler closure's frame. v1: handler must be a 1-arg
+        // closure (the (lambda (e) ...) shape produced by the guard macro
+        // and direct uses of with-exception-handler).
+        if (!objects.isClosure(hf.handler_val)) return error.TypeError;
+        const fn_id = objects.closureCodePtr(hf.handler_val);
+        if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
+        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+        if (tgt.arity != 1 or tgt.has_rest or tgt.keyword_params.len > 0) {
+            return error.ArityMismatch;
+        }
+        const new_base: u32 = @intCast(vm.call_stack.regs.items.len);
+        try vm.call_stack.pushFast(.{
+            .func = tgt,
+            .pc = 0,
+            .base = new_base,
+            .caller_base = top.base,
+            .closure_val = hf.handler_val,
+            .dst_reg = hf.dst_reg,
+        }, tgt.num_regs);
+        var args = [_]Value{exc_val};
+        try vm.setupCallArgs(tgt, &args, new_base, false);
+        return true;
     }
 
     /// Invoke a callable Value (closure or prim) with the given args.

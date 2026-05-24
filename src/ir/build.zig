@@ -179,7 +179,59 @@ pub const Compiler = struct {
                 try ctx.func.emit(.{ .do_import = .{ .dst = r, .name = imp.name, .alias = alias, .only = only } });
                 break :blk r;
             },
+            .with_handler => |wh| c.lowerWithHandler(ctx, wh.handler, wh.body, tail),
         };
+    }
+
+    /// zepo-9bi: lower (with-exception-handler H (lambda () body...))
+    /// emitted shape (pseudocode):
+    ///   eval H -> reg_h
+    ///   PUSH_HANDLER reg_h, dst, :resume
+    ///   <body — last expr writes to dst>
+    ///   POP_HANDLER
+    ///   JUMP :end
+    /// :resume   ; handler invocation lands here with the result in dst.
+    /// :end
+    fn lowerWithHandler(c: *Compiler, ctx: *FnCtx, handler_id: NodeId, body_ids: []const NodeId, tail: bool) anyerror!Reg {
+        // tail is intentionally ignored — we cannot tail-call out of a
+        // protected body because POP_HANDLER must still fire on the way out.
+        _ = tail;
+
+        const dst = ctx.freshReg();
+        const resume_lbl = ctx.func.newLabel();
+        const end_lbl = ctx.func.newLabel();
+
+        // Handler value first. Lowered into a register that survives past
+        // PUSH_HANDLER (we don't recycle it within the body).
+        const handler_reg = try c.lowerNode(ctx, handler_id);
+
+        try ctx.func.emit(.{ .push_handler = .{
+            .handler = handler_reg,
+            .dst = dst,
+            .resume_label = resume_lbl,
+        } });
+
+        // Body: evaluate each expression sequentially. The LAST one writes
+        // to `dst` so the body's normal result lands where the handler's
+        // result would also land. Intermediate expressions write to scratch.
+        if (body_ids.len == 0) {
+            try ctx.func.emit(.{ .load_nil = .{ .dst = dst } });
+        } else {
+            for (body_ids[0 .. body_ids.len - 1]) |bid| {
+                _ = try c.lowerNode(ctx, bid);
+            }
+            const last_r = try c.lowerNode(ctx, body_ids[body_ids.len - 1]);
+            if (last_r != dst) {
+                try ctx.func.emit(.{ .move = .{ .dst = dst, .src = last_r } });
+            }
+        }
+
+        try ctx.func.emit(.pop_handler);
+        try ctx.func.emit(.{ .branch = .{ .label = end_lbl } });
+        try ctx.func.emit(.{ .label = .{ .id = resume_lbl } });
+        // Handler's RETURN already wrote the result into dst; nothing to do.
+        try ctx.func.emit(.{ .label = .{ .id = end_lbl } });
+        return dst;
     }
 
     // zepo-i3b: returns the literal's i63 fixnum value if it fits in i8.

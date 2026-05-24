@@ -116,6 +116,13 @@ pub const Builder = struct {
             if (std.mem.eql(u8, name, "or")) return b.buildOr(pair);
             if (std.mem.eql(u8, name, "when")) return b.buildWhen(pair);
             if (std.mem.eql(u8, name, "unless")) return b.buildUnless(pair);
+            // zepo-9bi: with-exception-handler is a special form ONLY when
+            // the thunk is a literal (lambda () ...). For any other thunk
+            // shape we fall through to regular application (the prim still
+            // exists as a fallback, with the known yield limitation).
+            if (std.mem.eql(u8, name, "with-exception-handler")) {
+                if (try b.tryBuildWithHandler(pair)) |node| return node;
+            }
             // module/import/export are top-level-only forms handled by the
             // evaluation driver before the builder runs. Encountering one
             // here means it was nested inside another expression.
@@ -780,6 +787,46 @@ pub const Builder = struct {
 
         const clauses_owned = try b.arena.dupClauses(clauses.items);
         return b.arena.add(.{ .cond_expr = .{ .clauses = clauses_owned, .span = b.current_span } });
+    }
+
+    /// zepo-9bi: Pattern-match `(with-exception-handler H (lambda () body...))`.
+    /// On success returns the `.with_handler` AST node; on a shape mismatch
+    /// returns null so the caller falls back to regular application.
+    /// Errors only on actual malformed pairs (not on shape mismatch).
+    fn tryBuildWithHandler(b: *Builder, pair: Value) BuildError!?NodeId {
+        // pair = (with-exception-handler H thunk)
+        const rest = objects.pairCdr(pair).*;
+        if (!objects.isPair(rest)) return null;
+        const handler_form = objects.pairCar(rest).*;
+        const rest2 = objects.pairCdr(rest).*;
+        if (!objects.isPair(rest2)) return null;
+        const thunk_form = objects.pairCar(rest2).*;
+        const rest3 = objects.pairCdr(rest2).*;
+        if (!value_mod.isNil(rest3)) return null; // exactly 2 args required
+
+        // thunk must be (lambda () body...) with EMPTY param list to qualify.
+        if (!objects.isPair(thunk_form)) return null;
+        const lam_head = objects.pairCar(thunk_form).*;
+        if (!objects.isSymbol(lam_head)) return null;
+        if (!std.mem.eql(u8, objects.symbolName(lam_head), "lambda")) return null;
+        const lam_rest = objects.pairCdr(thunk_form).*;
+        if (!objects.isPair(lam_rest)) return null;
+        const params_form = objects.pairCar(lam_rest).*;
+        if (!value_mod.isNil(params_form)) return null; // must be ()
+        const lam_body_forms = objects.pairCdr(lam_rest).*;
+
+        // Build handler and body.
+        const handler_id = try b.buildExpr(handler_form);
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
+        defer body_ids.deinit(b.allocator);
+        try b.collectBody(lam_body_forms, &body_ids);
+        if (body_ids.items.len == 0) return null; // empty body — let app handle
+        const body_owned = try b.arena.dupNodeIds(body_ids.items);
+        return try b.arena.add(.{ .with_handler = .{
+            .handler = handler_id,
+            .body = body_owned,
+            .span = b.current_span,
+        } });
     }
 
     fn buildBegin(b: *Builder, pair: Value) BuildError!NodeId {

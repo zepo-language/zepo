@@ -86,6 +86,10 @@ pub const ArityChecker = struct {
             },
             .module_decl => unreachable,
             .import_stmt => {}, // no arity to check — handled at runtime
+            .with_handler => |wh| {
+                try a.walk(wh.handler);
+                for (wh.body) |bid| try a.walk(bid);
+            },
         }
     }
 };

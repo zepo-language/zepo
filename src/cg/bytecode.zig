@@ -86,6 +86,13 @@ pub const Opcode = enum(u8) {
     BR_IF_NUM_NLT_I, // branch to next_instr.BC if NOT (src <  imm)
     // zepo-8tx: 2-arg fixnum modulo. A=dst, B=src1, C=src2.
     MOD2,
+    // zepo-9bi: exception-handler frames live on the fiber (so yields
+    // don't destroy them).  PUSH_HANDLER is a 2-word instruction:
+    //   word1 = [PUSH_HANDLER][handler_reg][dst_reg][unused]
+    //   word2 = full u32 resume_pc (absolute pc within the current func)
+    // POP_HANDLER discards the topmost handler frame on normal body exit.
+    PUSH_HANDLER,
+    POP_HANDLER,
 };
 
 pub const Instr = u32;

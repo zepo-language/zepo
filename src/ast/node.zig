@@ -89,6 +89,16 @@ pub const Node = union(enum) {
         selection: ImportSelection,
         span: Span,
     },
+    /// zepo-9bi: (with-exception-handler H (lambda () body...)) — emitted
+    /// only when the second arg is a literal 0-arg lambda. handler is the
+    /// handler expression; body is the inlined lambda body. Compiles to
+    /// PUSH_HANDLER ... POP_HANDLER bytecode so yields inside body don't
+    /// destroy the handler frame.
+    with_handler: struct {
+        handler: NodeId,
+        body: []NodeId,
+        span: Span,
+    },
 };
 
 pub const ImportSelection = union(enum) {

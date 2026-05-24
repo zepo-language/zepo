@@ -276,6 +276,9 @@ fn computeMaxReg(f: *Function) Reg {
             .null_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
             .pair_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
             .eq_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
+            .push_handler => |x| { upd.go(x.handler, &max_r); upd.go(x.dst, &max_r); },
+            .pop_handler => {},
+            .move => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
             .branch, .label, .safepoint => {},
         }
     }
@@ -285,6 +288,10 @@ fn computeMaxReg(f: *Function) Reg {
 const JumpFixup = struct {
     instr_index: u32,
     label: Label,
+    /// zepo-9bi: bc means "patch as JUMP-style 16-bit BC field"; raw_u32
+    /// means "overwrite the entire instruction word with the resolved pc
+    /// as a u32" — used for PUSH_HANDLER's resume_pc word2.
+    kind: enum { bc, raw_u32 } = .bc,
 };
 
 const FnEmit = struct {
@@ -520,6 +527,20 @@ const FnEmit = struct {
                 try c.emitJumpFixup(.JUMP, 0, x.else_label);
             },
             .mod2 => |x| try c.emitInstr(bytecode.encode(.MOD2, c.phys(x.dst), c.phys(x.src1), c.phys(x.src2))),
+            // zepo-9bi: 2-word PUSH_HANDLER. Word1 carries handler_reg and
+            // dst_reg; word2 is the absolute resume pc (patched after layout).
+            .push_handler => |x| {
+                try c.emitInstr(bytecode.encode(.PUSH_HANDLER, c.phys(x.handler), c.phys(x.dst), 0));
+                // word2 placeholder; patched to the resolved resume_pc.
+                try c.fixups.append(c.e.allocator, .{
+                    .instr_index = c.currentPc(),
+                    .label = x.resume_label,
+                    .kind = .raw_u32,
+                });
+                try c.emitInstr(0);
+            },
+            .pop_handler => try c.emitInstr(bytecode.encode(.POP_HANDLER, 0, 0, 0)),
+            .move => |x| try c.emitInstr(bytecode.encode(.MOVE, c.phys(x.dst), c.phys(x.src), 0)),
             .label => |x| {
                 try c.label_positions.put(x.id, c.currentPc());
             },
@@ -622,11 +643,20 @@ const FnEmit = struct {
     fn patchJumps(c: *FnEmit) !void {
         for (c.fixups.items) |fx| {
             const pos = c.label_positions.get(fx.label) orelse return error.UnresolvedLabel;
-            const instr = c.code.items[fx.instr_index];
-            const op = bytecode.decodeOp(instr);
-            const a = bytecode.decodeA(instr);
-            if (pos > 0xFFFF) return error.JumpTargetTooFar;
-            c.code.items[fx.instr_index] = bytecode.encodeBC(op, a, @intCast(pos));
+            switch (fx.kind) {
+                .bc => {
+                    const instr = c.code.items[fx.instr_index];
+                    const op = bytecode.decodeOp(instr);
+                    const a = bytecode.decodeA(instr);
+                    if (pos > 0xFFFF) return error.JumpTargetTooFar;
+                    c.code.items[fx.instr_index] = bytecode.encodeBC(op, a, @intCast(pos));
+                },
+                .raw_u32 => {
+                    // zepo-9bi: PUSH_HANDLER word2 holds the resume pc as
+                    // a full u32 absolute address within the current func.
+                    c.code.items[fx.instr_index] = pos;
+                },
+            }
         }
     }
 };

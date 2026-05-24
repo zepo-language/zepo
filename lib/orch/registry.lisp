@@ -107,29 +107,30 @@
     (let ((pair (assoc key alist)))
       (and pair (cdr pair))))
 
-  ; Validate then invoke. Tool functions return their own value, which
-  ; the registry wraps in (ok ...) if it isn't already a result tuple.
+  ; Validate then invoke. Tool functions may either return a result tuple
+  ; (ok v) / (err k m) directly, return a bare value (auto-wrapped in ok),
+  ; or raise an exception (caught via guard and surfaced as
+  ; (err 'tool-failure msg)).
   ;
-  ; Note (zepo-9bi): we used to wrap the call in (guard ...) so tools
-  ; that raise would surface as (err 'tool-failure msg). That worked
-  ; for synchronous tools but broke any tool that yields (sleep,
-  ; channel-recv!, HTTP) — guard intercepts the fiber-yield as if it
-  ; were a raised exception. Until that VM bug is fixed, tools must
-  ; either:
-  ;   (a) return (ok v) / (err k m) themselves, or
-  ;   (b) return a bare value that we auto-wrap in (ok v).
-  ; A tool that genuinely raises will crash the executor; tools that
-  ; want fault isolation should wrap their own work appropriately.
+  ; Note: this used to be ungarded because of zepo-9bi (guard ate fiber
+  ; yields). That VM bug is fixed; guard now plays correctly with sleep,
+  ; HTTP, channel-recv!, and other yielding ops, so we can restore
+  ; exception isolation around tool calls.
   (define (call-tool entry args)
     (let ((checked (validate-args entry args)))
       (cond
         ((err? checked) checked)
         (else
-          (let* ((fn  (vector-ref entry 0))
-                 (raw (fn args)))
-            (cond
-              ((or (ok? raw) (err? raw)) raw)
-              (else (ok raw))))))))
+          (let ((fn (vector-ref entry 0)))
+            (guard (exn
+                    ((error-object? exn)
+                     (err 'tool-failure (error-object-message exn)))
+                    ((string? exn) (err 'tool-failure exn))
+                    (else (err 'tool-failure "tool raised a non-error value")))
+              (let ((raw (fn args)))
+                (cond
+                  ((or (ok? raw) (err? raw)) raw)
+                  (else (ok raw))))))))))
 
   ; ── Helpers ────────────────────────────────────────────────────────────
 
