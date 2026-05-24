@@ -786,6 +786,18 @@ call-site variables:
 | Ellipsis | Manual recursion | Built-in `...` |
 | Best for | Complex transformations, computed templates | Most everyday macros |
 
+**Known limitation (zepo-aua):** Paired ellipsis destructuring — where two pattern variables are captured from the same `...` sequence and must expand independently in the template — is not yet implemented. For example, this does not work:
+
+```scheme
+; NOT YET SUPPORTED — two vars (var, val) from one ellipsis:
+(define-syntax my-let
+  (syntax-rules ()
+    ((_ ((var val) ...) body)
+     ((lambda (var ...) body) val ...))))   ; ERROR: unbound var
+```
+
+Use explicit recursion via `defmacro` or a helper macro for this pattern until zepo-aua is resolved.
+
 ---
 
 ## Primitives
@@ -2997,6 +3009,104 @@ Root finding.
 ; Secant
 (secant-root f 1.0 2.0)       ; => ≈ 1.414
 ```
+
+---
+
+## Zig FFI
+
+Zepo has a compile-time FFI for calling Zig functions from Lisp. It is intended for embedding Zepo in a Zig host application or for shipping accelerated Zig libraries alongside a Zepo script.
+
+FFI is a **build-time** feature — you write a Zig file, use `zepo.ffi.expose` to generate wrappers, and register them before creating an `EvalContext`. It is not available from plain `.lisp` scripts.
+
+### Type mapping
+
+The FFI automatically marshals between Zig and Lisp types:
+
+| Zig param/return type | Lisp value |
+|---|---|
+| `bool` | `#t` / `#f` |
+| any integer (`i8`…`i64`, `u8`…`u32`) | fixnum |
+| any float (`f32`, `f64`) | float |
+| `[]const u8` | string (copied) |
+| `void` | FFI void handle (convert with `ffi-to-lisp` → `#void`) |
+| error union (`!T`) | `(ok . value)` or `(err kind-symbol message)` on error |
+
+Opaque handles (int, float, bool, string, void returns) land as **foreign objects** — they are GC-managed but opaque to Lisp. Use the accessor primitives below to convert them to first-class Lisp values.
+
+### Defining and registering Zig bindings
+
+```zig
+// math_lib.zig  — the Zig module to expose
+pub fn add(a: i64, b: i64) i64 { return a + b; }
+pub fn sqrt_f(x: f64) f64 { return @sqrt(x); }
+pub fn greet(name: []const u8) []const u8 { return "hello"; }
+
+// In your Zig host:
+const Bindings = zepo.ffi.expose(math_lib, .{
+    .add    = .{},
+    .sqrt_f = .{},
+    .greet  = .{},
+});
+
+// Register before creating EvalContext:
+try Bindings.register(&gc, &globals, &symbols);
+// Or into a module:
+try Bindings.registerIntoModule(&gc, &symbols, &my_module);
+```
+
+After `register`, `add`, `sqrt_f`, and `greet` are callable from Lisp.
+
+### Accessor primitives
+
+FFI return values are opaque foreign handles. These primitives unwrap them:
+
+#### `(ffi-to-lisp handle)` → value
+Universal converter — inspects the handle's type tag and converts automatically. Returns `#void` for void handles, a fixnum for int handles, etc. Raises `TypeError` for unknown tag types (e.g. user-defined opaque handles).
+
+#### `(ffi-int handle)` → fixnum
+Unwrap an integer handle. Raises `ContractViolation` if the value overflows the fixnum range (i63).
+
+#### `(ffi-float handle)` → float
+Unwrap a float handle.
+
+#### `(ffi-bool handle)` → bool
+Unwrap a boolean handle.
+
+#### `(ffi-string handle)` → string
+Unwrap a string handle (copies the bytes into the Zepo GC heap).
+
+### Usage from Lisp
+
+```lisp
+; Assuming add, sqrt_f, greet are registered Zig FFI functions:
+(define result (add 3 4))          ; => opaque i64 handle
+(ffi-to-lisp result)               ; => 7
+
+(ffi-to-lisp (sqrt_f 2.0))        ; => 1.4142135623730951
+
+(ffi-to-lisp (greet "world"))     ; => "hello"
+
+; Error union: returns (ok . value) or (err kind msg)
+; (define r (parse-u32 "42"))
+; (car r)   ; => 'ok
+; (cdr r)   ; => 42
+```
+
+### `FnConfig` options
+
+Each entry in the config struct passed to `expose` is a `FnConfig`:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `return_lifetime` | `.copy` (default) | String return is copied into a GC-owned `StringPayload` |
+| `return_lifetime` | `.owned` | String was heap-allocated by the Zig fn; FFI takes ownership |
+| `return_lifetime` | `.borrow_until_next_call` | String is static/stack — valid only until the next FFI call |
+
+### Limitations
+
+- Only primitive Zig types are supported (no structs, slices of non-char, pointers). Complex types require writing a manual wrapper.
+- `u64`/`i128` etc. that don't fit in i63 fixnum cause `ContractViolation` at call time.
+- FFI is compile-time only — not accessible from standalone `.lisp` scripts.
 
 ---
 
