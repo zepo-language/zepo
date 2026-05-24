@@ -202,6 +202,16 @@ pub fn build(b: *std.Build) void {
     const macros_tests = b.addTest(.{ .root_module = macros_test_mod });
     const run_macros_tests = b.addRunArtifact(macros_tests);
 
+    // zepo-yz1: VM dispatch and fiber scheduler tests
+    const vm_fiber_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/runtime/vm_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const vm_fiber_tests = b.addTest(.{ .root_module = vm_fiber_test_mod });
+    const run_vm_fiber_tests = b.addRunArtifact(vm_fiber_tests);
+
     // zepo-c18: syntax-rules / define-syntax tests
     const syntax_rules_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/syntax_rules_test.zig"),
@@ -354,6 +364,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_diagnostic_tests.step);
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_macros_tests.step);
+    test_step.dependOn(&run_vm_fiber_tests.step);
     test_step.dependOn(&run_syntax_rules_tests.step);
     test_step.dependOn(&run_result_tests.step);
     test_step.dependOn(&run_hashtable_tests.step);
