@@ -78,7 +78,10 @@
                    (let ((step (err 'unknown-tool (symbol->string tool))))
                      (ok (cons (cons id step) ctx))))
                   (else
-                    (let ((step (call-tool entry args)))
+                    ; zepo-dqo: resolve {"input_id": "ID"} arg values
+                    ; against ctx before invoking so plans can thread
+                    ; one step's output into a later step's input.
+                    (let ((step (call-tool entry (resolve-args args ctx))))
                       (ok (cons (cons id step) ctx))))))))))))
 
   ; (sequence STEP ...) — run children left-to-right. If any step result
@@ -179,6 +182,28 @@
         (else (cdr entry)))))
 
   ; ── Helpers ────────────────────────────────────────────────────────────
+
+  ; zepo-dqo: resolve arg values that name a prior step's result.
+  ; If a value is a hash-table with an "input_id" key (the shape the
+  ; planner emits when it threads outputs through the JSON plan), look
+  ; the named step up in ctx and substitute its ok-value. Unknown or
+  ; failed steps degrade to the empty string so a downstream LLM tool
+  ; still gets a sensible string argument.
+  (define (resolve-args args ctx)
+    (map (lambda (kv) (cons (car kv) (resolve-value (cdr kv) ctx))) args))
+
+  (define (resolve-value v ctx)
+    (cond
+      ((and (hash-table? v) (hash-contains? v "input_id"))
+       (let ((sid (hash-get v "input_id")))
+         (cond
+           ((not (string? sid)) v)
+           (else
+             (let ((res (step-result-of sid ctx)))
+               (cond
+                 ((ok? res) (result-value res))
+                 (else "")))))))
+      (else v)))
 
   (define (assoc-cdr key alist)
     (let ((p (assoc key alist)))
