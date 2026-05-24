@@ -49,14 +49,21 @@
 (assert-eq "any/int"  '(ok . 42)        (call-tool (lookup-tool 'pass) (list (cons 'x 42))))
 (assert-eq "any/list" '(ok 1 2)         (call-tool (lookup-tool 'pass) (list (cons 'x '(1 2)))))
 
-; --- tool that raises --------------------------------------------------------
-(register-tool! 'boom (lambda (a) (error "kaboom")) :inputs '())
-(let ((r (call-tool (lookup-tool 'boom) '())))
-  (assert-eq "tool error caught" #t (err? r))
-  (assert-eq "tool error kind"   'tool-failure (err-kind r)))
+; --- tool that returns an err tuple ----------------------------------------
+; Tools that want fault isolation must return (err ...) themselves; the
+; registry no longer wraps the call in guard because that breaks any
+; tool that yields (sleep/HTTP/channel-recv) — see zepo-9bi.
+(register-tool! 'fail (lambda (a) (err 'expected "no")) :inputs '())
+(let ((r (call-tool (lookup-tool 'fail) '())))
+  (assert-eq "tool err pass-through" #t (err? r))
+  (assert-eq "tool err kind"         'expected (err-kind r)))
+
+; --- raw value is auto-wrapped in (ok ...) ----------------------------------
+(register-tool! 'raw (lambda (a) 99) :inputs '())
+(assert-eq "auto-wrap raw" '(ok . 99) (call-tool (lookup-tool 'raw) '()))
 
 ; --- unregister --------------------------------------------------------------
-(unregister-tool! 'boom)
-(assert-eq "after unregister" #f (lookup-tool 'boom))
+(unregister-tool! 'fail)
+(assert-eq "after unregister" #f (lookup-tool 'fail))
 
 (display "all checks passed.") (newline)

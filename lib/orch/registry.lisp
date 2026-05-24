@@ -107,20 +107,29 @@
     (let ((pair (assoc key alist)))
       (and pair (cdr pair))))
 
-  ; Validate then invoke. Returns whatever the tool returns wrapped in ok
-  ; on success, or a typed err. Exceptions raised by the tool are caught
-  ; and surfaced as (err 'tool-failure msg).
+  ; Validate then invoke. Tool functions return their own value, which
+  ; the registry wraps in (ok ...) if it isn't already a result tuple.
+  ;
+  ; Note (zepo-9bi): we used to wrap the call in (guard ...) so tools
+  ; that raise would surface as (err 'tool-failure msg). That worked
+  ; for synchronous tools but broke any tool that yields (sleep,
+  ; channel-recv!, HTTP) — guard intercepts the fiber-yield as if it
+  ; were a raised exception. Until that VM bug is fixed, tools must
+  ; either:
+  ;   (a) return (ok v) / (err k m) themselves, or
+  ;   (b) return a bare value that we auto-wrap in (ok v).
+  ; A tool that genuinely raises will crash the executor; tools that
+  ; want fault isolation should wrap their own work appropriately.
   (define (call-tool entry args)
     (let ((checked (validate-args entry args)))
       (cond
         ((err? checked) checked)
         (else
-          (let ((fn (vector-ref entry 0)))
-            (guard (exn
-                    ((error-object? exn)
-                     (err 'tool-failure (error-object-message exn)))
-                    (else (err 'tool-failure "non-error raised by tool")))
-              (ok (fn args))))))))
+          (let* ((fn  (vector-ref entry 0))
+                 (raw (fn args)))
+            (cond
+              ((or (ok? raw) (err? raw)) raw)
+              (else (ok raw))))))))
 
   ; ── Helpers ────────────────────────────────────────────────────────────
 
