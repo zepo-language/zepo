@@ -1071,13 +1071,22 @@ full word to fit: u16 needs `offset+1 < length`, u32 needs `offset+3 < length`.
 | `display` | 1 | Print value without quotes/escapes |
 | `write` | 1 | Print value in read-back form (strings quoted, chars as `#\x`) |
 | `newline` | 0 | Print a newline |
+| `display-to-string` | 1 | Like `display` but returns a string instead of printing |
+| `write-to-string` | 1 | Like `write` but returns a string instead of printing |
+| `format` | -1 | `(format fmt arg ...)` → string — interpolate args into format string |
 | `argv` | 0 | Return command-line args as a list of strings |
 
+`format` directives: `~a` (display), `~s` (write), `~%` (newline), `~~` (literal tilde).
+
 ```scheme
-(display "hello")     ; prints: hello
-(write "hello")       ; prints: "hello"
-(newline)             ; prints newline
-(argv)                ; => ("zepo" "foo.lisp" ...)
+(display "hello")               ; prints: hello
+(write "hello")                 ; prints: "hello"
+(newline)                       ; prints newline
+(display-to-string '(1 2 3))    ; => "(1 2 3)"
+(write-to-string "hi")          ; => "\"hi\""
+(format "~a + ~a = ~a" 1 2 3)   ; => "1 + 2 = 3"
+(format "line~%end")            ; => "line\nend"
+(argv)                          ; => ("zepo" "foo.lisp" ...)
 ```
 
 ### File I/O
@@ -1197,6 +1206,52 @@ without loading the entire file into memory.
 (shell "echo hello")                    ; => "hello\n"
 (shell/status "test -f project.lisp")  ; => 0 or 1
 (getpid)                               ; => 12345
+```
+
+### Subprocess Management
+
+Spawn child processes with full stdin/stdout pipe control. The child's stderr is inherited from the parent.
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `process-spawn` | -1 | `(process-spawn cmd arg ...)` → process — fork+exec with stdin/stdout pipes |
+| `process?` | 1 | Return `#t` if value is a process handle |
+| `process-pid` | 1 | `(process-pid proc)` → integer PID |
+| `process-send` | 2 | `(process-send proc str)` — write string to child's stdin |
+| `process-close-stdin` | 1 | `(process-close-stdin proc)` — send EOF to child's stdin |
+| `process-recv` | 2 | `(process-recv proc max-bytes)` → string — read up to N bytes from stdout (empty = EOF) |
+| `process-recv-line` | 1 | `(process-recv-line proc)` → string or eof-object — read one line |
+| `process-recv-all` | 1 | `(process-recv-all proc)` → string — read all remaining stdout |
+| `process-wait` | 1 | `(process-wait proc)` → integer — wait for exit, return exit code |
+| `process-kill` | 2 | `(process-kill proc sig-num)` — send signal to child (use `signal-number` for names) |
+
+```scheme
+; Run a command and collect its output
+(define p (process-spawn "ls" "-la"))
+(display (process-recv-all p))
+(process-wait p)
+
+; Pipe input to a child
+(define p (process-spawn "cat"))
+(process-send p "hello\n")
+(process-send p "world\n")
+(process-close-stdin p)
+(display (process-recv-all p))   ; => "hello\nworld\n"
+(process-wait p)
+
+; Read output line by line
+(define p (process-spawn "seq" "1" "5"))
+(let loop ()
+  (let ((line (process-recv-line p)))
+    (unless (eof-object? line)
+      (display line) (newline)
+      (loop))))
+(process-wait p)
+
+; Kill a process
+(define p (process-spawn "sleep" "60"))
+(process-kill p (signal-number 'SIGTERM))
+(process-wait p)
 ```
 
 ### Signals
