@@ -202,6 +202,16 @@ pub fn build(b: *std.Build) void {
     const macros_tests = b.addTest(.{ .root_module = macros_test_mod });
     const run_macros_tests = b.addRunArtifact(macros_tests);
 
+    // zepo-c18: syntax-rules / define-syntax tests
+    const syntax_rules_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/runtime/syntax_rules_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const syntax_rules_tests = b.addTest(.{ .root_module = syntax_rules_test_mod });
+    const run_syntax_rules_tests = b.addRunArtifact(syntax_rules_tests);
+
     const result_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/result_test.zig"),
         .target = target,
@@ -344,6 +354,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_diagnostic_tests.step);
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_macros_tests.step);
+    test_step.dependOn(&run_syntax_rules_tests.step);
     test_step.dependOn(&run_result_tests.step);
     test_step.dependOn(&run_hashtable_tests.step);
     test_step.dependOn(&run_ffi_basic_tests.step);
