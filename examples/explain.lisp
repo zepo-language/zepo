@@ -1,52 +1,68 @@
-; examples/explain.lisp — cross-file, multi-hop code explanation.
+; examples/explain.lisp — QUERY stage of the code-understanding tool.
 ;
-; The iterative, cross-file successor to explain-file.lisp. Resolves a
-; source spec (file / directory / glob / :repo), builds a cached embedding
-; index (orch/corpus), then runs the multi-hop research loop (orch/research):
-; retrieve to locate, grep to chase exact symbols across files, then a code
-; model synthesizes a grounded answer. Read-only — it never modifies anything.
+; Loads the vector store persisted by index-repo.lisp (.zepo-index/store.json)
+; — NO corpus embedding — then runs the multi-hop research loop (orch/research):
+; embed only the question, retrieve, grep to chase exact symbols, and a code
+; model synthesizes a grounded answer. Read-only.
+;
+; Index first:  zepo examples/index-repo.lisp -- <spec>
+; Then query:   zepo examples/explain.lisp   -- "<question>"
 ;
 ; Requires Ollama on localhost:11434 with nomic-embed-text + qwen2.5-coder:7b.
 ;
-; KNOWN LIMITATION (zepo-gol): on a LARGE real-embedding corpus (many files /
-; hundreds of chunks) this can hit separate GC-safety bugs under heap pressure
-; (HandleScope overflow in JSON marshaling, etc.) that are independent of the
-; multi-hop logic. Small corpora and the offline test suite work; heavy-load
-; GC hardening is tracked in zepo-gol.
-;
-; Run:
-;   zepo examples/explain.lisp -- <spec> "<question>"
-;   zepo examples/explain.lisp -- lib/orch "how does the planner feed errors back, and where is the validator it calls defined?"
-;
-; zepo-t40
+; zepo-frz
 
-(import :libs (orch/corpus))
+(import :libs (orch/vector_store))
 (import :libs (orch/research))
 
+(define store-path   ".zepo-index/store.json")
+(define sources-path ".zepo-index/sources.json")
+
 (define raw-argv (argv))
-(define args (if (>= (length raw-argv) 4) (cddr raw-argv) '()))
+(define args (if (>= (length raw-argv) 3) (cddr raw-argv) '()))
 
 (cond
-  ((< (length args) 2)
-   (display "usage: zepo examples/explain.lisp -- <spec> \"<question>\"") (newline)
+  ((< (length args) 1)
+   (display "usage: zepo examples/explain.lisp -- \"<question>\"") (newline)
+   (display "  (run  zepo examples/index-repo.lisp -- <spec>  first)") (newline)
+   (exit 1)))
+(define question (car args))
+
+(cond
+  ((not (file-exists? store-path))
+   (display "no index at ") (display store-path) (newline)
+   (display "run:  zepo examples/index-repo.lisp -- <spec>") (newline)
    (exit 1)))
 
-(define spec     (car args))
-(define question (cadr args))
-
-(define srcs (resolve-sources spec))
+; --- load persisted index (no corpus embedding) ---
+(define loaded (store-load store-path))
 (cond
-  ((err? srcs)
-   (display "resolve error: ") (display (err-message srcs)) (newline) (exit 1)))
-(define sources (result-value srcs))
+  ((err? loaded)
+   (display "index load error: ") (display (err-message loaded)) (newline) (exit 1)))
+(define store (result-value loaded))
 
-(display "── indexing ") (display (length sources)) (display " files…") (newline)
-(define idx (build-index sources))
-(cond
-  ((err? idx)
-   (display "index error: ") (display (err-message idx)) (newline) (exit 1)))
-(define store (result-value idx))
+; sources list (for grep_code) persisted alongside the store
+(define (vec->list v)
+  (let loop ((i (- (vector-length v) 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (vector-ref v i) acc)))))
+(define sources
+  (let ((p (json-parse (file-read-string sources-path))))
+    (if (ok? p) (vec->list (result-value p)) '())))
 
+; --- staleness: warn (non-fatal) if any source is newer than the index ---
+(define store-mtime (or (file-mtime store-path) 0))
+(define stale
+  (let loop ((ss sources) (n 0))
+    (cond
+      ((null? ss) n)
+      ((> (or (file-mtime (car ss)) 0) store-mtime) (loop (cdr ss) (+ n 1)))
+      (else (loop (cdr ss) n)))))
+(when (> stale 0)
+  (display "⚠ ") (display stale)
+  (display " source file(s) changed since indexing — re-run index-repo for fresh results.")
+  (newline))
+
+(display "── loaded ") (display (store-size store)) (display " chunks from index") (newline)
 (display "── researching (retrieve + grep, multi-hop)…") (newline)
 (define answer (research question sources store))
 
