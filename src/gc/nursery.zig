@@ -230,8 +230,34 @@ fn forwardSlot(ctx: *CopyCtx, slot: *Value) void {
     slot.* = value_mod.fromPtr(target);
 }
 
+/// zepo-jus: forward a slot that lives inside an OLD-GEN object, then record
+/// the old->young edge if it now points at a young (to-space) survivor. Used
+/// only when scanning old objects (dirty cards + promoted interiors), so the
+/// young-heavy Cheney loop pays no per-pointer card-marking cost. markCard is
+/// a no-op unless `slot` is in the old-gen range, so this is also self-filtering.
+/// This rebuilds the remembered set the collector itself dirties — edges the
+/// end-of-collect clearAll used to drop, collecting the young target next pass.
+fn forwardSlotOld(ctx: *CopyCtx, slot: *Value) void {
+    forwardSlot(ctx, slot);
+    const v = slot.*;
+    if (!value_mod.isPtr(v)) return;
+    if (ctx.nursery.contains(value_mod.ptrVal(v))) {
+        ctx.cards.markCard(@intFromPtr(slot));
+    }
+}
+
+fn forwardSlotOldFn(ctx_raw: *anyopaque, slot: *Value) void {
+    const ctx: *CopyCtx = @ptrCast(@alignCast(ctx_raw));
+    forwardSlotOld(ctx, slot);
+}
+
 fn cheneyScanObj(ctx: *CopyCtx, obj: *ObjHeader) void {
     forEachValueSlot(obj, ctx, forwardSlotFn);
+}
+
+/// Scan an OLD-GEN object's interior, recording any surviving old->young edges.
+fn cheneyScanObjOld(ctx: *CopyCtx, obj: *ObjHeader) void {
+    forEachValueSlot(obj, ctx, forwardSlotOldFn);
 }
 
 /// Run a minor collection. Roots + remembered set are traced; reachable objects
@@ -249,9 +275,13 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     // 1. Roots.
     roots.visitAll(@ptrCast(&ctx), forwardSlotFn);
 
-    // 2. Remembered set (dirty cards in old-gen): scan every old-gen object
-    //    that falls on a dirty card for young pointers.
-    og.scanDirtyCards(cards, &ctx, forwardSlotFn);
+    // 2. Remembered set: scan dirty old-gen cards for young pointers.
+    //    zepo-jus: scanDirtyCards clears each card as it scans it, so
+    //    forwardSlot's re-marks (for old->young edges that survive, plus ones
+    //    the collector creates by promotion) rebuild the post-collection
+    //    remembered set. This replaces the old end-of-collect clearAll, which
+    //    dropped collector-created edges and collected their young targets.
+    og.scanDirtyCards(cards, &ctx, forwardSlotOldFn);
 
     // 3. Cheney scan loop.
     while (@intFromPtr(ctx.scan) < @intFromPtr(ctx.to_bump)) {
@@ -276,7 +306,10 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     {
         var pi: usize = 0;
         while (pi < ctx.promoted.items.len) : (pi += 1) {
-            cheneyScanObj(&ctx, ctx.promoted.items[pi]);
+            // zepo-jus: promoted objects are now OLD; scan their interiors with
+            // the old-object visitor so any slot still pointing at a young
+            // survivor is recorded in the remembered set.
+            cheneyScanObjOld(&ctx, ctx.promoted.items[pi]);
             // Drain new to-space copies produced by the scan above.
             while (@intFromPtr(ctx.scan) < @intFromPtr(ctx.to_bump)) {
                 const obj: *ObjHeader = @ptrCast(@alignCast(ctx.scan));
@@ -291,6 +324,9 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     if (ctx.err) |e| return e;
 
     // 4. Flip: old from-space is garbage. Swap from/to and reset bump.
+    //    zepo-jus: the card table is NOT cleared here — forwardSlot rebuilt it
+    //    above to hold every surviving old->young edge. Clearing it (as the
+    //    old code did) would drop the collector-created edges.
     const old_from = n.from_start;
     const old_from_end = n.from_end;
     n.from_start = n.to_start;
@@ -302,10 +338,6 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     // zepo-299: only zero to-space in debug builds for dangling-pointer detection.
     if (builtin.mode == .Debug) @memset(n.to_start[0..NURSERY_SIZE], 0);
 
-    // 5. Clear dirty cards (they've been scanned). New old->young edges from
-    //    surviving young ptrs are re-inserted by the write barrier as needed,
-    //    but here nothing has written yet so clearing is safe.
-    cards.clearAll();
 }
 
 test "nursery alloc/exhaust" {
