@@ -67,7 +67,21 @@
             ((string=? t "sequence")     (build-children     v path 'sequence))
             ((string=? t "parallel")     (build-children     v path 'parallel))
             ((string=? t "final-answer") (build-final-answer v path))
+            ((string=? t "finish")       (build-finish       v path))
             (else (bad path (string-append "unknown type: " t))))))))
+
+  ; zepo-fao: {"type":"finish","text":string} — the ReAct loop's terminal
+  ; form. Tells run-agent to stop and return `text` as the answer.
+  (define (build-finish v path)
+    (cond
+      ((not (hash-contains? v "text"))
+       (bad path "finish requires 'text'"))
+      (else
+        (let ((text (hash-get v "text")))
+          (cond
+            ((not (string? text))
+             (bad (join path "text") "text must be a string"))
+            (else (ok (list 'finish text))))))))
 
   ; {"type":"tool-call","id":string,"tool":string,"args":object}
   (define (build-tool-call v path)

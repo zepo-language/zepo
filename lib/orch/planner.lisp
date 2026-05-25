@@ -10,8 +10,9 @@
 
 (module orch/planner
   (export plan plan-with
+          plan-next-step plan-next-step-with
           default-planner-model default-planner-url default-retries
-          build-system-prompt)
+          build-system-prompt build-next-step-system-prompt)
 
   (import orch/http)
   (import orch/plan)
@@ -59,6 +60,19 @@
                                content
                                (err-message validated))))))))))))
 
+  ; zepo-fao: next-action mode for the ReAct loop (orch/agent). Given the
+  ; goal and the transcript of actions taken so far, ask the model for the
+  ; SINGLE next action — one tool-call or a finish. Reuses try-plan's
+  ; retry-with-feedback loop and the orch/plan validator (which now parses
+  ; both tool-call and finish). Returns (ok core-form) | (err ...).
+  (define (plan-next-step goal history)
+    (plan-next-step-with goal history
+                         default-planner-model default-planner-url default-retries))
+
+  (define (plan-next-step-with goal history model url retries)
+    (let ((system (build-next-step-system-prompt)))
+      (try-plan goal history system model url retries #f #f)))
+
   ; ── Prompt construction ───────────────────────────────────────────────────
 
   ; Build the system message. Enumerates registered tools and shows the
@@ -91,6 +105,37 @@
       "- Use parallel ONLY when steps are independent.\n"
       "- Keep step count minimal.\n"
       "- Every plan that produces a user-facing answer must end with a final-answer step.\n"))
+
+  ; zepo-fao: system prompt for next-action (ReAct) mode. One action per
+  ; turn — a tool-call to make progress, or a finish to answer the goal.
+  (define (build-next-step-system-prompt)
+    (string-append
+      "You are an agent that takes ONE action at a time in a loop.\n"
+      "OUTPUT JSON ONLY. No prose, no commentary, no markdown fences.\n"
+      "\n"
+      "Available tools:\n"
+      (format-tool-catalog (list-tools))
+      "\n"
+      "Each turn, return EXACTLY ONE JSON object, either:\n"
+      "  {\"type\":\"tool-call\",\"id\":\"<fresh-id>\",\"tool\":\"<name>\",\"args\":{...}}\n"
+      "  {\"type\":\"finish\",\"text\":\"<final answer to the goal>\"}\n"
+      "\n"
+      "The Context below is the transcript of actions you have already\n"
+      "taken and their results (one line per step, e.g. \"step s1 ok: ...\").\n"
+      "To reuse a prior step's output as an arg value, use the object\n"
+      "{\"input_id\":\"<that-step-id>\"} as the whole arg value.\n"
+      "\n"
+      "Decide each turn with this procedure:\n"
+      "1. Read the Context transcript.\n"
+      "2. If it ALREADY contains the result needed to answer the Goal,\n"
+      "   you MUST return a finish object now and MUST NOT call any tool.\n"
+      "3. Otherwise, call exactly ONE tool to make progress.\n"
+      "\n"
+      "Rules:\n"
+      "- Never invent tools. Use only the tools listed above.\n"
+      "- Never repeat a tool-call whose result is already in the transcript.\n"
+      "- Give every tool-call a fresh, unique id.\n"
+      "- When in doubt, prefer finish over another tool call.\n"))
 
   (define (format-tool-catalog names)
     (cond
