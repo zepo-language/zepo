@@ -31,7 +31,7 @@
   (import orch/http)
 
   (define max-research-iters 6)      ; bound iterations (and transcript growth)
-  (define retrieve-k         3)      ; hits per retrieve_code call
+  (define retrieve-k         6)      ; hits per retrieve_code call
   (define max-hit-chars      500)    ; truncate each chunk in the transcript
   (define max-grep-matches   25)     ; cap grep output
   (define default-code-model "qwen2.5-coder:7b")
@@ -50,8 +50,14 @@
   (define (research-with goal sources store next-step embed-fn synth-fn)
     (let ((acc (vector '())))                       ; accumulator: reversed list
       (setup-tools! store sources acc embed-fn)
+      ; zepo-546: seed the accumulator with a retrieve for the goal so the
+      ; synthesis ALWAYS has grounded context — the loop's planner often
+      ; finishes without retrieving (it sees a generic "prefer finish"
+      ; prompt), which left synthesis with empty context and hallucinating.
+      ; The loop below then refines with additional hops.
+      (call-tool (lookup-tool 'retrieve_code) (list (cons 'query goal)))
       (run-agent goal max-research-iters next-step) ; read-only; gather into acc
-      (synth-fn goal (accumulator->string acc))))   ; synthesize from gathered ctx
+      (synth-fn goal (accumulator->string acc))))
 
   (define (setup-tools! store sources acc embed-fn)
     (reset-registry!)
@@ -154,13 +160,25 @@
 
   (define (default-synth)
     (lambda (goal context)
+      ; zepo-546: strict-grounding prompt. The model was given correct code
+      ; chunks yet hallucinated a Python answer for a Lisp codebase, so spell
+      ; out: answer ONLY from the context, never invent files/functions/
+      ; languages, refuse when the context lacks the answer.
       (chat default-code-model default-chat-url
             (string-append
-              "Question: " goal "\n\n"
-              "Retrieved context from the codebase (cite file:line ranges):\n"
+              "You are a precise code assistant. Answer the QUESTION using the\n"
+              "RETRIEVED CONTEXT below — real source code from THIS repository.\n"
+              "- Explain the relevant code that is shown. Quote real identifiers\n"
+              "  and cite their file:line ranges.\n"
+              "- Do NOT invent files, functions, classes, languages, or APIs that\n"
+              "  are not present in the context. Use only names that appear there.\n"
+              "- Only if the context is clearly unrelated to the question, say it\n"
+              "  does not contain the answer — otherwise explain the code.\n"
+              "\n"
+              "QUESTION:\n" goal "\n\n"
+              "RETRIEVED CONTEXT (real code from this repo):\n"
               context "\n\n"
-              "Answer the question concisely, grounded ONLY in the context above. "
-              "Cite the file and line ranges you used."))))
+              "ANSWER:"))))
 
   ; Minimal /v1/chat/completions call -> (ok content) | (err ...).
   (define (chat model url prompt)
