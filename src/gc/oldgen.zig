@@ -96,10 +96,24 @@ pub const OldGen = struct {
         return (@intFromPtr(h) - @intFromPtr(og.base)) / cards_mod.CARD_SIZE;
     }
 
-    fn recordCardStart(og: *OldGen, h: *ObjHeader) void {
-        const idx = og.cardIdx(h);
-        if (idx >= og.card_starts.len) return;
-        if (og.card_starts[idx] == null) og.card_starts[idx] = h;
+    // zepo-gol: record this block as the card-start for EVERY card its body
+    // spans, not just the card it begins in. A large object (e.g. a 768-float
+    // embedding vector = 6152 bytes) spans multiple 4096-byte cards; when a
+    // minor GC scans a dirty LATER card it must begin walking from the object
+    // that COVERS that card's start (this block), or it never visits the
+    // block's slots in that card and their young targets are lost. `if null`
+    // preserves an earlier-starting object for the begin card; for the spanned
+    // cards this block is the covering object. `block_bytes` is the block's
+    // allocated size (header.sizeWords is not yet set when this is called).
+    fn recordCardStart(og: *OldGen, h: *ObjHeader, block_bytes: usize) void {
+        const base = @intFromPtr(og.base);
+        const start_addr = @intFromPtr(h);
+        const first = (start_addr - base) / cards_mod.CARD_SIZE;
+        const last = (start_addr + block_bytes - 1 - base) / cards_mod.CARD_SIZE;
+        var c = first;
+        while (c <= last and c < og.card_starts.len) : (c += 1) {
+            if (og.card_starts[c] == null) og.card_starts[c] = h;
+        }
     }
 
     pub fn contains(og: *const OldGen, ptr: *ObjHeader) bool {
@@ -138,7 +152,7 @@ pub const OldGen = struct {
                 og.free_lists[idx] = node.next;
                 const p: *ObjHeader = @ptrCast(node);
                 @memset(@as([*]u8, @ptrCast(p))[0..block_bytes], 0);
-                og.recordCardStart(p);
+                og.recordCardStart(p, block_bytes);
                 return AllocResult{ .hdr = p, .actual_words = block_body_words };
             }
         } else {
@@ -157,7 +171,7 @@ pub const OldGen = struct {
                     const p: *ObjHeader = @ptrCast(node);
                     const cap_bytes = WORD + cap_words * WORD;
                     @memset(@as([*]u8, @ptrCast(p))[0..cap_bytes], 0);
-                    og.recordCardStart(p);
+                    og.recordCardStart(p, cap_bytes);
                     return AllocResult{ .hdr = p, .actual_words = cap_words };
                 }
             }
@@ -169,7 +183,7 @@ pub const OldGen = struct {
         const p: *ObjHeader = @ptrCast(@alignCast(og.bump));
         og.bump = @ptrFromInt(new_bump);
         @memset(@as([*]u8, @ptrCast(p))[0..block_bytes], 0);
-        og.recordCardStart(p);
+        og.recordCardStart(p, block_bytes);
         return AllocResult{ .hdr = p, .actual_words = block_body_words };
     }
 
