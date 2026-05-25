@@ -398,13 +398,19 @@ pub const OldGen = struct {
         ctx: *anyopaque,
         visit: *const fn (*anyopaque, *Value) void,
     ) void {
-        // Iterate the card table; for each dirty card, walk only objects
-        // starting in that card (using the per-card start index). Objects
-        // spanning multiple cards are scanned once via the card they begin in.
+        // Iterate the card table; for each dirty card, walk objects starting in
+        // that card (per-card start index). Objects spanning multiple cards are
+        // scanned via the card they begin in.
+        // zepo-jus: CLEAR each dirty card before scanning it. As the scan
+        // forwards young pointers, forwardSlot re-marks the card for any
+        // old->young edge that survives, so the table ends the collection
+        // holding the precise post-collection remembered set (no separate
+        // end-of-collect clearAll, which used to drop collector-created edges).
         var card_idx: usize = 0;
         const n_cards = cards.table.len;
         while (card_idx < n_cards) : (card_idx += 1) {
             if (!cards.isCardDirty(card_idx)) continue;
+            cards.table[card_idx] = 0;
             const start_obj = og.card_starts[card_idx] orelse continue;
             const card_end_addr = @intFromPtr(og.base) + (card_idx + 1) * cards_mod.CARD_SIZE;
 
