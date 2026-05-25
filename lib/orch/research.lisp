@@ -29,6 +29,7 @@
   (import orch/vector_store)
   (import orch/planner)
   (import orch/http)
+  (import orch/symbols)   ; zepo-fzi: find_def / find_refs
 
   (define max-research-iters 6)      ; bound iterations (and transcript growth)
   (define retrieve-k         6)      ; hits per retrieve_code call
@@ -48,8 +49,9 @@
   ; The testable core. next-step : (goal history ctx) -> action | (err ...).
   ; embed-fn : text -> (ok vec). synth-fn : (goal context-string) -> (ok answer).
   (define (research-with goal sources store next-step embed-fn synth-fn)
-    (let ((acc (vector '())))                       ; accumulator: reversed list
-      (setup-tools! store sources acc embed-fn)
+    (let ((acc    (vector '()))                     ; accumulator: reversed list
+          (symidx (build-symbol-index sources)))    ; zepo-fzi: defs index
+      (setup-tools! store sources acc embed-fn symidx)
       ; zepo-546: seed the accumulator with a retrieve for the goal so the
       ; synthesis ALWAYS has grounded context — the loop's planner often
       ; finishes without retrieving (it sees a generic "prefer finish"
@@ -59,12 +61,75 @@
       (run-agent goal max-research-iters next-step) ; read-only; gather into acc
       (synth-fn goal (accumulator->string acc))))
 
-  (define (setup-tools! store sources acc embed-fn)
+  (define (setup-tools! store sources acc embed-fn symidx)
     (reset-registry!)
     (register-tool! 'retrieve_code (make-retrieve store acc embed-fn)
                     :inputs '((query . string)) :effect 'read)
     (register-tool! 'grep_code (make-grep sources acc)
-                    :inputs '((pattern . string)) :effect 'read))
+                    :inputs '((pattern . string)) :effect 'read)
+    ; zepo-fzi: precise symbol navigation — find_def surfaces a definition
+    ; (location + code window), find_refs its use sites. This is what lets the
+    ; loop chase cross-references exactly instead of grep-guessing.
+    (register-tool! 'find_def (make-find-def symidx acc)
+                    :inputs '((name . string)) :effect 'read)
+    (register-tool! 'find_refs (make-find-refs sources acc)
+                    :inputs '((name . string)) :effect 'read))
+
+  (define def-window 18)   ; lines of definition body to surface for find_def
+
+  (define (make-find-def symidx acc)
+    (lambda (args)
+      (let* ((name (cdr (assoc 'name args)))
+             (defs (find-def name symidx))
+             (text (format-defs name defs)))
+        (acc-append! acc (string-append "find_def \"" name "\":\n" text))
+        (ok text))))
+
+  (define (make-find-refs sources acc)
+    (lambda (args)
+      (let* ((name (cdr (assoc 'name args)))
+             (text (format-refs name (find-refs name sources))))
+        (acc-append! acc (string-append "find_refs \"" name "\":\n" text))
+        (ok text))))
+
+  ; def sites -> "name defined at file:line\n<code window>" per site.
+  (define (format-defs name defs)
+    (cond
+      ((null? defs) (string-append "(no definition found for " name ")"))
+      (else
+        (let loop ((ds defs) (acc ""))
+          (cond
+            ((null? ds) acc)
+            (else
+              (let ((file (car (car ds))) (line (cdr (car ds))))
+                (loop (cdr ds)
+                      (string-append acc
+                                     name " defined at " file ":" (number->string line) "\n"
+                                     (read-window file line def-window) "\n---\n")))))))))
+
+  ; ref sites -> "name used at:\n  file:line" (capped).
+  (define (format-refs name refs)
+    (cond
+      ((null? refs) (string-append "(no references found for " name ")"))
+      (else
+        (let loop ((rs refs) (k 0) (acc (string-append name " used at:\n")))
+          (cond
+            ((null? rs) acc)
+            ((>= k max-grep-matches) (string-append acc "  …[more truncated]\n"))
+            (else
+              (loop (cdr rs) (+ k 1)
+                    (string-append acc "  " (car (car rs)) ":"
+                                   (number->string (cdr (car rs))) "\n"))))))))
+
+  ; read lines [start, start+count) of a file as a string.
+  (define (read-window path start count)
+    (let ((p (open-input-file path)))
+      (let loop ((line (read-line p)) (n 1) (acc '()))
+        (cond
+          ((eof-object? line) (close-input-port p) (string-join (reverse acc) "\n"))
+          ((>= n (+ start count)) (close-input-port p) (string-join (reverse acc) "\n"))
+          ((>= n start) (loop (read-line p) (+ n 1) (cons line acc)))
+          (else (loop (read-line p) (+ n 1) acc))))))
 
   (define (make-retrieve store acc embed-fn)
     (lambda (args)
