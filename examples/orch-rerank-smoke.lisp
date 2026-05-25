@@ -47,4 +47,16 @@
        (ranked (rerank "zzz nomatch qqq" (list a b) 1.0)))
   (assert-eq "no lexical signal keeps embedding order" 0.90 (car (car ranked))))
 
+; --- whole-id-score: whole-identifier, not substring (zepo-ecq) ---
+(assert-eq "whole-id matches whole"      1.0 (whole-id-score "calls run here" '("run")))
+(assert-eq "whole-id rejects substring"  0.0 (whole-id-score "the run-parallel fn" '("run")))
+(assert-eq "whole-id matches compound"   1.0 (whole-id-score "run-parallel here" '("run-parallel")))
+
+; --- structural-rerank blends whole-id overlap + hotspot ---
+(let* ((a (mk-hit 0.90 "unrelated"))
+       (b (mk-hit 0.60 "spawn fiber here"))
+       (hot (lambda (p) 0.0))
+       (ranked (structural-rerank "spawn fiber" (list a b) hot 0.5 0.0)))
+  (assert-eq "structural lifts term overlap" 0.60 (car (car ranked))))
+
 (display "all checks passed.") (newline)
