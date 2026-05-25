@@ -68,4 +68,13 @@
   (assert-eq "edit+verify accepted" #t (ok? good))
   (assert-eq "edit-alone rejected"  #t (err? bad)))
 
+; --- zepo-m4z: run_shell/run_tests execute in the tools root, so a ---
+; verify step can see the files edit_file just wrote ---
+(call-reg 'edit_file (list (cons 'path "marker.txt") (cons 'content "present")))
+(let ((r (call-reg 'run_tests (list (cons 'cmd "test -f marker.txt")))))
+  (assert-eq "verify sees edited file" #t (ok? r)))
+(let ((r (call-reg 'run_shell (list (cons 'cmd "cat marker.txt")))))
+  (assert-eq "shell runs in root"  #t        (ok? r))
+  (assert-eq "shell sees content"  "present" (result-value r)))
+
 (display "all checks passed.") (newline)

@@ -87,11 +87,18 @@
                   (vector-set! edit-n 0 (+ (vector-ref edit-n 0) 1))
                   "wrote")
                 :effect 'mutating)
+(register-tool! 'verify_tool (lambda (args) "verified") :effect 'verify)
 
-; turn 0 tries the mutating edit; once edit's result (ok or denied) is in
-; ctx, finish. Denial is recorded in ctx so the stub moves on either way.
+(define (ok-step? id ctx)
+  (let ((p (assoc id ctx))) (and p (ok? (cdr p)))))
+
+; turn 0 tries the edit; if it SUCCEEDED (approved), verify before finish
+; (zepo-m4z requires it); if it was denied, no successful mutation so the
+; stub can finish straight away.
 (define (stub-edit goal history ctx)
   (cond ((null? ctx) '(tool-call "m1" edit ()))
+        ((and (ok-step? "m1" ctx) (not (assoc "v1" ctx)))
+         '(tool-call "v1" verify_tool ()))
         (else (list 'finish "done"))))
 
 ; default (no confirm) denies the mutation
@@ -109,5 +116,22 @@
 ; --- the JSON finish form the real planner emits parses to (finish ...) ---
 (let ((r (plan-from-json "{\"type\":\"finish\",\"text\":\"all done\"}")))
   (assert-eq "finish parses to core form" '(ok finish "all done") r))
+
+; --- zepo-m4z: finish is blocked while a mutation is unverified ---
+; edits, then keeps trying to finish without verifying -> must NOT return ok
+(define (stub-bad goal history ctx)
+  (cond ((null? ctx) '(tool-call "m1" edit ()))
+        (else (list 'finish "early"))))
+(let ((r (run-agent "edit without verify" 10 stub-bad (lambda (a) #t))))
+  (assert-eq "unverified finish blocked" #f (equal? r '(ok . "early")))
+  (assert-eq "unverified finish errors"  #t (err? r)))
+
+; edit -> verify -> finish succeeds once the mutation is verified
+(define (stub-good goal history ctx)
+  (cond ((null? ctx)            '(tool-call "m1" edit ()))
+        ((not (assoc "v1" ctx)) '(tool-call "v1" verify_tool ()))
+        (else                   (list 'finish "done"))))
+(let ((r (run-agent "edit then verify" 10 stub-good (lambda (a) #t))))
+  (assert-eq "edit+verify+finish ok" '(ok . "done") r))
 
 (display "all checks passed.") (newline)

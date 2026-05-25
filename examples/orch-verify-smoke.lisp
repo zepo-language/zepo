@@ -76,4 +76,11 @@
              "{\"type\":\"final-answer\",\"from\":\"r1\"}]}"))))
   (assert-eq "accept read-only plan" #t (ok? r)))
 
+; --- zepo-m4z: ReAct single-action validation skips the within-sequence ---
+; rule (a one-action plan is inherently "bare"); the loop enforces verify
+; across turns instead. The full-DAG validator is UNCHANGED.
+(let ((step "{\"type\":\"tool-call\",\"id\":\"e1\",\"tool\":\"edit_file\",\"args\":{\"path\":\"x\",\"content\":\"y\"}}"))
+  (assert-eq "step: bare edit accepted"        #t (ok? (plan-step-from-json step)))
+  (assert-eq "full: bare edit still rejected"  #t (err? (plan-from-json step))))
+
 (display "all checks passed.") (newline)

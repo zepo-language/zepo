@@ -28,18 +28,31 @@
   ;       | (err 'no-progress history) | a propagated executor err.
   (define (run-agent goal max-iters next-step . opt)
     (let ((confirm (if (null? opt) deny-all (car opt))))
-      (let loop ((i 0) (ctx '()) (history "") (last-action #f))
+      (let loop ((i 0) (ctx '()) (history "") (last-action #f) (pending #f))
         (cond
           ((>= i max-iters) (err 'budget-exhausted history))
           (else
             (let ((action (next-step goal history ctx)))
               (cond
                 ((err? action) action)
-                ((finish? action) (ok (finish-text action)))
+                ; zepo-m4z: the verify invariant lives at the loop level
+                ; for ReAct (one bare action per turn can't carry its own
+                ; verify). Refuse to finish while an edit is unverified;
+                ; feed the requirement back so the model runs a verify
+                ; step (e.g. run_tests) and then finishes.
+                ((finish? action)
+                 (cond
+                   ((not pending) (ok (finish-text action)))
+                   (else
+                     (loop (+ i 1) ctx
+                           (string-append history
+                             "REJECTED finish: files were modified but no verify step has run since. Run a verify tool (e.g. run_tests), then finish.\n")
+                           action pending))))
                 ((equal? action last-action) (err 'no-progress history))
                 ; gate: a mutating tool-call the caller won't confirm is
                 ; recorded as a 'denied result (so the planner sees it in
                 ; ctx and history) and the loop moves on without running it.
+                ; A denied mutation never ran, so it leaves pending alone.
                 ((and (tool-call? action)
                       (eq? (tool-effect (action-tool action)) 'mutating)
                       (not (confirm action)))
@@ -47,18 +60,26 @@
                    (loop (+ i 1)
                          (cons (cons id (err 'denied "mutating tool not approved")) ctx)
                          (string-append history "step " id " DENIED: mutating tool not approved\n")
-                         action)))
+                         action pending)))
                 (else
                   (let ((r (run-plan action ctx)))
                     (cond
                       ((err? r) r)
                       (else
                         (let* ((ctx2 (result-value r))
-                               (obs  (render-observation action ctx2)))
-                          (loop (+ i 1)
-                                ctx2
+                               (obs  (render-observation action ctx2))
+                               (eff  (action-effect action))
+                               ; a SUCCESSFUL mutation owes a verify; a
+                               ; verify step clears the debt; reads keep it.
+                               (new-pending
+                                 (cond
+                                   ((eq? eff 'mutating)
+                                    (or pending (mutation-ok? action ctx2)))
+                                   ((eq? eff 'verify) #f)
+                                   (else pending))))
+                          (loop (+ i 1) ctx2
                                 (string-append history obs "\n")
-                                action)))))))))))))
+                                action new-pending)))))))))))))
 
   ; Turn the just-run action's result into a compact transcript line.
   ; Errors are rendered (not swallowed) so the planner can recover.
@@ -85,6 +106,16 @@
   ; core tool-call form is (tool-call ID NAME ARGS).
   (define (action-tool a)  (car (cdr (cdr a))))
   (define (deny-all action) #f)
+
+  ; zepo-m4z: a tool-call action's effect class, or 'read for non-calls.
+  (define (action-effect a)
+    (if (tool-call? a) (tool-effect (action-tool a)) 'read))
+
+  ; Did this mutating action actually succeed (record an ok in ctx)?
+  ; A failed edit changed nothing, so it owes no verify.
+  (define (mutation-ok? action ctx)
+    (and (tool-call? action)
+         (ok? (step-result-of (tool-call-id action) ctx))))
 
   (define (->str v)
     (cond

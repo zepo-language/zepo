@@ -31,12 +31,13 @@
     (let ((system (build-system-prompt)))
       (try-plan goal context system model url retries
                 #f       ; prior-bad-output
-                #f)))    ; prior-error-msg
+                #f       ; prior-error-msg
+                plan-from-json)))  ; full-DAG validator (enforces verify rule)
 
   ; Recursive retry loop. attempt 1..retries; on failure we include the
   ; previous response + reason in the next user message so the model has
   ; something concrete to correct against.
-  (define (try-plan goal context system model url remaining prev-out prev-err)
+  (define (try-plan goal context system model url remaining prev-out prev-err validate-fn)
     (cond
       ((<= remaining 0)
        (err 'plan-invalid
@@ -50,7 +51,7 @@
               (else
                 (let* ((content (result-value resp))
                        (cleaned (strip-code-fences content))
-                       (validated (plan-from-json cleaned)))
+                       (validated (validate-fn cleaned)))
                   (cond
                     ((ok? validated) validated)
                     (else
@@ -58,7 +59,8 @@
                      (try-plan goal context system model url
                                (- remaining 1)
                                content
-                               (err-message validated))))))))))))
+                               (err-message validated)
+                               validate-fn)))))))))))
 
   ; zepo-fao: next-action mode for the ReAct loop (orch/agent). Given the
   ; goal and the transcript of actions taken so far, ask the model for the
@@ -71,7 +73,10 @@
 
   (define (plan-next-step-with goal history model url retries)
     (let ((system (build-next-step-system-prompt)))
-      (try-plan goal history system model url retries #f #f)))
+      ; zepo-m4z: validate single actions structurally only — a bare edit
+      ; is legal here; orch/agent enforces verify across turns.
+      (try-plan goal history system model url retries #f #f
+                plan-step-from-json)))
 
   ; ── Prompt construction ───────────────────────────────────────────────────
 
@@ -134,6 +139,10 @@
       "Rules:\n"
       "- Never invent tools. Use only the tools listed above.\n"
       "- Never repeat a tool-call whose result is already in the transcript.\n"
+      "- A line like 'step <id> ok:' means that step SUCCEEDED, even if it\n"
+      "  printed no output.\n"
+      "- After a verify step (e.g. run_tests) shows ok in the transcript,\n"
+      "  return finish on your very next turn. Never verify twice.\n"
       "- Give every tool-call a fresh, unique id.\n"
       "- When in doubt, prefer finish over another tool call.\n"))
 
