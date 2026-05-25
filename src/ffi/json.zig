@@ -114,6 +114,13 @@ fn marshalJson(vm: *VM, jv: std.json.Value) LispError!Value {
             vm.gc.roots.pushHandleScope(&scope);
             defer vm.gc.roots.popHandleScope();
             const ht_slot = scope.push(ht);
+            // zepo-gol: release the per-entry key/value handles after each
+            // store. Without this the scope accumulated 2 handles per key and
+            // overflowed (HANDLE_SCOPE_CAPACITY=32) on objects with >= 16 keys
+            // — e.g. real LLM/embedding responses. Once `set` stores the entry,
+            // both key and value are rooted via the hash-table (ht_slot), so
+            // resetting the scope back to the table-only base is safe.
+            const base = scope.count;
             var it = obj.iterator();
             while (it.next()) |entry| {
                 const key_str = objects.makeString(vm.gc, entry.key_ptr.*) catch return error.OutOfMemory;
@@ -121,6 +128,7 @@ fn marshalJson(vm: *VM, jv: std.json.Value) LispError!Value {
                 const val = try marshalJson(vm, entry.value_ptr.*);
                 const val_slot = scope.push(val);
                 _ = @import("../runtime/hashtable.zig").set(vm.gc, vm, ht_slot.*, key_slot.*, val_slot.*) catch return error.OutOfMemory;
+                scope.count = base;
             }
             return ht_slot.*;
         },
