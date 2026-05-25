@@ -32,8 +32,12 @@
   (import orch/registry)
 
   ; Top-level entry. ctx starts empty; each step may append (id . result).
-  (define (run-plan plan)
-    (run-step plan '()))
+  ; zepo-qjk: an optional seed-ctx replays a saved/partial run — any
+  ; tool-call whose id is already an (ok ...) in ctx is short-circuited
+  ; (see run-tool-call), so a finished run re-runs zero tools and an
+  ; interrupted one resumes from the first incomplete step.
+  (define (run-plan plan . opt)
+    (run-step plan (if (null? opt) '() (car opt))))
 
   (define (run-step plan ctx)
     (cond
@@ -72,17 +76,25 @@
             ((not (symbol? tool))
              (err 'bad-plan "tool-call tool must be a symbol"))
             (else
-              (let ((entry (lookup-tool tool)))
+              ; zepo-qjk: a seeded successful result for this id short-
+              ; circuits the call so finished steps replay for free. A
+              ; cached err is NOT reused — the step re-runs so a failed
+              ; step gets a fresh attempt on resume.
+              (let ((cached (assoc id ctx)))
                 (cond
-                  ((not entry)
-                   (let ((step (err 'unknown-tool (symbol->string tool))))
-                     (ok (cons (cons id step) ctx))))
+                  ((and cached (ok? (cdr cached))) (ok ctx))
                   (else
-                    ; zepo-dqo: resolve {"input_id": "ID"} arg values
-                    ; against ctx before invoking so plans can thread
-                    ; one step's output into a later step's input.
-                    (let ((step (call-tool entry (resolve-args args ctx))))
-                      (ok (cons (cons id step) ctx))))))))))))
+                    (let ((entry (lookup-tool tool)))
+                      (cond
+                        ((not entry)
+                         (let ((step (err 'unknown-tool (symbol->string tool))))
+                           (ok (cons (cons id step) ctx))))
+                        (else
+                          ; zepo-dqo: resolve {"input_id": "ID"} arg values
+                          ; against ctx before invoking so plans can thread
+                          ; one step's output into a later step's input.
+                          (let ((step (call-tool entry (resolve-args args ctx))))
+                            (ok (cons (cons id step) ctx)))))))))))))))
 
   ; (sequence STEP ...) — run children left-to-right. If any step result
   ; is itself an err, short-circuit and return (err 'plan-failed (cons id
