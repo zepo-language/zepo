@@ -23,6 +23,8 @@
 (module orch/plan
   (export plan-from-json plan-from-data)
 
+  (import orch/registry)   ; zepo-0rs: tool-effect, for the verify rule
+
   ; Parse JSON text and convert it to a core plan form.
   ; Returns (ok core-form) | (err 'json-parse-failed msg) | (err 'invalid-plan reason).
   (define (plan-from-json json-str)
@@ -35,7 +37,18 @@
   ; json-parse) into a core form. Useful for tests that build plans
   ; programmatically without round-tripping through a string.
   (define (plan-from-data v)
-    (validate v "/"))
+    (let ((r (validate v "/")))
+      (cond
+        ((err? r) r)
+        ; zepo-0rs: structurally valid — now enforce that every mutating
+        ; step is verified. Rejection reuses the (err 'invalid-plan
+        ; "at PATH: msg") shape so the planner retry loop handles it the
+        ; same as any other validation failure.
+        (else
+          (let ((chk (enforce-verify (result-value r) "/")))
+            (cond
+              ((err? chk) chk)
+              (else r)))))))
 
   ; Internal: validate v at logical json-pointer `path`. Returns
   ; (ok core-form) | (err 'invalid-plan reason-string-with-path).
@@ -119,6 +132,79 @@
               ((err? r) r)
               (else (validate-each vec path (+ i 1)
                                    (cons (result-value r) acc)))))))))
+
+  ; ── Verify-after-mutation rule (zepo-0rs) ───────────────────────────────
+  ;
+  ; Walk a structurally-valid core form. A mutating tool-call must be
+  ; followed by a verify tool-call in the same sequence; a bare mutating
+  ; tool-call (no enclosing sequence to provide a verify) is rejected; a
+  ; mutating tool-call directly inside a parallel is rejected in v1 (no
+  ; well-defined "after" within a concurrent batch). Read/verify steps
+  ; and final-answer impose no constraint. Returns (ok #t) | (err ...).
+  (define (enforce-verify form path)
+    (cond
+      ((not (pair? form)) (ok #t))
+      (else
+        (let ((tag (car form)))
+          (cond
+            ((eq? tag 'tool-call)
+             (if (mutating? (tool-name form))
+                 (bad path "mutating tool-call must be followed by a verify step in the same sequence")
+                 (ok #t)))
+            ((eq? tag 'sequence)  (check-sequence (cdr form) path 0))
+            ((eq? tag 'parallel)  (check-parallel (cdr form) path 0))
+            (else (ok #t)))))))
+
+  ; Each mutating tool-call needs a later verify tool-call at this level;
+  ; nested sequence/parallel children are recursed into for their own
+  ; mutations.
+  (define (check-sequence steps path i)
+    (cond
+      ((null? steps) (ok #t))
+      (else
+        (let ((step (car steps))
+              (rest (cdr steps))
+              (child-path (join path (number->string i))))
+          (cond
+            ((and (tool-call? step) (mutating? (tool-name step)))
+             (cond
+               ((verify-follows? rest) (check-sequence rest path (+ i 1)))
+               (else (bad child-path "mutating tool-call must be followed by a verify step in the same sequence"))))
+            ((nested? step)
+             (let ((r (enforce-verify step child-path)))
+               (cond ((err? r) r)
+                     (else (check-sequence rest path (+ i 1))))))
+            (else (check-sequence rest path (+ i 1))))))))
+
+  (define (check-parallel steps path i)
+    (cond
+      ((null? steps) (ok #t))
+      (else
+        (let ((step (car steps))
+              (child-path (join path (number->string i))))
+          (cond
+            ((and (tool-call? step) (mutating? (tool-name step)))
+             (bad child-path "mutating tool-call not allowed inside parallel (v1): wrap it in a sequence with a verify step"))
+            ((nested? step)
+             (let ((r (enforce-verify step child-path)))
+               (cond ((err? r) r)
+                     (else (check-parallel (cdr steps) path (+ i 1))))))
+            (else (check-parallel (cdr steps) path (+ i 1))))))))
+
+  ; Is there a verify tool-call anywhere later in this list of steps?
+  (define (verify-follows? steps)
+    (cond
+      ((null? steps) #f)
+      ((and (tool-call? (car steps)) (verify? (tool-name (car steps)))) #t)
+      (else (verify-follows? (cdr steps)))))
+
+  (define (tool-call? f) (and (pair? f) (eq? (car f) 'tool-call)))
+  (define (nested? f)
+    (and (pair? f) (or (eq? (car f) 'sequence) (eq? (car f) 'parallel))))
+  ; core tool-call form is (tool-call ID NAME ARGS).
+  (define (tool-name f) (car (cdr (cdr f))))
+  (define (mutating? name) (eq? (tool-effect name) 'mutating))
+  (define (verify? name)   (eq? (tool-effect name) 'verify))
 
   ; ── Helpers ────────────────────────────────────────────────────────────
 

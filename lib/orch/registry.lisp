@@ -9,7 +9,7 @@
 
 (module orch/registry
   (export register-tool! lookup-tool unregister-tool! list-tools
-          validate-args call-tool reset-registry!)
+          validate-args call-tool reset-registry! tool-effect)
 
   ;; The registry is process-global. Lives in a one-element vector so the
   ;; (mutable) hash-table behind it can be rebuilt by reset-registry!
@@ -30,10 +30,14 @@
   ; fn takes a single argument — an alist of (arg-name . value) — and
   ; returns a portable value. The arg-name keys in the input alist must
   ; be symbols. Existing entries with the same name are overwritten.
+  ; zepo-0rs: :effect tags a tool's side-effect class — 'read (default),
+  ; 'mutating, or 'verify. The plan validator reads it to require a
+  ; verify step after every mutating step. Stored at entry index 3.
   (define (register-tool! name fn . kvs)
     (let ((inputs  (kv-get kvs ':inputs  '()))
-          (outputs (kv-get kvs ':outputs '())))
-      (hash-set! (registry-table) name (vector fn inputs outputs))
+          (outputs (kv-get kvs ':outputs '()))
+          (effect  (kv-get kvs ':effect  'read)))
+      (hash-set! (registry-table) name (vector fn inputs outputs effect))
       name))
 
   (define (unregister-tool! name)
@@ -42,6 +46,12 @@
   ; Returns entry vector #(fn inputs outputs) or #f.
   (define (lookup-tool name)
     (hash-get (registry-table) name))
+
+  ; zepo-0rs: a tool's effect class, or 'read for unknown tools (no
+  ; constraint imposed on tools the validator doesn't recognise).
+  (define (tool-effect name)
+    (let ((entry (lookup-tool name)))
+      (if entry (vector-ref entry 3) 'read)))
 
   (define (list-tools)
     (let ((names '()))
