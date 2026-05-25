@@ -1,4 +1,4 @@
-; examples/explain-file.lisp — Phase 1 end-to-end smoke workflow.
+; examples/explain-file.lisp — Phase 1 end-to-end smoke / demo workflow.
 ;
 ; Chunks a source file, embeds the chunks into an in-memory vector
 ; store, registers three tools (retrieve_code, llm_chat, llm_code),
@@ -10,10 +10,13 @@
 ;
 ; Requires Ollama on localhost:11434 with these models pulled:
 ;   - nomic-embed-text       (embeddings)
-;   - llama3.1:8b            (planner + llm_chat)
-;   - qwen2.5-coder:7b       (llm_code)
+;   - llama3.1:8b            (planner + llm_chat, override via ZEPO_PLANNER_MODEL / ZEPO_CHAT_MODEL)
+;   - qwen2.5-coder:7b       (llm_code, override via ZEPO_CODE_MODEL)
 ;
-; zepo-dqo
+; Embeddings are cached to /tmp keyed by file path + mtime so retakes
+; during a recording skip the slow embed pass.
+;
+; zepo-dqo / zepo-zrc
 
 (import :libs (orch/chunker))
 (import :libs (orch/embed))
@@ -37,44 +40,110 @@
 (define file-path (car args))
 (define question  (cadr args))
 
-(define (banner s)
-  (display "── ") (display s) (newline))
+(define planner-model
+  (or (getenv "ZEPO_PLANNER_MODEL") "llama3.1:8b"))
+(define chat-model
+  (or (getenv "ZEPO_CHAT_MODEL")    "llama3.1:8b"))
+(define code-model
+  (or (getenv "ZEPO_CODE_MODEL")    "qwen2.5-coder:7b"))
 
-(define start-ms (current-time-ms))
+; --- timing scaffolding --------------------------------------------------
+; (stage label thunk) prints a banner, runs thunk, records ms into stages.
+(define stages '())
 
-; --- 1. chunk + embed + build store --------------------------------------
+(define (stage label thunk)
+  (display "── ") (display label) (newline)
+  (let* ((t0 (current-time-ms))
+         (r  (thunk))
+         (dt (- (current-time-ms) t0)))
+    (set! stages (cons (cons label dt) stages))
+    r))
 
-(banner "chunking")
-(define chunks (chunk-file file-path))
-(display "  ") (display (length chunks)) (display " chunks") (newline)
+(define total-start (current-time-ms))
 
-(banner "embedding")
-(define store (make-store))
-(let loop ((rest chunks) (i 0))
-  (cond
-    ((null? rest)
-     (display "  store-size = ") (display (store-size store)) (newline))
-    (else
-     (let* ((c    (car rest))
-            (id   (cdr (assoc :id c)))
-            (text (cdr (assoc :text c)))
-            (r    (embed-text text)))
-       (cond
-         ((err? r)
-          (display "  embed failed for ") (display id) (display ": ")
-          (display (err-message r)) (newline)
-          (exit 1))
-         (else
-           (store-add! store id (result-value r)
-                       (list (cons "text"       text)
-                             (cons "path"       (cdr (assoc :path c)))
-                             (cons "line-start" (cdr (assoc :line-start c)))
-                             (cons "line-end"   (cdr (assoc :line-end c)))))))
-       (loop (cdr rest) (+ i 1))))))
+; --- 1. chunk ------------------------------------------------------------
 
-; --- 2. tools ------------------------------------------------------------
+(define chunks
+  (stage "chunking"
+    (lambda ()
+      (let ((cs (chunk-file file-path)))
+        (display "  ") (display (length cs)) (display " chunks") (newline)
+        cs))))
 
-; Format top hits as a single labelled string ready for LLM consumption.
+; --- 2. embed (with cache) ----------------------------------------------
+
+; Cache key: /tmp/zepo-explain-<sanitised-path>-<mtime>.json
+(define (sanitise-path p)
+  (let ((n (string-length p)) (out ""))
+    (let loop ((i 0))
+      (cond
+        ((= i n) out)
+        (else
+         (let ((ch1 (substring p i (+ i 1))))
+           (set! out
+             (string-append out
+               (cond
+                 ((string=? ch1 "/") "_")
+                 ((string=? ch1 " ") "_")
+                 (else ch1))))
+           (loop (+ i 1))))))))
+
+(define cache-path
+  (string-append "/tmp/zepo-explain-"
+                 (sanitise-path file-path)
+                 "-"
+                 (number->string (file-mtime file-path))
+                 ".json"))
+
+(define (embed-fresh)
+  (let ((s (make-store)))
+    (let loop ((rest chunks))
+      (cond
+        ((null? rest)
+         (let ((sv (store-save s cache-path)))
+           (cond
+             ((err? sv)
+              (display "  cache save failed: ")
+              (display (err-message sv)) (newline))
+             (else
+              (display "  cached ") (display (store-size s))
+              (display " embeddings -> ") (display cache-path) (newline))))
+         s)
+        (else
+         (let* ((c    (car rest))
+                (id   (cdr (assoc :id c)))
+                (text (cdr (assoc :text c)))
+                (r    (embed-text text)))
+           (cond
+             ((err? r)
+              (display "  embed failed for ") (display id) (display ": ")
+              (display (err-message r)) (newline)
+              (exit 1))
+             (else
+               (store-add! s id (result-value r)
+                           (list (cons "text"       text)
+                                 (cons "path"       (cdr (assoc :path c)))
+                                 (cons "line-start" (cdr (assoc :line-start c)))
+                                 (cons "line-end"   (cdr (assoc :line-end c)))))))
+           (loop (cdr rest))))))))
+
+(define store
+  (stage "embedding"
+    (lambda ()
+      (cond
+        ((file-exists? cache-path)
+         (display "  cache hit: ") (display cache-path) (newline)
+         (let ((r (store-load cache-path)))
+           (cond
+             ((err? r)
+              (display "  cache load failed; re-embedding: ")
+              (display (err-message r)) (newline)
+              (embed-fresh))
+             (else (result-value r)))))
+        (else (embed-fresh))))))
+
+; --- 3. tools ------------------------------------------------------------
+
 (define (format-hits hits)
   (let ((acc ""))
     (for-each
@@ -97,8 +166,6 @@
           (ok (format-hits
                 (store-search store (result-value qe) 4))))))))
 
-; Generic chat-completion caller; used by llm_chat and llm_code with
-; different model names.
 (define (call-chat-model model prompt)
   (let ((body (json-stringify
                 (list (cons "model" model)
@@ -144,12 +211,6 @@
             (err 'shape "no message.content string"))
            (else (ok content))))))))
 
-(reset-registry!)
-(register-tool! 'retrieve_code retrieve-tool
-                :inputs '((query . string)))
-; llm_chat and llm_code both take (question, context) so the planner
-; can keep the user's literal question separate from a retrieval result
-; threaded in via {"input_id": "<step-id>"}.
 (define (build-llm-prompt args)
   (string-append "Question: " (cdr (assoc 'question args))
                  "\n\nContext (use this to ground your answer):\n"
@@ -157,51 +218,136 @@
                  "\n\nAnswer concisely and cite line ranges from the"
                  " context where useful."))
 
+(reset-registry!)
+(register-tool! 'retrieve_code retrieve-tool
+                :inputs '((query . string)))
 (register-tool! 'llm_chat
-                (lambda (a) (call-chat-model "llama3.1:8b"
-                                             (build-llm-prompt a)))
+                (lambda (a) (call-chat-model chat-model (build-llm-prompt a)))
                 :inputs '((question . string) (context . string)))
 (register-tool! 'llm_code
-                (lambda (a) (call-chat-model "qwen2.5-coder:7b"
-                                             (build-llm-prompt a)))
+                (lambda (a) (call-chat-model code-model (build-llm-prompt a)))
                 :inputs '((question . string) (context . string)))
 
-; --- 3. plan + execute ---------------------------------------------------
+; --- 4. plan -------------------------------------------------------------
 
-(banner "planning")
-(define ctx-text
-  (string-append "File under inspection: " file-path "\n"
-                 "Recommended workflow: one retrieve_code step with a"
-                 " search query derived from the question, then one"
-                 " llm_code step whose 'context' arg is"
-                 " {\"input_id\":\"<retrieve-step-id>\"} and whose"
-                 " 'question' arg is the user's literal question."
-                 " End with final-answer pointing at the llm_code step."))
-(define p (plan question ctx-text))
+; Pretty-printer for the core plan form. Renders sequence/parallel as
+; arrows, tool-call as (id tool arg: val, ...), and the unresolved
+; {"input_id":"r1"} hash-tables that the LLM emits as <-r1 so viewers
+; can see the dataflow at a glance.
+(define (format-value v)
+  (cond
+    ((string? v) v)
+    ((number? v) (number->string v))
+    ((symbol? v) (symbol->string v))
+    ((null? v)   "()")
+    ((and (hash-table? v) (hash-contains? v "input_id"))
+     (string-append "<-" (hash-get v "input_id")))
+    (else "?")))
 
-(cond
-  ((err? p)
-   (display "planner failed: ") (display (err-kind p)) (display " — ")
-   (display (err-message p)) (newline) (exit 1)))
+(define (format-args al)
+  (let ((acc '()))
+    (for-each
+      (lambda (kv)
+        (set! acc
+          (cons (string-append (symbol->string (car kv))
+                               ": " (format-value (cdr kv)))
+                acc)))
+      al)
+    (string-join (reverse acc) ", ")))
 
-(define plan-form (result-value p))
-(display "  plan: ") (display plan-form) (newline)
+(define (format-plan p)
+  (cond
+    ((not (pair? p)) (format-value p))
+    (else
+      (let ((tag (car p)))
+        (cond
+          ((eq? tag 'sequence)
+           (string-append "sequence[ "
+                          (string-join (map format-plan (cdr p)) " → ")
+                          " ]"))
+          ((eq? tag 'parallel)
+           (string-append "parallel[ "
+                          (string-join (map format-plan (cdr p)) " ‖ ")
+                          " ]"))
+          ((eq? tag 'tool-call)
+           (let ((id   (car (cdr p)))
+                 (tool (car (cdr (cdr p))))
+                 (a    (car (cdr (cdr (cdr p))))))
+             (string-append "(" id " " (symbol->string tool)
+                            " " (format-args a) ")")))
+          ((eq? tag 'final-answer)
+           (string-append "final-answer<-" (car (cdr p))))
+          (else "?"))))))
 
-(banner "executing")
-(define exec-r (run-plan plan-form))
-(cond
-  ((err? exec-r)
-   (display "exec failed: ") (display (err-kind exec-r)) (display " — ")
-   (display (err-message exec-r)) (newline) (exit 1)))
+(define plan-form
+  (stage "planning"
+    (lambda ()
+      (let ((ctx-text
+             (string-append "File under inspection: " file-path "\n"
+                            "Recommended workflow: one retrieve_code step with a"
+                            " search query derived from the question, then one"
+                            " llm_code step whose 'context' arg is"
+                            " {\"input_id\":\"<retrieve-step-id>\"} and whose"
+                            " 'question' arg is the user's literal question."
+                            " End with final-answer pointing at the llm_code step.")))
+        (let ((p (plan-with question ctx-text planner-model
+                            default-planner-url default-retries)))
+          (cond
+            ((err? p)
+             (display "  planner failed: ") (display (err-kind p))
+             (display " — ") (display (err-message p)) (newline)
+             (exit 1))
+            (else
+              (let ((pf (result-value p)))
+                (display "  ") (display (format-plan pf)) (newline)
+                pf))))))))
+
+; --- 5. execute ----------------------------------------------------------
+
+(define exec-r
+  (stage "executing"
+    (lambda ()
+      (let ((r (run-plan plan-form)))
+        (cond
+          ((err? r)
+           (display "  exec failed: ") (display (err-kind r))
+           (display " — ") (display (err-message r)) (newline)
+           (exit 1))
+          (else r))))))
 
 (define final (plan-result (result-value exec-r)))
-(banner "answer")
+
+(display "── answer") (newline)
 (cond
   ((err? final)
-   (display "no final answer: ") (display (err-message final)) (newline)
+   (display "  no final answer: ") (display (err-message final)) (newline)
    (exit 1))
   (else
    (display (result-value final)) (newline)))
 
-(define elapsed-ms (- (current-time-ms) start-ms))
-(display "── elapsed: ") (display elapsed-ms) (display " ms") (newline)
+; --- timing breakdown ----------------------------------------------------
+
+(define total-ms (- (current-time-ms) total-start))
+
+(define (pad-right s width)
+  (let loop ((acc s))
+    (if (>= (string-length acc) width) acc
+        (loop (string-append acc " ")))))
+
+(define (pad-left s width)
+  (let loop ((acc s))
+    (if (>= (string-length acc) width) acc
+        (loop (string-append " " acc)))))
+
+(display "── timing") (newline)
+(for-each
+  (lambda (kv)
+    (display "  ")
+    (display (pad-right (car kv) 12))
+    (display (pad-left (number->string (cdr kv)) 6))
+    (display " ms") (newline))
+  (reverse stages))
+(display "  ")
+(display (pad-right "total" 12))
+(display (pad-left (number->string total-ms) 6))
+(display " ms") (newline)
