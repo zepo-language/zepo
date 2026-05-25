@@ -48,10 +48,16 @@
 (register-builtin-tools!)
 (set-tools-root! root)
 
-; stub planner: turn 0 tries to edit, then finishes.
+; stub planner: edit; if the edit succeeded (approved), run a verify step
+; before finishing (zepo-m4z requires it); a denied edit never wrote, so
+; it can finish straight away.
+(define (ok-step? id ctx)
+  (let ((p (assoc id ctx))) (and p (ok? (cdr p)))))
 (define (stub-edit goal history ctx)
   (cond ((null? ctx)
          '(tool-call "m1" edit_file ((path . "out.txt") (content . "agent wrote this"))))
+        ((and (ok-step? "m1" ctx) (not (assoc "v1" ctx)))
+         '(tool-call "v1" run_tests ((cmd . "true"))))
         (else (list 'finish "done"))))
 
 (let ((r (run-agent "edit a file" 8 stub-edit (lambda (action) #f))))   ; deny

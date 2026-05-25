@@ -21,7 +21,8 @@
 ; zepo-bh2
 
 (module orch/plan
-  (export plan-from-json plan-from-data)
+  (export plan-from-json plan-from-data
+          plan-step-from-json plan-step-from-data)
 
   (import orch/registry)   ; zepo-0rs: tool-effect, for the verify rule
 
@@ -36,6 +37,20 @@
   ; Convert an already-parsed JSON value (hash-table tree as produced by
   ; json-parse) into a core form. Useful for tests that build plans
   ; programmatically without round-tripping through a string.
+  ; zepo-m4z: validate a SINGLE ReAct action (one tool-call or finish)
+  ; structurally only. A one-action plan is inherently "bare", so the
+  ; within-sequence verify rule cannot apply here — orch/agent enforces
+  ; the verify invariant across turns instead. The full-DAG validators
+  ; (plan-from-json / plan-from-data) are unchanged and still enforce it.
+  (define (plan-step-from-json json-str)
+    (let ((parsed (json-parse json-str)))
+      (cond
+        ((err? parsed) (err 'json-parse-failed (err-message parsed)))
+        (else (plan-step-from-data (result-value parsed))))))
+
+  (define (plan-step-from-data v)
+    (validate v "/"))
+
   (define (plan-from-data v)
     (let ((r (validate v "/")))
       (cond

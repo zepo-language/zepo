@@ -82,8 +82,12 @@
   ; Run cmd via `sh -c`, capturing stdout and the exit code (process-spawn
   ; like orch/http does). Exit 0 -> (ok stdout); non-zero -> (err kind msg)
   ; carrying the exit code and output so the planner can react.
+  ; zepo-m4z: run in the tools root so a verify step (run_tests) sees the
+  ; same files edit_file writes — otherwise it runs in the process CWD and
+  ; can't find them. The root is single-quoted to tolerate spaces.
   (define (run-capture cmd fail-kind)
-    (let ((p (process-spawn "sh" "-c" cmd)))
+    (let ((p (process-spawn "sh" "-c"
+                            (string-append "cd '" (tools-root) "' && " cmd))))
       (process-close-stdin p)
       (let ((out  (process-recv-all p))
             (code (process-wait p)))
