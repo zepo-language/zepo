@@ -8,6 +8,12 @@
 ;
 ; Requires Ollama on localhost:11434 with nomic-embed-text + qwen2.5-coder:7b.
 ;
+; KNOWN LIMITATION (zepo-gol): on a LARGE real-embedding corpus (many files /
+; hundreds of chunks) this can hit separate GC-safety bugs under heap pressure
+; (HandleScope overflow in JSON marshaling, etc.) that are independent of the
+; multi-hop logic. Small corpora and the offline test suite work; heavy-load
+; GC hardening is tracked in zepo-gol.
+;
 ; Run:
 ;   zepo examples/explain.lisp -- <spec> "<question>"
 ;   zepo examples/explain.lisp -- lib/orch "how does the planner feed errors back, and where is the validator it calls defined?"
