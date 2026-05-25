@@ -25,3 +25,6 @@ zig-pkg/
 .beads/
 .claude/
 .code-spider/
+
+# cross-file embedding cache (zepo-1j2)
+.zepo-index/
