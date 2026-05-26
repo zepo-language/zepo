@@ -233,7 +233,7 @@ pub const GC = struct {
         const old_used_before = if (gc.trace.gc) gc.old_gen.usedBytes() else 0;
         // Minor first so there are no nursery pointers to worry about.
         try gc.minor();
-        gc.old_gen.mark(&gc.roots, &gc.cards, gc.nursery.from_start, nursery_mod.NURSERY_SIZE);
+        gc.old_gen.mark(&gc.roots, &gc.cards, gc.nursery.from_start, gc.nursery.bump);
         gc.old_gen.sweep();
         gc.major_count += 1;
         if (gc.trace.gc) {
