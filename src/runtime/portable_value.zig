@@ -501,6 +501,10 @@ pub fn deserializeFromChannel(
         // SUBSEQUENT value deserialization's GC cannot stale it, then put.
         .hash_table => |entries| blk: {
             var ht = try hashtable_mod.make(dst_gc);
+            // zepo-hlz: `ht` is rooted via roots.extra (not a HandleScope slot
+            // like copyValue) because the extra-root keeps `&ht` itself current
+            // across any GC; the per-entry key is separately rooted in the entry
+            // HandleScope below, so no HandleScope slot for `ht` is needed here.
             const prev_extra = dst_gc.roots.extra.items.len;
             try dst_gc.roots.extra.append(dst_gc.allocator, &ht);
             defer dst_gc.roots.extra.shrinkRetainingCapacity(prev_extra);
@@ -628,4 +632,74 @@ test "ChannelValue: hashtable serialize/deserialize roundtrip" {
     const v = try deserializeFromChannel(cv, &gc, &syms);
     try std.testing.expect(hashtable_mod.isHashTable(v));
     try std.testing.expectEqual(@as(usize, 1), hashtable_mod.size(v));
+}
+
+// zepo-hlz: exercises the recursive-GC rooting path — a multi-entry table
+// (multiple live slots) whose values include a NESTED vector. Round-tripped
+// through serialize→deserialize so freeChannelValue's nested free path is
+// covered under the leak-checking testing allocator.
+test "portable: multi-entry hashtable with nested vector value roundtrips" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+
+    const ht = try hashtable_mod.make(&gc);
+    {
+        var scope = HandleScope{};
+        gc.roots.pushHandleScope(&scope);
+        defer gc.roots.popHandleScope();
+        const ht_slot = scope.push(ht);
+
+        // Five scalar entries + one nested-vector entry = 6 live slots.
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "a"), value_mod.fixnum(1));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "b"), value_mod.fixnum(2));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "c"), value_mod.fixnum(3));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "d"), value_mod.fixnum(4));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "e"), value_mod.fixnum(5));
+
+        // Nested portable value: a 3-element vector under key "vec".
+        const inner = try runtime.makeVector(&gc, 3, value_mod.NIL);
+        const inner_slot = scope.push(inner);
+        runtime.vectorSet(&gc, inner_slot.*, 0, value_mod.fixnum(10));
+        runtime.vectorSet(&gc, inner_slot.*, 1, value_mod.fixnum(20));
+        runtime.vectorSet(&gc, inner_slot.*, 2, value_mod.fixnum(30));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "vec"), inner_slot.*);
+    }
+
+    const cv = try serializeToChannel(ht, alloc);
+    defer freeChannelValue(cv, alloc);
+    const out = try deserializeFromChannel(cv, &gc, &syms);
+
+    try std.testing.expect(hashtable_mod.isHashTable(out));
+    try std.testing.expectEqual(@as(usize, 6), hashtable_mod.size(out));
+
+    // Read entries back via forEach (VM-free), matching keys by their string
+    // bytes, and verify the scalar and the nested-vector value structurally.
+    const Probe = struct {
+        scalar_d: ?Value = null,
+        vec_val: ?Value = null,
+        fn visit(p: *anyopaque, k: Value, val: Value) void {
+            const s: *@This() = @ptrCast(@alignCast(p));
+            if (!runtime.isString(k)) return;
+            const bytes = runtime.stringBytes(k);
+            if (std.mem.eql(u8, bytes, "d")) s.scalar_d = val;
+            if (std.mem.eql(u8, bytes, "vec")) s.vec_val = val;
+        }
+    };
+    var probe = Probe{};
+    var out_slot = out;
+    hashtable_mod.forEach(&out_slot, &probe, Probe.visit);
+
+    // Scalar entry reads back correctly.
+    try std.testing.expectEqual(value_mod.fixnum(4), probe.scalar_d.?);
+
+    // Nested vector reads back structurally.
+    const rv = probe.vec_val.?;
+    try std.testing.expect(runtime.isVector(rv));
+    try std.testing.expectEqual(@as(usize, 3), runtime.vectorLen(rv));
+    try std.testing.expectEqual(value_mod.fixnum(10), runtime.vectorGet(rv, 0));
+    try std.testing.expectEqual(value_mod.fixnum(20), runtime.vectorGet(rv, 1));
+    try std.testing.expectEqual(value_mod.fixnum(30), runtime.vectorGet(rv, 2));
 }
