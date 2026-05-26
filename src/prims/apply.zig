@@ -47,7 +47,7 @@ pub fn primApply(vm: *VM, args: []const Value) LispError!Value {
     if (objects.isClosure(proc)) {
         const fn_id = objects.closureCodePtr(proc);
         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+        const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
         return vm.execFn(tgt, proc, buf[0..n]);
     }
     // Prim.
@@ -71,7 +71,7 @@ fn callProc(vm: *VM, proc: Value, call_args: []const Value) LispError!Value {
     if (objects.isClosure(proc)) {
         const fn_id = objects.closureCodePtr(proc);
         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+        const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
         return vm.execFn(tgt, proc, call_args);
     }
     const raw = objects.primFnPtr(proc);

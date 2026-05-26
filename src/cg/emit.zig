@@ -73,13 +73,22 @@ pub const Emitter = struct {
 
     /// Append newly-compiled functions to `list`. Only emits functions added
     /// to `program` since the last call. O(new) instead of O(total).
-    pub fn emitAppend(e: *Emitter, program: *Program, list: *std.ArrayListUnmanaged(CompiledFn)) !void {
+    // zepo-nhl: store *CompiledFn so each boxed fn has a stable address even
+    // when this pointer-list reallocates. Live frames / cached dispatch locals
+    // hold *CompiledFn into the boxes, which must never move.
+    pub fn emitAppend(e: *Emitter, program: *Program, list: *std.ArrayListUnmanaged(*CompiledFn)) !void {
         const new_count = program.functions.items.len;
         if (new_count <= e.emitted_count) return;
         try list.ensureTotalCapacity(e.allocator, new_count);
         for (e.emitted_count..new_count) |i| {
-            const cf = try e.emitOne(&program.functions.items[i]);
-            list.appendAssumeCapacity(cf);
+            // zepo-nhl: emit the value first, then box it. If create() fails,
+            // free cf's internal allocations so they don't leak. ensureTotalCapacity
+            // above guarantees appendAssumeCapacity cannot fail here.
+            var cf = try e.emitOne(&program.functions.items[i]);
+            errdefer cf.deinit(e.allocator);
+            const boxed = try e.allocator.create(CompiledFn);
+            boxed.* = cf;
+            list.appendAssumeCapacity(boxed);
         }
         e.emitted_count = new_count;
     }

@@ -568,9 +568,14 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
     // Append the name buffer to context's owned list so it's freed on deinit.
     try ctx.zbc_name_bufs.append(ctx.allocator, ns_buf);
 
-    // Append deserialized fns to ctx.compiled.
-    try ctx.compiled.appendSlice(ctx.allocator, result.fns);
-    ctx.allocator.free(result.fns); // slice itself freed; items now owned by ctx.compiled
+    // zepo-nhl: box each deserialized fn so its pointer is stable across later
+    // ctx.compiled reallocations (live frames hold *CompiledFn into the boxes).
+    for (result.fns) |f| {
+        const boxed = try ctx.allocator.create(cg_mod.CompiledFn);
+        boxed.* = f;
+        try ctx.compiled.append(ctx.allocator, boxed);
+    }
+    ctx.allocator.free(result.fns); // slice itself freed; boxed items owned by ctx.compiled
 
     // Rebuild VM with updated compiled_fns.
     if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }

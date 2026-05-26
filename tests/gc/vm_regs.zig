@@ -50,7 +50,7 @@ test "minor GC preserves VM registers" {
         .safepoint_maps = &sps_buf,
         .allocator = alloc,
     };
-    var compiled_fns = [_]bytecode.CompiledFn{cf};
+    var compiled_fns = [_]*bytecode.CompiledFn{&cf}; // zepo-nhl: slice of boxed ptr
 
     var vm = try vm_mod.VM.init(&gc, &globals, &syms, &compiled_fns, alloc, vm_mod.VM.MAX_REGS);
     defer vm.deinit();

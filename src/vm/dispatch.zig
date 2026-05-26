@@ -64,7 +64,7 @@ pub const VM = struct {
     /// primary env).
     fallback_globals: ?*GlobalEnv = null,
     symbols: *SymbolTable,
-    compiled_fns: []CompiledFn,
+    compiled_fns: []*CompiledFn, // zepo-nhl: slice of boxed (pointer-stable) fns
     call_stack: CallStack,
     allocator: std.mem.Allocator,
     gc_needed: bool = false,
@@ -133,7 +133,7 @@ pub const VM = struct {
         gc: *GC,
         globals: *GlobalEnv,
         symbols: *SymbolTable,
-        compiled_fns: []CompiledFn,
+        compiled_fns: []*CompiledFn, // zepo-nhl
         allocator: std.mem.Allocator,
         max_regs: usize,
     ) !VM {
@@ -232,7 +232,7 @@ pub const VM = struct {
         // etc.) that are not referenced by any register while dormant. Without
         // tracing them the GC can collect a constant the moment it leaves the
         // last register that held it, making future LOAD_CONST unsafe.
-        for (vm.compiled_fns) |*cf| {
+        for (vm.compiled_fns) |cf| { // zepo-nhl: items are now *CompiledFn
             for (cf.consts) |*v| visitor(visitor_ctx, v);
             for (cf.keyword_params) |*kp| visitor(visitor_ctx, &kp.default_value);
         }
@@ -654,7 +654,7 @@ pub const VM = struct {
                         ncaps += 1;
                     }
                     if (bc >= vm.compiled_fns.len) return error.ContractViolation;
-                    const target_fn = &vm.compiled_fns[bc];
+                    const target_fn = vm.compiled_fns[bc]; // zepo-nhl
                     // Root caps[] so that if gc.alloc triggers a minor GC the
                     // GC can update the on-stack capture Values via the extra-
                     // roots scan before makeClosure copies them into the object.
@@ -751,7 +751,7 @@ pub const VM = struct {
                         // zepo-5wg: push logical frame, continue in same C frame.
                         const fn_id = objects.closureCodePtr(fn_val);
                         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-                        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+                        const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
                         const args_len = args_slice.len;
                         if (tgt.keyword_params.len > 0) {
                             if (args_len < tgt.arity) return error.ArityMismatch;
@@ -795,7 +795,7 @@ pub const VM = struct {
                     if (objects.isClosure(fn_val)) {
                         const fn_id = objects.closureCodePtr(fn_val);
                         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-                        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+                        const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
                         if (at_outermost) {
                             return DispatchResult{ .tail_call = .{
                                 .func = tgt,
@@ -1379,7 +1379,7 @@ pub const VM = struct {
         if (!objects.isClosure(hf.handler_val)) return error.TypeError;
         const fn_id = objects.closureCodePtr(hf.handler_val);
         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-        const tgt = &vm.compiled_fns[@intCast(fn_id)];
+        const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
         if (tgt.arity != 1 or tgt.has_rest or tgt.keyword_params.len > 0) {
             return error.ArityMismatch;
         }
@@ -1402,7 +1402,7 @@ pub const VM = struct {
         if (objects.isClosure(fn_val)) {
             const fn_id = objects.closureCodePtr(fn_val);
             if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-            const tgt = &vm.compiled_fns[@intCast(fn_id)];
+            const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
             return vm.execFn(tgt, fn_val, args);
         }
         if (objects.isPrim(fn_val)) {

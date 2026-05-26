@@ -220,7 +220,8 @@ fn compileLibFile(alloc: std.mem.Allocator, lisp_path: []const u8, zbc_path: []c
     // Adjust stored fn_ids to be 0-based within this library for portability.
     const adjusted = try alloc.alloc(zepo.cg.CompiledFn, lib_fns.len);
     defer alloc.free(adjusted);
-    @memcpy(adjusted, lib_fns);
+    // zepo-nhl: ctx.compiled now stores *CompiledFn; copy each boxed value out.
+    for (lib_fns, 0..) |fp, i| adjusted[i] = fp.*;
     for (adjusted, 0..) |*f, i| f.id = @intCast(i);
 
     // Adjust MAKE_CLOSURE operands to be relative to fn_base = 0.

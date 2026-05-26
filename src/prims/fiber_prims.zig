@@ -34,7 +34,7 @@ pub fn primSpawn(vm: *VM, args: []const Value) LispError!Value {
 
     const fn_id = objects.closureCodePtr(thunk);
     if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-    const func = &vm.compiled_fns[@intCast(fn_id)];
+    const func = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
 
     const fiber_idx = try vm.addFiber();
     const fs = vm.fibers.items[fiber_idx];

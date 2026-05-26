@@ -77,7 +77,7 @@ pub const EvalContext = struct {
     spans: SpanTable,
 
     // Accumulated compiled bytecode; grows incrementally across evals.
-    compiled: std.ArrayListUnmanaged(CompiledFn),
+    compiled: std.ArrayListUnmanaged(*CompiledFn), // zepo-nhl: boxed for pointer stability
     vm: ?VM,
     vm_max_regs: usize = VM.MAX_REGS,
 
@@ -147,7 +147,7 @@ pub const EvalContext = struct {
 
     fn compiledConstsVisit(ctx_opaque: *anyopaque, visitor: @import("../gc/roots.zig").RootVisitor, visitor_ctx: *anyopaque) void {
         const ctx: *EvalContext = @ptrCast(@alignCast(ctx_opaque));
-        for (ctx.compiled.items) |*cf| {
+        for (ctx.compiled.items) |cf| { // zepo-nhl: items are now *CompiledFn
             for (cf.consts) |*v| visitor(visitor_ctx, v);
             for (cf.keyword_params) |*kp| visitor(visitor_ctx, &kp.default_value);
         }
@@ -159,7 +159,10 @@ pub const EvalContext = struct {
             ctx.gc.roots.visit_ctx2 = null;
         }
         if (ctx.vm) |*v| v.deinit();
-        for (ctx.compiled.items) |*cf| cf.deinit(ctx.allocator);
+        for (ctx.compiled.items) |cf| { // zepo-nhl: free each boxed CompiledFn
+            cf.deinit(ctx.allocator);
+            ctx.allocator.destroy(cf);
+        }
         ctx.compiled.deinit(ctx.allocator);
         ctx.emitter.deinit();
         ctx.program.deinit();
@@ -468,7 +471,7 @@ pub const EvalContext = struct {
             return ctx.evalFormInner(form);
         }
         const actual_fn_id = try ctx.compileFormToFnId(form);
-        return ctx.vm.?.execFn(&ctx.vm.?.compiled_fns[actual_fn_id], value_mod.NIL, &.{});
+        return ctx.vm.?.execFn(ctx.vm.?.compiled_fns[actual_fn_id], value_mod.NIL, &.{}); // zepo-nhl
     }
 };
 

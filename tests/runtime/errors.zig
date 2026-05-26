@@ -32,8 +32,31 @@ const Rig = struct {
     arena: NodeArena,
     program: Program,
     emitter: cg.Emitter,
-    compiled: ?[]cg.CompiledFn = null,
+    compiled: ?[]*cg.CompiledFn = null, // zepo-nhl: boxed for pointer stability
     vm: ?vm_mod.VM = null,
+
+    // zepo-nhl: emit the program then box each fn so VM.init's []*CompiledFn
+    // param is satisfied and pointers stay stable. Caller owns the result.
+    fn emitBoxed(r: *Rig) ![]*cg.CompiledFn {
+        const vals = try r.emitter.emit(&r.program);
+        defer alloc.free(vals);
+        const boxed = try alloc.alloc(*cg.CompiledFn, vals.len);
+        errdefer alloc.free(boxed);
+        for (vals, 0..) |v, i| {
+            const b = try alloc.create(cg.CompiledFn);
+            b.* = v;
+            boxed[i] = b;
+        }
+        return boxed;
+    }
+
+    fn freeBoxed(cs: []*cg.CompiledFn) void {
+        for (cs) |cf| {
+            cf.deinit(alloc);
+            alloc.destroy(cf);
+        }
+        alloc.free(cs);
+    }
 
     pub fn init() !*Rig {
         const r = try alloc.create(Rig);
@@ -53,10 +76,7 @@ const Rig = struct {
 
     pub fn deinit(r: *Rig) void {
         if (r.vm) |*v| v.deinit();
-        if (r.compiled) |cs| {
-            for (cs) |*cf| cf.deinit(alloc);
-            alloc.free(cs);
-        }
+        if (r.compiled) |cs| freeBoxed(cs); // zepo-nhl
         r.emitter.deinit();
         r.program.deinit();
         r.arena.deinit();
@@ -79,14 +99,13 @@ const Rig = struct {
         const fn_id = try compiler.compileExpr(root_id);
 
         if (r.compiled) |old| {
-            for (old) |*cf| cf.deinit(alloc);
-            alloc.free(old);
+            freeBoxed(old); // zepo-nhl
             r.compiled = null;
         }
         if (r.vm) |*v2| v2.deinit();
         r.vm = null;
 
-        r.compiled = try r.emitter.emit(&r.program);
+        r.compiled = try r.emitBoxed(); // zepo-nhl
         r.vm = try vm_mod.VM.init(&r.gc, &r.globals, &r.syms, r.compiled.?, alloc, max_regs);
         r.vm.?.installAsRoot();
         return try r.vm.?.run(fn_id, &.{});
@@ -104,14 +123,13 @@ const Rig = struct {
         const fn_id = try compiler.compileExpr(root_id);
 
         if (r.compiled) |old| {
-            for (old) |*cf| cf.deinit(alloc);
-            alloc.free(old);
+            freeBoxed(old); // zepo-nhl
             r.compiled = null;
         }
         if (r.vm) |*v2| v2.deinit();
         r.vm = null;
 
-        r.compiled = try r.emitter.emit(&r.program);
+        r.compiled = try r.emitBoxed(); // zepo-nhl
         r.vm = try vm_mod.VM.init(&r.gc, &r.globals, &r.syms, r.compiled.?, alloc, vm_mod.VM.MAX_REGS);
         r.vm.?.installAsRoot();
         return try r.vm.?.run(fn_id, &.{});
