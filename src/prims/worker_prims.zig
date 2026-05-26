@@ -25,6 +25,7 @@ const channel_prims = @import("channel_prims.zig");
 const Channel = channel_prims.Channel;
 const register = @import("register.zig");
 const Scheduler = @import("../vm/sched.zig").Scheduler;
+const portable = @import("../runtime/portable_value.zig");
 
 pub const TAG_WORKER: u64 = 0xB57_0000_0001;
 
@@ -63,7 +64,8 @@ fn workerShutdownHook(ptr: *anyopaque) void {
 }
 
 const WorkerStart = struct {
-    code: []const u8,
+    code: ?[]const u8, // zepo-ebd: string entry (back-compat), or null
+    form: ?*portable.ChannelValue, // zepo-ebd: serialized form entry, or null
     channel_ptrs: []*Channel,
     n_channels: usize,
     allocator: std.mem.Allocator,
@@ -76,7 +78,8 @@ const WorkerStart = struct {
 fn workerThread(start: *WorkerStart) void {
     const alloc = start.allocator;
     const worker = start.worker;
-    const code = start.code;
+    const start_code = start.code; // zepo-ebd
+    const start_form = start.form; // zepo-ebd
     const channel_ptrs = start.channel_ptrs;
     const n_channels = start.n_channels;
     alloc.destroy(start);
@@ -95,12 +98,27 @@ fn workerThread(start: *WorkerStart) void {
     ctx.installRootVisitor();
     runtime.loadStdlib(&ctx) catch return;
 
-    // Evaluate the code string to get a callable.
-    const fn_val = ctx.evalString(code, "<worker>") catch {
-        alloc.free(code);
-        return;
+    // zepo-ebd: evaluate the entry — a source string or a portable form.
+    const fn_val = blk: {
+        if (start_code) |c| {
+            const v = ctx.evalString(c, "<worker>") catch {
+                alloc.free(c);
+                return;
+            };
+            alloc.free(c);
+            break :blk v;
+        } else if (start_form) |f| {
+            defer portable.freeChannelValue(f, alloc);
+            const entry_form = portable.deserializeFromChannel(f, ctx.gc, ctx.symbols) catch return;
+            // Root the freshly-deserialized form across evalForm (defensive;
+            // matches the codebase's careful rooting style).
+            var scope = @import("../gc/collector.zig").HandleScope{};
+            ctx.gc.roots.pushHandleScope(&scope);
+            defer ctx.gc.roots.popHandleScope();
+            const form_slot = scope.push(entry_form);
+            break :blk ctx.evalForm(form_slot.*) catch return;
+        } else return;
     };
-    alloc.free(code);
 
     if (!objects.isClosure(fn_val) and !objects.isPrim(fn_val)) return;
     const arity = if (objects.isClosure(fn_val))
@@ -151,16 +169,27 @@ fn getWorker(v: Value) LispError!*WorkerState {
 // ── (spawn-worker code-string channel...) → worker-handle ────────────────────
 pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
     if (args.len < 1) return error.ArityMismatch;
-    if (!objects.isString(args[0])) return error.TypeError;
 
     const n_channels = args.len - 1;
     // zepo-b5h: use c_allocator for cross-thread allocations (DebugAllocator
     // is single-threaded; the worker thread owns WorkerStart and frees it).
     const alloc = std.heap.c_allocator;
 
-    const code_src = objects.stringBytes(args[0]);
-    const code = alloc.dupe(u8, code_src) catch return error.OutOfMemory;
-    errdefer alloc.free(code);
+    // zepo-ebd: entry may be a source string (back-compat) or a portable form.
+    var code: ?[]const u8 = null;
+    var form: ?*portable.ChannelValue = null;
+    if (objects.isString(args[0])) {
+        code = alloc.dupe(u8, objects.stringBytes(args[0])) catch return error.OutOfMemory;
+    } else {
+        form = portable.serializeToChannel(args[0], alloc) catch |e| switch (e) {
+            error.NonPortableValue => return error.NonPortableValue,
+            else => return error.OutOfMemory,
+        };
+    }
+    errdefer {
+        if (code) |c| alloc.free(c);
+        if (form) |f| portable.freeChannelValue(f, alloc);
+    }
 
     const channel_ptrs = alloc.alloc(*Channel, n_channels) catch return error.OutOfMemory;
     errdefer alloc.free(channel_ptrs);
@@ -178,6 +207,7 @@ pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
     errdefer alloc.destroy(start);
     start.* = .{
         .code = code,
+        .form = form, // zepo-ebd
         .channel_ptrs = channel_ptrs,
         .n_channels = n_channels,
         .allocator = alloc,
