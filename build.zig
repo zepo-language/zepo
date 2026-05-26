@@ -117,6 +117,17 @@ pub fn build(b: *std.Build) void {
     const run_gc_verifier_tests = b.addRunArtifact(gc_verifier_tests);
     gc_test_step.dependOn(&run_gc_verifier_tests.step);
 
+    // zepo-6s9: GC stress matrix (every layout shape x every GC phase).
+    const gc_stress_mod = b.createModule(.{
+        .root_source_file = b.path("tests/gc/stress.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const gc_stress_tests = b.addTest(.{ .root_module = gc_stress_mod });
+    const run_gc_stress_tests = b.addRunArtifact(gc_stress_tests);
+    gc_test_step.dependOn(&run_gc_stress_tests.step);
+
     // --- Runtime object tests ---
     const runtime_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/objects.zig"),
