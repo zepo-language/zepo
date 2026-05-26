@@ -188,13 +188,20 @@ pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
             else => return error.OutOfMemory,
         };
     }
-    errdefer {
+    // zepo-br0: once std.Thread.spawn succeeds the worker thread owns code/
+    // form/channel_ptrs/start (it frees them) and references ws, so the cleanup
+    // errdefers below must NOT fire on a later error (registerShutdownHook /
+    // makeForeign) — doing so would free memory the worker is using. Guard them
+    // all on `spawned`; after a successful spawn a post-spawn failure leaves the
+    // worker (joined via its shutdown hook) and ws to leak rather than UAF.
+    var spawned = false;
+    errdefer if (!spawned) {
         if (code) |c| alloc.free(c);
         if (form) |f| portable.freeChannelValue(f, alloc);
-    }
+    };
 
     const channel_ptrs = alloc.alloc(*Channel, n_channels) catch return error.OutOfMemory;
-    errdefer alloc.free(channel_ptrs);
+    errdefer if (!spawned) alloc.free(channel_ptrs); // zepo-br0
     for (args[1..], 0..) |arg, i| {
         if (!objects.isForeign(arg)) return error.TypeError;
         if (objects.foreignTypeTag(arg) != channel_prims.TAG_CHANNEL) return error.TypeError;
@@ -202,11 +209,11 @@ pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
     }
 
     const ws = alloc.create(WorkerState) catch return error.OutOfMemory;
-    errdefer alloc.destroy(ws);
+    errdefer if (!spawned) alloc.destroy(ws); // zepo-br0
     ws.* = .{ .allocator = alloc, .thread = undefined };
 
     const start = alloc.create(WorkerStart) catch return error.OutOfMemory;
-    errdefer alloc.destroy(start);
+    errdefer if (!spawned) alloc.destroy(start); // zepo-br0
     start.* = .{
         .code = code,
         .form = form, // zepo-ebd
@@ -217,6 +224,7 @@ pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
     };
 
     ws.thread = std.Thread.spawn(.{}, workerThread, .{start}) catch return error.OutOfMemory;
+    spawned = true; // zepo-br0: ownership of start/code/form/channel_ptrs now the worker's
 
     // zepo-p5b: register a shutdown hook so VM.deinit joins this worker
     // before GC finalizers free channels the worker may still be using.
