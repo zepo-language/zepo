@@ -52,6 +52,8 @@ const macros = @import("macros.zig");
 const mod_loader = @import("module_loader.zig");
 const errs = @import("errors.zig");
 
+const register_mod = @import("../prims/register.zig");
+
 pub const EvalContext = struct {
     gc: *GC,
     symbols: *SymbolTable,
@@ -353,7 +355,12 @@ pub const EvalContext = struct {
         }
     }
 
-    pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
+    // zepo-ksw
+    // Compile a single (already module/macro-dispatched) form into a top-level
+    // thunk and return its index in ctx.compiled. Performs the delicate
+    // no-GC/rooting dance and keeps ctx.vm.compiled_fns/globals in sync. The
+    // caller chooses how to execute the thunk (run vs execFn).
+    fn compileFormToFnId(ctx: *EvalContext, form: Value) !u32 {
         if (ctx.gc.trace.eval) {
             if (ctx.spans.get(form)) |span| {
                 std.debug.print("[eval] {s}:{d}:{d}\n", .{ span.file, span.start.line, span.start.col });
@@ -434,7 +441,34 @@ pub const EvalContext = struct {
             log.append(ctx.allocator, actual_fn_id) catch {};
         }
 
+        return actual_fn_id;
+    }
+
+    pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
+        const actual_fn_id = try ctx.compileFormToFnId(form);
         return ctx.vm.?.run(actual_fn_id, &.{});
+    }
+
+    // zepo-ksw
+    // Compile and run a form on the CURRENT call stack via execFn, so it is safe
+    // to call from inside a running dispatch loop (unlike `run`, which spins up a
+    // fresh Scheduler). v1 limitation: the form must run synchronously — if it
+    // yields or spawns a fiber, execFn returns error.FiberYielded which we surface
+    // as an error (there is no scheduler at this nested level to resume it).
+    pub fn evalFormNested(ctx: *EvalContext, form: Value) !Value {
+        const inner = ctx.evalFormNestedInner(form);
+        return inner catch |e| {
+            if (ctx.last_error_span == null) ctx.last_error_span = ctx.spans.get(form);
+            return e;
+        };
+    }
+
+    fn evalFormNestedInner(ctx: *EvalContext, form: Value) !Value {
+        if (isCompileTimeHead(form)) {
+            return ctx.evalFormInner(form);
+        }
+        const actual_fn_id = try ctx.compileFormToFnId(form);
+        return ctx.vm.?.execFn(&ctx.vm.?.compiled_fns[actual_fn_id], value_mod.NIL, &.{});
     }
 };
 
@@ -452,6 +486,18 @@ fn extractSourceLine(src: []const u8, offset: u32) []const u8 {
     return src[start..end];
 }
 
+// zepo-ksw
+// Heads handled at compile time (module system + macro declarations) — these
+// never lower to a runnable thunk, so nested eval must route them through
+// evalFormInner rather than compile+execFn.
+fn isCompileTimeHead(form: Value) bool {
+    return isHeadSymbol(form, "module") or isHeadSymbol(form, "lib") or
+        isHeadSymbol(form, "import") or isHeadSymbol(form, "export") or
+        isHeadSymbol(form, "include") or isHeadSymbol(form, "load") or
+        isHeadSymbol(form, "package") or isHeadSymbol(form, "defmacro") or
+        isHeadSymbol(form, "define-syntax");
+}
+
 pub fn isHeadSymbol(v: Value, expected: []const u8) bool {
     const objects = runtime_objects;
     if (!value_mod.isPtr(v)) return false;
@@ -459,4 +505,52 @@ pub fn isHeadSymbol(v: Value, expected: []const u8) bool {
     const head = objects.pairCar(v).*;
     if (!objects.isSymbol(head)) return false;
     return std.mem.eql(u8, objects.symbolName(head), expected);
+}
+
+test "evalFormNested: compiles and runs a form via execFn" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var globals = try GlobalEnv.init(&gc, alloc);
+    defer globals.deinit();
+    try register_mod.registerAll(&gc, &globals, &syms);
+    var ctx = try EvalContext.init(&gc, &syms, &globals, alloc);
+    defer ctx.deinit();
+    ctx.installRootVisitor();
+
+    _ = try ctx.evalString("(+ 1 1)", "<test>"); // bootstrap the VM
+
+    var parser = Parser.init(ctx.gc, ctx.symbols, &ctx.spans, "(+ 40 2)", "<form>", ctx.allocator);
+    defer parser.deinit();
+    const form = try parser.readOne();
+    const result = try ctx.evalFormNested(form);
+    try std.testing.expectEqual(value_mod.fixnum(42), result);
+}
+
+test "evalFormNested: yielding form errors rather than corrupting" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var globals = try GlobalEnv.init(&gc, alloc);
+    defer globals.deinit();
+    try register_mod.registerAll(&gc, &globals, &syms);
+    var ctx = try EvalContext.init(&gc, &syms, &globals, alloc);
+    defer ctx.deinit();
+    ctx.installRootVisitor();
+    _ = try ctx.evalString("(+ 1 1)", "<test>");
+
+    // (yield) sets vm.yield_requested with no block/park, so the dispatch loop
+    // returns .yielded and execFn surfaces error.FiberYielded. There is no
+    // scheduler at this nested level to resume it. (spawn ...) is NOT used here:
+    // it returns error.ContractViolation when vm.scheduler is null, which is a
+    // different invariant than "yielded form surfaces an error".
+    var parser = Parser.init(ctx.gc, ctx.symbols, &ctx.spans, "(yield)", "<form>", ctx.allocator);
+    defer parser.deinit();
+    const form = try parser.readOne();
+    const res = ctx.evalFormNested(form);
+    try std.testing.expectError(error.FiberYielded, res);
 }

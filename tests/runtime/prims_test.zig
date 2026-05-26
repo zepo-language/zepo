@@ -273,3 +273,16 @@ test "bitwise: and / or / xor / not" {
     try expectInt(try rig.eval("(arithmetic-shift 1 4)"), 16);
     try expectInt(try rig.eval("(arithmetic-shift 16 -2)"), 4);
 }
+
+// ── eval (src/prims/eval_prim.zig) ────────────────────────────────────────
+
+test "eval prim: data form -> callable -> result" {
+    // zepo-ksw
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    try expectInt(
+        try rig.eval("(let ((n 5)) ((eval (list 'lambda '(x) (list '+ 'x n))) 10))"),
+        15,
+    );
+    try expectInt(try rig.eval("(eval 42)"), 42);
+}
