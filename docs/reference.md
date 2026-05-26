@@ -1769,6 +1769,12 @@ Raise an error if `expr` is falsy.
 First-class mutable hash tables with `equal?` key semantics. Open-addressed
 with linear probing; resizes automatically past a 0.75 load factor.
 
+Hash tables are **portable**: a table whose keys and values are all portable
+can be sent across a channel to a worker (it is deep-copied into the receiver's
+heap). This makes them a convenient carrier for JSON-shaped data — see
+[Channels](#channels). A table containing a non-portable value (a closure,
+port, fiber, or foreign object) raises `NonPortableValue` when sent.
+
 #### `(make-hash-table)` → `ht`
 
 Creates an empty hash table with default capacity.
@@ -2434,11 +2440,43 @@ All TCP I/O primitives are non-blocking. When a socket would block, the calling 
 
 ---
 
+## Evaluating forms (`eval`)
+
+#### `(eval form)` → value
+Compile and run an s-expression `form` in the current VM's top-level global
+environment, returning its result. Because Zepo code is data (lists and
+symbols), `eval` is what turns a form received over a channel — or built with
+quasiquote — back into running code:
+
+```scheme
+(eval 42)                              ; => 42
+(eval (list '+ 1 2))                   ; => 3
+((eval '(lambda (x) (* x x))) 5)       ; => 25
+```
+
+This is the receiving half of the worker code-as-data pattern: the parent sends
+a quoted/quasiquoted form over a channel (forms are portable), and the worker
+calls `(eval ...)` on it:
+
+```scheme
+;; in the worker entry
+(let ((task (channel-recv! in)))
+  (channel-send! out (eval task)))
+```
+
+**Synchronous only (v1).** A form passed to `eval` must run to completion
+without yielding — if it spawns a fiber or yields, `eval` raises an error
+rather than suspending. Long-running concurrency belongs in the worker's own
+top-level entry (which runs under the scheduler), not inside an `eval`'d form.
+
+**`eval` is dynamic code execution.** Only `eval` forms you trust; treat data
+arriving from untrusted sources as you would any code.
+
 ## Channels
 
 Channels are thread-safe FIFO queues for passing values between fibers or across worker OS threads. A channel can be unbuffered (capacity 0, rendezvous semantics) or buffered (capacity N).
 
-Only **portable values** can cross a channel between workers: `nil`, booleans, fixnums, floats, chars, strings, symbols, bytevectors, pairs/lists of portable values, vectors of portable values. Non-portable values (closures, ports, fibers, foreign objects, cyclic structures) raise `NonPortableValue`. Within a single-threaded fiber context all values pass through fine because no copy is needed.
+Only **portable values** can cross a channel between workers: `nil`, booleans, fixnums, floats, chars, strings, symbols, bytevectors, pairs/lists of portable values, vectors of portable values, and hash tables whose keys and values are themselves portable. The value is deep-copied into the receiver's heap, so the two sides never share mutable state. Non-portable values (closures, ports, fibers, foreign objects, cyclic structures) raise `NonPortableValue`. To send **code** to a worker, pass it as a quoted/quasiquoted *form* — an ordinary portable list — and have the receiver compile it with [`eval`](#evaluating-forms-eval); see [Workers](#workers). Within a single-threaded fiber context all values pass through fine because no copy is needed.
 
 ### Primitives
 
@@ -2508,14 +2546,15 @@ Return `#t` if the channel has no buffered values and no parked senders.
 
 Workers are OS threads, each with a completely isolated VM instance (own GC heap, symbol table, global environment, stdlib). They communicate with the spawning VM exclusively through shared `Channel` objects.
 
-Because workers have separate heaps, only **portable values** (see Channels above) can transit channels between a worker and its parent. The worker's lambda is supplied as a Lisp source string evaluated fresh in the worker's stdlib context.
+Because workers have separate heaps, only **portable values** (see Channels above) can transit channels between a worker and its parent. The worker's entry is supplied either as a Lisp **source string** or as a **portable form** (for example a quasiquoted lambda with captured values spliced in by value); either is evaluated fresh in the worker's stdlib context and must yield a callable.
 
 ### Primitives
 
-#### `(spawn-worker code-string channel ...)` → worker-handle
-Spawn a new OS thread. `code-string` is evaluated in the worker's fresh stdlib context; it must produce a callable whose arity matches the number of `channel` arguments. The callable is immediately invoked with the channels.
+#### `(spawn-worker entry channel ...)` → worker-handle
+Spawn a new OS thread. `entry` is either a **source string** or a **portable form** (see [Workers](#workers) intro). It is evaluated in the worker's fresh stdlib context and must produce a callable whose arity matches the number of `channel` arguments. The callable is immediately invoked with the channels.
 
 ```scheme
+;; String entry (back-compatible).
 (define result-ch (make-channel 1))
 (define w (spawn-worker
   "(lambda (out)
@@ -2523,6 +2562,23 @@ Spawn a new OS thread. `code-string` is evaluated in the worker's fresh stdlib c
   result-ch))
 (display (channel-recv! result-ch))   ; => 42
 ```
+
+You can also pass a **form** built with quasiquote, splicing captured values in
+*by value* with `,` — this is how you "send a closure" to a worker without
+sharing heap pointers:
+
+```scheme
+(define factor 6)
+(define out (make-channel 1))
+(define w (spawn-worker
+  `(lambda (out) (channel-send! out (* 7 ,factor)))  ; factor spliced as 6
+  out))
+(display (channel-recv! out))   ; => 42
+```
+
+A captured **list** (or other compound datum) must be quoted so the worker does
+not try to evaluate it as code: write `` `(... ',xs) `` so `xs`'s value is
+embedded as a literal.
 
 #### `(worker? obj)` → bool
 Return `#t` if `obj` is a worker handle.
