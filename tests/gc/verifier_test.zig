@@ -69,3 +69,23 @@ test "verifier passes when the old->young edge's card is dirty" {
 
     try gcmod.Verifier.verify(&gc); // must NOT error
 }
+
+test "verifier rejects a corrupted (zero-size) old-gen header" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    const h = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+    h.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+    const b = body(h);
+    b[0] = value_mod.NIL;
+    b[1] = value_mod.NIL;
+
+    // Corrupt the size field to 0 — the heap walker would stall here.
+    h.word = (h.word & ~ObjHeader.SIZE_MASK);
+
+    try std.testing.expectError(
+        gcmod.verifier.VerifyError.HeapNotWalkable,
+        gcmod.Verifier.verify(&gc),
+    );
+}
