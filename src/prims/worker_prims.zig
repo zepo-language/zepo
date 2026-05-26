@@ -166,7 +166,9 @@ fn getWorker(v: Value) LispError!*WorkerState {
     return @ptrCast(@alignCast(objects.foreignPayload(v) orelse return error.ContractViolation));
 }
 
-// ── (spawn-worker code-string channel...) → worker-handle ────────────────────
+// ── (spawn-worker entry channel...) → worker-handle ──────────────────────────
+// zepo-ebd: `entry` is a source string (back-compat) or a portable form;
+// either is evaluated in the worker's isolated context to the entry callable.
 pub fn primSpawnWorker(vm: *VM, args: []const Value) LispError!Value {
     if (args.len < 1) return error.ArityMismatch;
 
