@@ -151,6 +151,17 @@ pub fn build(b: *std.Build) void {
     const gc_soak_step = b.step("gc_soak", "Run the heavy randomized GC soak (opt-in)");
     gc_soak_step.dependOn(&run_gc_soak_tests.step);
 
+    // zepo-a7j: old-gen alloc-fallback header sizing regression.
+    const gc_fallback_mod = b.createModule(.{
+        .root_source_file = b.path("tests/gc/oldgen_fallback_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const gc_fallback_tests = b.addTest(.{ .root_module = gc_fallback_mod });
+    const run_gc_fallback_tests = b.addRunArtifact(gc_fallback_tests);
+    gc_test_step.dependOn(&run_gc_fallback_tests.step);
+
     // --- Runtime object tests ---
     const runtime_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/objects.zig"),

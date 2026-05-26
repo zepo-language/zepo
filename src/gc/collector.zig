@@ -109,10 +109,14 @@ pub const GC = struct {
             p.* = ObjHeader.init(kind, .nursery_from, @intFromEnum(kind), @intCast(body_words));
             return p;
         }
-        // Fallback to old-gen.
-        const p = gc.old_gen.alloc(body_words) orelse return error.OutOfMemory;
-        p.* = ObjHeader.init(kind, .old_gen, @intFromEnum(kind), @intCast(body_words));
-        return p;
+        // Fallback to old-gen. zepo-a7j: size the header with the block's
+        // ACTUAL (size-class-rounded) capacity, like promote() does — using the
+        // requested body_words under-reports a rounded-up block (e.g. a 1-word
+        // box lands in the 2-word size class) and desyncs the old-gen heap
+        // walker (sweep / major-mark / verifier).
+        const r = gc.old_gen.allocWithCap(body_words) orelse return error.OutOfMemory;
+        r.hdr.* = ObjHeader.init(kind, .old_gen, @intFromEnum(kind), @intCast(r.actual_words));
+        return r.hdr;
     }
 
     /// Allocate a foreign-handle object directly in old-gen. Bypasses the
