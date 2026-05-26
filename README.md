@@ -25,7 +25,7 @@ The language is evolving; minor breaking changes are still possible while it's p
 Zepo has two concurrency layers:
 
 - **Fibers** — cooperative green threads sharing one OS thread. Yield at `(sleep ...)`, `(yield)`, and blocking I/O. Scheduled by a `poll(2)` event loop; no busy-waiting.
-- **Workers** — OS threads, each with a fully isolated VM (own GC, symbol table, globals). Communicate through `Channel` objects. Only portable values (numbers, strings, symbols, lists, vectors) can cross thread boundaries.
+- **Workers** — OS threads, each with a fully isolated VM (own GC, symbol table, globals). Communicate through `Channel` objects. Only portable values (numbers, strings, symbols, lists, vectors, hash tables) can cross thread boundaries — including code passed as a quoted form and compiled in the worker with `eval`.
 
 ## Features
 
