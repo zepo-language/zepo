@@ -181,6 +181,59 @@ pub fn set(gc: *GC, vm: *VM, ht: Value, key: Value, val: Value) LispError!bool {
     return false;
 }
 
+// zepo-hlz
+// Linear-probe to the first NIL/TOMBSTONE slot. No equality compare — caller
+// guarantees `key` is not already present. Returns the slot to write.
+fn probeDistinct(back: Value, cap: usize, key_hash: u64) usize {
+    var i: usize = @intCast(key_hash % @as(u64, @intCast(cap)));
+    var steps: usize = 0;
+    while (steps < cap) : (steps += 1) {
+        const k = keyAt(back, i);
+        if (k == value_mod.NIL or k == hash_mod.TOMBSTONE) return i;
+        i = (i + 1) % cap;
+    }
+    return i; // full table — caller resizes before this can happen
+}
+
+fn rehashDistinct(gc: *GC, ht: Value, new_cap: usize) error{OutOfMemory}!void {
+    var scope = HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const ht_slot = scope.push(ht);
+    const new_back = objects.makeVector(gc, new_cap * 2, value_mod.NIL) catch return error.OutOfMemory;
+    const new_back_slot = scope.push(new_back);
+    const old_back = backing(ht_slot.*);
+    const old_cap = objects.vectorLen(old_back) / 2;
+    var i: usize = 0;
+    while (i < old_cap) : (i += 1) {
+        const k = keyAt(old_back, i);
+        if (k == value_mod.NIL or k == hash_mod.TOMBSTONE) continue;
+        const v = valAt(old_back, i);
+        const slot = probeDistinct(new_back_slot.*, new_cap, hash_mod.hashValue(k));
+        setKeyAt(gc, new_back_slot.*, slot, k);
+        setValAt(gc, new_back_slot.*, slot, v);
+    }
+    setBacking(gc, ht_slot.*, new_back_slot.*);
+}
+
+/// Insert a key known to be absent (e.g. when rebuilding a deduped table).
+/// VM-free; never compares keys for equality. The caller must guarantee that
+/// `key` is not already present under `equal?`; otherwise a duplicate slot is
+/// created.
+pub fn putDistinct(gc: *GC, ht: Value, key: Value, val: Value) error{OutOfMemory}!void {
+    std.debug.assert(key != value_mod.NIL); // NIL is the empty sentinel; a NIL key here is a caller bug
+    const cap_now = capacity(ht);
+    const len_now = size(ht);
+    if ((len_now + 1) * LOAD_DEN >= cap_now * LOAD_NUM) {
+        try rehashDistinct(gc, ht, cap_now * 2);
+    }
+    const back = backing(ht);
+    const slot = probeDistinct(back, capacity(ht), hash_mod.hashValue(key));
+    setKeyAt(gc, back, slot, key);
+    setValAt(gc, back, slot, val);
+    setLen(ht, size(ht) + 1);
+}
+
 pub fn get(vm: *VM, ht: Value, key: Value, default_val: Value) LispError!Value {
     if (!isHashTable(ht)) return error.TypeError;
     if (key == value_mod.NIL) return default_val;

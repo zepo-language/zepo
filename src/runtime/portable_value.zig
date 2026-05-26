@@ -28,6 +28,8 @@ const HandleScope = gc_mod.HandleScope;
 const runtime = @import("objects.zig");
 const symbols_mod = @import("symbols.zig");
 const SymbolTable = symbols_mod.SymbolTable;
+// zepo-hlz
+const hashtable_mod = @import("hashtable.zig");
 
 // ── checkPortable ─────────────────────────────────────────────────────────────
 
@@ -69,6 +71,34 @@ pub fn checkPortable(v: Value, allocator: std.mem.Allocator) !void {
         if (runtime.isVector(cur)) {
             const len = runtime.vectorLen(cur);
             for (0..len) |i| try stack.append(allocator, runtime.vectorGet(cur, i));
+            continue;
+        }
+
+        // zepo-hlz: hashtables are portable; enqueue every key and value.
+        // Only the traversal `stack` (plain allocator) grows here — no GC
+        // allocation occurs, so the source slot stays stable and a local
+        // pointer into the rooted-by-caller table is safe.
+        if (hashtable_mod.isHashTable(cur)) {
+            const Ctx = struct {
+                stack: *std.ArrayListUnmanaged(Value),
+                alloc: std.mem.Allocator,
+                err: ?anyerror = null,
+                fn visit(p: *anyopaque, vk: Value, vv: Value) void {
+                    const s: *@This() = @ptrCast(@alignCast(p));
+                    if (s.err != null) return;
+                    s.stack.append(s.alloc, vk) catch |e| {
+                        s.err = e;
+                        return;
+                    };
+                    s.stack.append(s.alloc, vv) catch |e| {
+                        s.err = e;
+                    };
+                }
+            };
+            var cb = Ctx{ .stack = &stack, .alloc = allocator };
+            var cur_slot = cur;
+            hashtable_mod.forEach(&cur_slot, &cb, Ctx.visit);
+            if (cb.err) |e| return e;
             continue;
         }
 
@@ -134,6 +164,59 @@ pub fn copyValue(
             runtime.vectorSet(dst_gc, dst_vec, i, elem);
         }
         return dst_vec;
+    }
+
+    // zepo-hlz: hashtables are portable. Rebuild a fresh deduped table on
+    // dst_gc by copying every (key,value) pair.
+    if (hashtable_mod.isHashTable(src)) {
+        var scope = HandleScope{};
+        dst_gc.roots.pushHandleScope(&scope);
+        defer dst_gc.roots.popHandleScope();
+        // Root the in-progress destination table: recursive copies below may
+        // trigger GC and move it.
+        const dst_ht_slot = scope.push(try hashtable_mod.make(dst_gc));
+
+        // Root the SOURCE table for the duration of the iteration. forEach
+        // re-reads backing(src_slot.*) every iteration; a recursive copy that
+        // GCs can move the source table, so an un-rooted local would go stale.
+        var src_slot = src;
+        const prev_extra = dst_gc.roots.extra.items.len;
+        try dst_gc.roots.extra.append(dst_gc.allocator, &src_slot);
+        defer dst_gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+
+        const Ctx = struct {
+            dst_gc: *GC,
+            dst_syms: *SymbolTable,
+            ht_slot: *Value,
+            err: ?anyerror = null,
+            fn visit(p: *anyopaque, k: Value, v: Value) void {
+                const s: *@This() = @ptrCast(@alignCast(p));
+                if (s.err != null) return;
+                // Per-entry HandleScope: root the copied destination KEY across
+                // the copy of the destination VALUE. A GC during the value copy
+                // would otherwise move `dk` and stale it before putDistinct.
+                var entry_scope = HandleScope{};
+                s.dst_gc.roots.pushHandleScope(&entry_scope);
+                defer s.dst_gc.roots.popHandleScope();
+                const dk = copyValue(k, s.dst_gc, s.dst_syms) catch |e| {
+                    s.err = e;
+                    return;
+                };
+                const dk_slot = entry_scope.push(dk);
+                const dv = copyValue(v, s.dst_gc, s.dst_syms) catch |e| {
+                    s.err = e;
+                    return;
+                };
+                // dk_slot.* is re-read post-GC (kept current by the HandleScope).
+                hashtable_mod.putDistinct(s.dst_gc, s.ht_slot.*, dk_slot.*, dv) catch |e| {
+                    s.err = e;
+                };
+            }
+        };
+        var cb = Ctx{ .dst_gc = dst_gc, .dst_syms = dst_syms, .ht_slot = dst_ht_slot };
+        hashtable_mod.forEach(&src_slot, &cb, Ctx.visit);
+        if (cb.err) |e| return e;
+        return dst_ht_slot.*;
     }
 
     return error.NonPortableValue;
@@ -267,6 +350,11 @@ pub const ChannelValue = union(enum) {
     bytevector: []u8,  // allocator-owned bytes
     pair: struct { car: *ChannelValue, cdr: *ChannelValue },
     vector: []*ChannelValue, // allocator-owned slice
+    // zepo-hlz
+    hash_table: []Entry, // allocator-owned (key,value) pairs
+
+    // zepo-hlz
+    pub const Entry = struct { key: *ChannelValue, value: *ChannelValue };
 };
 
 /// Serialize `val` into a `ChannelValue` tree using `alloc`.
@@ -320,6 +408,48 @@ pub fn serializeToChannel(val: Value, alloc: std.mem.Allocator) anyerror!*Channe
         cv.* = .{ .vector = elems };
         return cv;
     }
+    // zepo-hlz: hashtables serialize to an allocator-owned entry list. No GC
+    // runs (plain alloc), so the source table is stable; we only need to free
+    // already-serialized entries on a mid-way error.
+    if (hashtable_mod.isHashTable(val)) {
+        var list = std.ArrayListUnmanaged(ChannelValue.Entry).empty;
+        errdefer {
+            for (list.items) |e| {
+                freeChannelValue(e.key, alloc);
+                freeChannelValue(e.value, alloc);
+            }
+            list.deinit(alloc);
+        }
+        const Ctx = struct {
+            alloc: std.mem.Allocator,
+            list: *std.ArrayListUnmanaged(ChannelValue.Entry),
+            err: ?anyerror = null,
+            fn visit(p: *anyopaque, k: Value, v: Value) void {
+                const s: *@This() = @ptrCast(@alignCast(p));
+                if (s.err != null) return;
+                const ck = serializeToChannel(k, s.alloc) catch |e| {
+                    s.err = e;
+                    return;
+                };
+                const cvv = serializeToChannel(v, s.alloc) catch |e| {
+                    freeChannelValue(ck, s.alloc);
+                    s.err = e;
+                    return;
+                };
+                s.list.append(s.alloc, .{ .key = ck, .value = cvv }) catch |e| {
+                    freeChannelValue(ck, s.alloc);
+                    freeChannelValue(cvv, s.alloc);
+                    s.err = e;
+                };
+            }
+        };
+        var cb = Ctx{ .alloc = alloc, .list = &list };
+        var val_slot = val;
+        hashtable_mod.forEach(&val_slot, &cb, Ctx.visit);
+        if (cb.err) |e| return e;
+        cv.* = .{ .hash_table = try list.toOwnedSlice(alloc) };
+        return cv;
+    }
 
     alloc.destroy(cv);
     return error.NonPortableValue;
@@ -365,6 +495,30 @@ pub fn deserializeFromChannel(
             }
             break :blk dst_vec;
         },
+        // zepo-hlz: rebuild a hashtable on dst_gc. Root the in-progress table
+        // via extra-roots (recursive deserialize may GC and move it). For each
+        // entry, deserialize the key, push it to a HandleScope slot so the
+        // SUBSEQUENT value deserialization's GC cannot stale it, then put.
+        .hash_table => |entries| blk: {
+            var ht = try hashtable_mod.make(dst_gc);
+            // zepo-hlz: `ht` is rooted via roots.extra (not a HandleScope slot
+            // like copyValue) because the extra-root keeps `&ht` itself current
+            // across any GC; the per-entry key is separately rooted in the entry
+            // HandleScope below, so no HandleScope slot for `ht` is needed here.
+            const prev_extra = dst_gc.roots.extra.items.len;
+            try dst_gc.roots.extra.append(dst_gc.allocator, &ht);
+            defer dst_gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+            for (entries) |e| {
+                var entry_scope = HandleScope{};
+                dst_gc.roots.pushHandleScope(&entry_scope);
+                defer dst_gc.roots.popHandleScope();
+                // Root the key across the value deserialization.
+                const key_slot = entry_scope.push(try deserializeFromChannel(e.key, dst_gc, dst_syms));
+                const value = try deserializeFromChannel(e.value, dst_gc, dst_syms);
+                try hashtable_mod.putDistinct(dst_gc, ht, key_slot.*, value);
+            }
+            break :blk ht;
+        },
     };
 }
 
@@ -379,6 +533,14 @@ pub fn freeChannelValue(cv: *ChannelValue, alloc: std.mem.Allocator) void {
         .vector => |elems| {
             for (elems) |e| freeChannelValue(e, alloc);
             alloc.free(elems);
+        },
+        // zepo-hlz
+        .hash_table => |entries| {
+            for (entries) |e| {
+                freeChannelValue(e.key, alloc);
+                freeChannelValue(e.value, alloc);
+            }
+            alloc.free(entries);
         },
         else => {},
     }
@@ -419,4 +581,125 @@ test "ChannelValue: roundtrip serialize/deserialize" {
         try std.testing.expectEqual(value_mod.fixnum(2), runtime.pairCar(runtime.pairCdr(v).*).*);
         try std.testing.expectEqual(value_mod.fixnum(3), runtime.pairCar(runtime.pairCdr(runtime.pairCdr(v).*).*).*);
     }
+}
+
+// zepo-hlz
+test "portable: hashtable roundtrips with portable keys/values" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+
+    const ht = try hashtable_mod.make(&gc);
+    const k = try runtime.makeString(&gc, "limit");
+    try hashtable_mod.putDistinct(&gc, ht, k, value_mod.fixnum(100));
+
+    const copy = try copyPortable(ht, &gc, &syms, alloc);
+    try std.testing.expect(copy != ht);
+    try std.testing.expect(hashtable_mod.isHashTable(copy));
+    try std.testing.expectEqual(@as(usize, 1), hashtable_mod.size(copy));
+}
+
+// zepo-hlz
+test "portable: hashtable with non-portable value is rejected" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    const ht = try hashtable_mod.make(&gc);
+    const k = try runtime.makeString(&gc, "ch");
+    // checkPortable only inspects the type tag, never derefs the payload,
+    // so a null payload is fine.
+    const foreign = try runtime.makeForeign(&gc, null, null, 0xdead);
+    try hashtable_mod.putDistinct(&gc, ht, k, foreign);
+    try std.testing.expectError(error.NonPortableValue, checkPortable(ht, alloc));
+}
+
+// zepo-hlz
+test "ChannelValue: hashtable serialize/deserialize roundtrip" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+
+    const ht = try hashtable_mod.make(&gc);
+    const k = try runtime.makeString(&gc, "limit");
+    try hashtable_mod.putDistinct(&gc, ht, k, value_mod.fixnum(100));
+
+    const cv = try serializeToChannel(ht, alloc);
+    defer freeChannelValue(cv, alloc);
+    const v = try deserializeFromChannel(cv, &gc, &syms);
+    try std.testing.expect(hashtable_mod.isHashTable(v));
+    try std.testing.expectEqual(@as(usize, 1), hashtable_mod.size(v));
+}
+
+// zepo-hlz: exercises the recursive-GC rooting path — a multi-entry table
+// (multiple live slots) whose values include a NESTED vector. Round-tripped
+// through serialize→deserialize so freeChannelValue's nested free path is
+// covered under the leak-checking testing allocator.
+test "portable: multi-entry hashtable with nested vector value roundtrips" {
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+
+    const ht = try hashtable_mod.make(&gc);
+    {
+        var scope = HandleScope{};
+        gc.roots.pushHandleScope(&scope);
+        defer gc.roots.popHandleScope();
+        const ht_slot = scope.push(ht);
+
+        // Five scalar entries + one nested-vector entry = 6 live slots.
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "a"), value_mod.fixnum(1));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "b"), value_mod.fixnum(2));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "c"), value_mod.fixnum(3));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "d"), value_mod.fixnum(4));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "e"), value_mod.fixnum(5));
+
+        // Nested portable value: a 3-element vector under key "vec".
+        const inner = try runtime.makeVector(&gc, 3, value_mod.NIL);
+        const inner_slot = scope.push(inner);
+        runtime.vectorSet(&gc, inner_slot.*, 0, value_mod.fixnum(10));
+        runtime.vectorSet(&gc, inner_slot.*, 1, value_mod.fixnum(20));
+        runtime.vectorSet(&gc, inner_slot.*, 2, value_mod.fixnum(30));
+        try hashtable_mod.putDistinct(&gc, ht_slot.*, try runtime.makeString(&gc, "vec"), inner_slot.*);
+    }
+
+    const cv = try serializeToChannel(ht, alloc);
+    defer freeChannelValue(cv, alloc);
+    const out = try deserializeFromChannel(cv, &gc, &syms);
+
+    try std.testing.expect(hashtable_mod.isHashTable(out));
+    try std.testing.expectEqual(@as(usize, 6), hashtable_mod.size(out));
+
+    // Read entries back via forEach (VM-free), matching keys by their string
+    // bytes, and verify the scalar and the nested-vector value structurally.
+    const Probe = struct {
+        scalar_d: ?Value = null,
+        vec_val: ?Value = null,
+        fn visit(p: *anyopaque, k: Value, val: Value) void {
+            const s: *@This() = @ptrCast(@alignCast(p));
+            if (!runtime.isString(k)) return;
+            const bytes = runtime.stringBytes(k);
+            if (std.mem.eql(u8, bytes, "d")) s.scalar_d = val;
+            if (std.mem.eql(u8, bytes, "vec")) s.vec_val = val;
+        }
+    };
+    var probe = Probe{};
+    var out_slot = out;
+    hashtable_mod.forEach(&out_slot, &probe, Probe.visit);
+
+    // Scalar entry reads back correctly.
+    try std.testing.expectEqual(value_mod.fixnum(4), probe.scalar_d.?);
+
+    // Nested vector reads back structurally.
+    const rv = probe.vec_val.?;
+    try std.testing.expect(runtime.isVector(rv));
+    try std.testing.expectEqual(@as(usize, 3), runtime.vectorLen(rv));
+    try std.testing.expectEqual(value_mod.fixnum(10), runtime.vectorGet(rv, 0));
+    try std.testing.expectEqual(value_mod.fixnum(20), runtime.vectorGet(rv, 1));
+    try std.testing.expectEqual(value_mod.fixnum(30), runtime.vectorGet(rv, 2));
 }
