@@ -246,15 +246,7 @@ pub const OldGen = struct {
 
     const MarkCtx = struct {
         og: *OldGen,
-        /// Optional ptr-to-nursery so mark skips nursery descendants (they are
-        /// collected by minor GC; or during a major GC a minor runs first).
-        nursery_from_start: usize = 0,
-        nursery_from_end: usize = 0,
     };
-
-    fn isInNursery(mc: *const MarkCtx, addr: usize) bool {
-        return addr >= mc.nursery_from_start and addr < mc.nursery_from_end;
-    }
 
     fn markSlot(ctx_raw: *anyopaque, slot: *Value) void {
         const mc: *MarkCtx = @ptrCast(@alignCast(ctx_raw));
@@ -264,16 +256,16 @@ pub const OldGen = struct {
     fn markValue(mc: *MarkCtx, v: Value) void {
         if (!value_mod.isPtr(v)) return;
         const obj = value_mod.ptrVal(v);
-        const a = @intFromPtr(obj);
         if (!mc.og.contains(obj)) {
-            // Nursery-resident survivor: minor already kept it alive (it's
-            // reachable from roots). We don't set a mark bit here — nursery
-            // doesn't use one — but we must still trace its children so any
-            // old-gen descendants they reference get marked by the major.
-            // Without this, a young object holding the only reference to an
-            // old-gen object (e.g. a freshly-allocated pair wrapping an FFI
-            // foreign handle) would let the old-gen target be reclaimed.
-            if (isInNursery(mc, a)) traceChildren(mc, obj);
+            // zepo-zjb: a nursery survivor must NOT be traced recursively here.
+            // The nursery has no mark bit, so recursing would spin forever on a
+            // reachable young->young cycle (e.g. (set-cdr! x x) while x is
+            // young) — a stack-overflow crash during an ordinary major GC.
+            // Instead, mark()'s linear nursery scan visits EVERY survivor once
+            // and traces its DIRECT children; old-gen descendants reachable only
+            // through young objects are kept alive that way (the zepo-svu /
+            // young-wraps-foreign-handle case), without any young recursion.
+            // This mirrors the incremental markBegin path, which is cycle-safe.
             return;
         }
         if (obj.marked()) return;
@@ -296,14 +288,24 @@ pub const OldGen = struct {
         }
     }
 
-    pub fn mark(og: *OldGen, roots: *RootSet, cards: *CardTable, nursery_from: [*]u8, nursery_from_len: usize) void {
+    pub fn mark(og: *OldGen, roots: *RootSet, cards: *CardTable, nursery_from: [*]u8, nursery_bump: [*]u8) void {
         _ = cards; // cards are for minor, not major
-        var mc = MarkCtx{
-            .og = og,
-            .nursery_from_start = @intFromPtr(nursery_from),
-            .nursery_from_end = @intFromPtr(nursery_from) + nursery_from_len,
-        };
+        var mc = MarkCtx{ .og = og };
         roots.visitAll(@ptrCast(&mc), markSlot);
+
+        // zepo-zjb: linearly scan every nursery survivor exactly once and mark
+        // its DIRECT children. This keeps alive any old-gen object reachable
+        // only through a young object (zepo-svu / young-wraps-foreign-handle)
+        // WITHOUT recursing through young->young edges — so a reachable young
+        // cycle can never spin the mark loop. Post-minor, from_start..bump is a
+        // packed run of live survivors. Mirrors the incremental markBegin scan.
+        var scan: [*]u8 = nursery_from;
+        while (@intFromPtr(scan) < @intFromPtr(nursery_bump)) {
+            const obj: *ObjHeader = @ptrCast(@alignCast(scan));
+            traceChildren(&mc, obj);
+            const sz = WORD + @as(usize, @intCast(obj.sizeWords())) * WORD;
+            scan = @ptrFromInt(@intFromPtr(scan) + sz);
+        }
     }
 
     const SweepCtx = struct {
