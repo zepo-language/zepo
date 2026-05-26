@@ -89,3 +89,27 @@ test "verifier rejects a corrupted (zero-size) old-gen header" {
         gcmod.Verifier.verify(&gc),
     );
 }
+
+test "verifier rejects a dirty card with no card_starts entry" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    // Allocate one old-gen object so the heap is non-empty and walkable.
+    const h = gc.old_gen.alloc(2) orelse return error.TestUnexpected;
+    h.* = ObjHeader.init(.pair, .old_gen, @intFromEnum(Kind.pair), 2);
+    const b = body(h);
+    b[0] = value_mod.NIL;
+    b[1] = value_mod.NIL;
+
+    // Dirty a far-away card that no object covers, and ensure its card_starts
+    // entry is null — exactly the spanning-card gap (zepo-gol).
+    const far_idx: usize = 3; // a card past the single small object
+    gc.cards.table[far_idx] = 1;
+    gc.old_gen.card_starts[far_idx] = null;
+
+    try std.testing.expectError(
+        gcmod.verifier.VerifyError.CardStartMissing,
+        gcmod.Verifier.verify(&gc),
+    );
+}

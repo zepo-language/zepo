@@ -64,6 +64,29 @@ pub const Verifier = struct {
         // otherwise the next minor GC cannot find the edge (zepo-jus /
         // spanning-card). The walk also asserts the heap stays walkable.
         try verifyOldGen(gc);
+        try verifyCardStarts(gc);
+    }
+
+    // zepo-rnr: every dirty card must name a covering object in card_starts,
+    // and that object must actually span the card's start address. A dirty
+    // card with a null start means a minor GC would skip the card and lose its
+    // edges (the spanning-card root cause, zepo-gol).
+    fn verifyCardStarts(gc: *GC) !void {
+        const og = &gc.old_gen;
+        var idx: usize = 0;
+        while (idx < gc.cards.table.len) : (idx += 1) {
+            if (!gc.cards.isCardDirty(idx)) continue;
+            const start = og.card_starts[idx] orelse return VerifyError.CardStartMissing;
+            if (!og.contains(start)) return VerifyError.CardStartMissing;
+            const sw: usize = @intCast(start.sizeWords());
+            if (sw == 0) return VerifyError.CardStartMissing;
+            const block_end = @intFromPtr(start) + WORD + sw * WORD;
+            const card_begin = gc.cards.cardStart(idx);
+            // The covering object must start at or before the card and extend
+            // into it.
+            if (@intFromPtr(start) > card_begin or block_end <= card_begin)
+                return VerifyError.CardStartMissing;
+        }
     }
 
     fn verifyOldGen(gc: *GC) !void {
