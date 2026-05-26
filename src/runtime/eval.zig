@@ -464,12 +464,7 @@ pub const EvalContext = struct {
     }
 
     fn evalFormNestedInner(ctx: *EvalContext, form: Value) !Value {
-        if (isHeadSymbol(form, "module") or isHeadSymbol(form, "lib") or
-            isHeadSymbol(form, "import") or isHeadSymbol(form, "export") or
-            isHeadSymbol(form, "include") or isHeadSymbol(form, "load") or
-            isHeadSymbol(form, "package") or isHeadSymbol(form, "defmacro") or
-            isHeadSymbol(form, "define-syntax"))
-        {
+        if (isCompileTimeHead(form)) {
             return ctx.evalFormInner(form);
         }
         const actual_fn_id = try ctx.compileFormToFnId(form);
@@ -489,6 +484,18 @@ fn extractSourceLine(src: []const u8, offset: u32) []const u8 {
     var end: usize = off;
     while (end < src.len and src[end] != '\n') : (end += 1) {}
     return src[start..end];
+}
+
+// zepo-ksw
+// Heads handled at compile time (module system + macro declarations) — these
+// never lower to a runnable thunk, so nested eval must route them through
+// evalFormInner rather than compile+execFn.
+fn isCompileTimeHead(form: Value) bool {
+    return isHeadSymbol(form, "module") or isHeadSymbol(form, "lib") or
+        isHeadSymbol(form, "import") or isHeadSymbol(form, "export") or
+        isHeadSymbol(form, "include") or isHeadSymbol(form, "load") or
+        isHeadSymbol(form, "package") or isHeadSymbol(form, "defmacro") or
+        isHeadSymbol(form, "define-syntax");
 }
 
 pub fn isHeadSymbol(v: Value, expected: []const u8) bool {
