@@ -192,3 +192,40 @@ test "hash: nil key rejected" {
         rig.eval("(hash-set! h (quote ()) 1)"),
     );
 }
+
+// zepo-hlz
+test "putDistinct: inserts distinct keys without a VM" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const hashtable = runtime.hashtable;
+    const ht = try hashtable.make(&rig.gc);
+    const k1 = try objects.makeString(&rig.gc, "a");
+    const k2 = try objects.makeString(&rig.gc, "b");
+    try hashtable.putDistinct(&rig.gc, ht, k1, value_mod.fixnum(1));
+    try hashtable.putDistinct(&rig.gc, ht, k2, value_mod.fixnum(2));
+    try std.testing.expectEqual(@as(usize, 2), hashtable.size(ht));
+}
+
+// zepo-hlz
+test "putDistinct: forces a resize and keeps all entries" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const hashtable = runtime.hashtable;
+
+    var scope = zepo.gc.HandleScope{};
+    rig.gc.roots.pushHandleScope(&scope);
+    defer rig.gc.roots.popHandleScope();
+
+    const ht_slot = scope.push(try hashtable.make(&rig.gc));
+
+    var i: usize = 0;
+    while (i < 20) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const name = std.fmt.bufPrint(&buf, "k{d}", .{i}) catch unreachable;
+        const key = try objects.makeString(&rig.gc, name);
+        try hashtable.putDistinct(&rig.gc, ht_slot.*, key, value_mod.fixnum(@intCast(i)));
+    }
+
+    try std.testing.expectEqual(@as(usize, 20), hashtable.size(ht_slot.*));
+    try std.testing.expect(hashtable.capacity(ht_slot.*) >= 20);
+}
