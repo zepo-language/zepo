@@ -106,6 +106,17 @@ pub fn build(b: *std.Build) void {
     const run_gc_foreign_stress_tests = b.addRunArtifact(gc_foreign_stress_tests);
     gc_test_step.dependOn(&run_gc_foreign_stress_tests.step);
 
+    // zepo-rnr: verifier invariant tests (RED fixtures prove the checks bite).
+    const gc_verifier_mod = b.createModule(.{
+        .root_source_file = b.path("tests/gc/verifier_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const gc_verifier_tests = b.addTest(.{ .root_module = gc_verifier_mod });
+    const run_gc_verifier_tests = b.addRunArtifact(gc_verifier_tests);
+    gc_test_step.dependOn(&run_gc_verifier_tests.step);
+
     // --- Runtime object tests ---
     const runtime_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/objects.zig"),

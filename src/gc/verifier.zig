@@ -14,7 +14,12 @@ pub const VerifyError = error{
     DanglingPointer,
     ReachableFromSpaceObject,
     UnmarkedOldYoungEdge,
+    HeapNotWalkable,
+    CardStartMissing,
 };
+
+// zepo-rnr
+const WORD: usize = 8;
 
 const Ctx = struct {
     gc: *GC,
@@ -54,8 +59,48 @@ pub const Verifier = struct {
         gc.roots.visitAll(@ptrCast(&ctx), visitSlot);
         if (ctx.err) |e| return e;
 
-        // Additionally walk old-gen: any live old-gen object whose child points
-        // into nursery must be on a dirty card (or cards may have been cleared
-        // post-minor; skip that check if clean slate).
+        // zepo-rnr: walk every live old-gen block. For each Value slot that
+        // points into the nursery, the card covering THAT SLOT must be dirty —
+        // otherwise the next minor GC cannot find the edge (zepo-jus /
+        // spanning-card). The walk also asserts the heap stays walkable.
+        try verifyOldGen(gc);
+    }
+
+    fn verifyOldGen(gc: *GC) !void {
+        const og = &gc.old_gen;
+        var p: [*]u8 = og.base;
+        while (@intFromPtr(p) < @intFromPtr(og.bump)) {
+            const h: *ObjHeader = @ptrCast(@alignCast(p));
+            const body_words: usize = @intCast(h.sizeWords());
+            if (body_words == 0) return VerifyError.HeapNotWalkable;
+            const block_bytes = WORD + body_words * WORD;
+            const is_free = @intFromEnum(h.kind()) == 0;
+            if (!is_free) try checkSlots(gc, h, body_words);
+            p = @ptrFromInt(@intFromPtr(p) + block_bytes);
+        }
+        // Walk must land exactly on bump, or a sizeWords was wrong.
+        if (@intFromPtr(p) != @intFromPtr(og.bump)) return VerifyError.HeapNotWalkable;
+    }
+
+    fn checkSlots(gc: *GC, h: *ObjHeader, body_words: usize) !void {
+        const desc = layout_mod.layoutForKind(h.kind());
+        const body: [*]u64 = @ptrCast(@alignCast(@as([*]u8, @ptrCast(h)) + WORD));
+        for (desc.value_offsets) |off| {
+            if (off < body_words) try checkSlot(gc, &body[off]);
+        }
+        if (desc.all_slots_are_values) {
+            var i: usize = desc.value_slots_start;
+            while (i < body_words) : (i += 1) try checkSlot(gc, &body[i]);
+        }
+    }
+
+    fn checkSlot(gc: *GC, slot: *u64) !void {
+        const v: Value = @bitCast(slot.*);
+        if (!value_mod.isPtr(v)) return;
+        const tgt = value_mod.ptrVal(v);
+        if (!gc.nursery.contains(tgt)) return; // old->old edge: not our concern
+        const slot_addr = @intFromPtr(slot);
+        const idx = gc.cards.cardIndexFor(slot_addr);
+        if (!gc.cards.isCardDirty(idx)) return VerifyError.UnmarkedOldYoungEdge;
     }
 };
