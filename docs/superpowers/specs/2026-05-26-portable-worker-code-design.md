@@ -71,10 +71,25 @@ back into running code, and (2) a portable map type for JSON objects.
 - **Security note:** `eval` is dynamic code execution available anywhere, not
   only in workers. This is an intentional, owned tradeoff — it is the
   orthogonal building block that makes the rest compose.
-- **Implementation risk to confirm during planning:** primitives receive
-  `*VM`. We must confirm the VM can reach the compile pipeline / its
-  `EvalContext` to call `evalForm`. If not directly reachable, wire a back
-  reference.
+- **Reachability — RESOLVED (verified 2026-05-26):** a prim reaches the
+  pipeline via the existing `VM.do_import_ctx: ?*anyopaque` back-pointer
+  (`dispatch.zig:73`), set to the owning `EvalContext` at `eval.zig:426`.
+  Cast it back (`@ptrCast(@alignCast(vm.do_import_ctx))` -> `*EvalContext`,
+  same pattern as `vmImportCallback`, `eval.zig:441`) then call
+  `ctx.evalForm(form)`. No new wiring strictly required; optionally add a
+  typed `eval_context: ?*EvalContext` field on `VM` for clarity.
+- **Spans — RESOLVED:** a runtime-constructed form has no span entry;
+  `SpanTable.get` returns `null` for unknown forms (`source.zig:38`), handled
+  gracefully -> degraded error messages, not a crash.
+- **Re-entrancy — OPEN, primary implementation risk:** today `evalForm` is
+  only invoked *outside* a running dispatch loop (worker bootstrap, top-level
+  REPL). `(eval form)` invokes it from *inside* a running primitive, i.e.
+  nested VM execution while the VM's `call_stack`/registers are mid-flight.
+  The plan MUST determine whether `evalForm`'s execution path can safely run a
+  freshly compiled top-level form on the live VM, or whether the eval prim
+  needs to save/restore the current frame state (or execute the compiled form
+  on a fresh call-stack frame / sub-context). This is the gating unknown for
+  the `eval` prim.
 
 ### 2. Portable hashtable
 
