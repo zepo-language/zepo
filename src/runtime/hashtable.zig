@@ -221,7 +221,7 @@ fn rehashDistinct(gc: *GC, ht: Value, new_cap: usize) error{OutOfMemory}!void {
 /// `key` is not already present under `equal?`; otherwise a duplicate slot is
 /// created.
 pub fn putDistinct(gc: *GC, ht: Value, key: Value, val: Value) error{OutOfMemory}!void {
-    if (key == value_mod.NIL) return; // NIL is the empty sentinel; skip defensively
+    std.debug.assert(key != value_mod.NIL); // NIL is the empty sentinel; a NIL key here is a caller bug
     const cap_now = capacity(ht);
     const len_now = size(ht);
     if ((len_now + 1) * LOAD_DEN >= cap_now * LOAD_NUM) {

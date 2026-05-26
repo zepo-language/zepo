@@ -228,4 +228,14 @@ test "putDistinct: forces a resize and keeps all entries" {
 
     try std.testing.expectEqual(@as(usize, 20), hashtable.size(ht_slot.*));
     try std.testing.expect(hashtable.capacity(ht_slot.*) >= 20);
+
+    // Read back specific entries so a key/value swap or slot collision is
+    // caught, not just the count. Bootstrap the rig's VM (hashtable.get needs
+    // one for structural key equality), then look up by fresh equal? keys.
+    _ = try rig.eval("(+ 1 1)"); // lazily initializes ctx.vm
+    const vm = &rig.ctx.vm.?;
+    const k7 = try objects.makeString(&rig.gc, "k7");
+    const k0 = try objects.makeString(&rig.gc, "k0");
+    try expectInt(try hashtable.get(vm, ht_slot.*, k7, value_mod.FALSE), 7);
+    try expectInt(try hashtable.get(vm, ht_slot.*, k0, value_mod.FALSE), 0);
 }
