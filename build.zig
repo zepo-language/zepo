@@ -139,6 +139,18 @@ pub fn build(b: *std.Build) void {
     const run_gc_cycle_tests = b.addRunArtifact(gc_cycle_tests);
     gc_test_step.dependOn(&run_gc_cycle_tests.step);
 
+    // zepo-a69: heavy randomized soak — its own opt-in step, NOT in gc_test.
+    const gc_soak_mod = b.createModule(.{
+        .root_source_file = b.path("tests/gc/soak.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const gc_soak_tests = b.addTest(.{ .root_module = gc_soak_mod });
+    const run_gc_soak_tests = b.addRunArtifact(gc_soak_tests);
+    const gc_soak_step = b.step("gc_soak", "Run the heavy randomized GC soak (opt-in)");
+    gc_soak_step.dependOn(&run_gc_soak_tests.step);
+
     // --- Runtime object tests ---
     const runtime_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/objects.zig"),
