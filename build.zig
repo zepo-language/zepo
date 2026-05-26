@@ -128,6 +128,17 @@ pub fn build(b: *std.Build) void {
     const run_gc_stress_tests = b.addRunArtifact(gc_stress_tests);
     gc_test_step.dependOn(&run_gc_stress_tests.step);
 
+    // zepo-zjb: major-GC young-cycle regression.
+    const gc_cycle_mod = b.createModule(.{
+        .root_source_file = b.path("tests/gc/major_cycle_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const gc_cycle_tests = b.addTest(.{ .root_module = gc_cycle_mod });
+    const run_gc_cycle_tests = b.addRunArtifact(gc_cycle_tests);
+    gc_test_step.dependOn(&run_gc_cycle_tests.step);
+
     // --- Runtime object tests ---
     const runtime_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/objects.zig"),
