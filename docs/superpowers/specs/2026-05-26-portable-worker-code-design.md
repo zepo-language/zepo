@@ -81,15 +81,29 @@ back into running code, and (2) a portable map type for JSON objects.
 - **Spans — RESOLVED:** a runtime-constructed form has no span entry;
   `SpanTable.get` returns `null` for unknown forms (`source.zig:38`), handled
   gracefully -> degraded error messages, not a crash.
-- **Re-entrancy — OPEN, primary implementation risk:** today `evalForm` is
-  only invoked *outside* a running dispatch loop (worker bootstrap, top-level
-  REPL). `(eval form)` invokes it from *inside* a running primitive, i.e.
-  nested VM execution while the VM's `call_stack`/registers are mid-flight.
-  The plan MUST determine whether `evalForm`'s execution path can safely run a
-  freshly compiled top-level form on the live VM, or whether the eval prim
-  needs to save/restore the current frame state (or execute the compiled form
-  on a fresh call-stack frame / sub-context). This is the gating unknown for
-  the `eval` prim.
+- **Re-entrancy — RESOLVED (verified 2026-05-26):** `vm.run` (`dispatch.zig:371`)
+  spins up a *fresh `Scheduler`* per call, so calling it re-entrantly (which
+  `(eval form)` does — eval runs from inside a live dispatch loop, especially
+  in a worker) would nest a scheduler on a VM that already has an active
+  scheduler/fiber context — corruption. `vm.execFn` (`dispatch.zig:386`) is
+  re-entrant-safe: it pushes frames at `base = regs.len` and unwinds on
+  `.value`. `runMain` itself enters a top-level thunk via
+  `vm.execFn(func, NIL, args)` (`sched.zig:280`) with a NIL closure (globals
+  resolve through `vm.globals`/`fallback_globals`). **Approach:**
+  - Extract a private `compileFormToFnId(ctx, form) !u32` from
+    `evalNonModuleForm` (`eval.zig`): everything from the `HandleScope` through
+    the `actual_fn_id` computation and the `vm.compiled_fns`/`globals` update —
+    the delicate `no_gc`/rooting logic stays in one place (DRY).
+  - `evalNonModuleForm` becomes `compileFormToFnId` + `vm.run` (unchanged
+    top-level behavior).
+  - New `evalFormNested(ctx, form) !Value` = `compileFormToFnId` +
+    `vm.execFn(&vm.compiled_fns[id], NIL, &.{})`. The `eval` prim calls this.
+- **`eval` is synchronous-only in v1 (accepted limitation):** because the
+  nested execution path has no scheduler, a form passed to `(eval ...)` that
+  yields or spawns a fiber returns `error.FiberYielded` with nothing to handle
+  it, so `eval` raises an error. Eval'd forms must compute and return.
+  Concurrency belongs in the worker's spawn entry, which runs under the real
+  scheduler via `runMain` and is unaffected.
 
 ### 2. Portable hashtable
 
