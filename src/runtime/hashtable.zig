@@ -158,24 +158,36 @@ fn resize(gc: *GC, vm: *VM, ht: Value, new_cap: usize) LispError!void {
 }
 
 /// Insert-or-update. Returns true if a new slot was added (len incremented).
-pub fn set(gc: *GC, vm: *VM, ht: Value, key: Value, val: Value) LispError!bool {
-    if (!isHashTable(ht)) return error.TypeError;
-    if (key == value_mod.NIL) return error.ContractViolation; // nil as key forbidden
+pub fn set(gc: *GC, vm: *VM, ht_in: Value, key_in: Value, val_in: Value) LispError!bool {
+    if (!isHashTable(ht_in)) return error.TypeError;
+    if (key_in == value_mod.NIL) return error.ContractViolation; // nil as key forbidden
+
+    // zepo-jnk: resize() allocates a new backing vector, which can trigger a
+    // moving minor GC. Root ht/key/val so the by-value params cannot go stale —
+    // otherwise a moved object's pre-GC pointer would be hashed, probed, and
+    // written into the table, corrupting it. probe() does not allocate, so the
+    // only collection window is resize(); read everything back from the slots.
+    var scope = HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const ht_s = scope.push(ht_in);
+    const key_s = scope.push(key_in);
+    const val_s = scope.push(val_in);
 
     // Resize check before inserting new entries so probe always has room.
-    const cap_now = capacity(ht);
-    const len_now = size(ht);
+    const cap_now = capacity(ht_s.*);
+    const len_now = size(ht_s.*);
     if ((len_now + 1) * LOAD_DEN >= cap_now * LOAD_NUM) {
-        try resize(gc, vm, ht, cap_now * 2);
+        try resize(gc, vm, ht_s.*, cap_now * 2);
     }
 
-    const h = hash_mod.hashValue(key);
-    const back = backing(ht);
-    const p = try probe(vm, back, capacity(ht), key, h);
-    setKeyAt(gc, back, p.slot, key);
-    setValAt(gc, back, p.slot, val);
+    const h = hash_mod.hashValue(key_s.*);
+    const back = backing(ht_s.*);
+    const p = try probe(vm, back, capacity(ht_s.*), key_s.*, h);
+    setKeyAt(gc, back, p.slot, key_s.*);
+    setValAt(gc, back, p.slot, val_s.*);
     if (p.is_insert) {
-        setLen(ht, size(ht) + 1);
+        setLen(ht_s.*, size(ht_s.*) + 1);
         return true;
     }
     return false;
@@ -220,18 +232,26 @@ fn rehashDistinct(gc: *GC, ht: Value, new_cap: usize) error{OutOfMemory}!void {
 /// VM-free; never compares keys for equality. The caller must guarantee that
 /// `key` is not already present under `equal?`; otherwise a duplicate slot is
 /// created.
-pub fn putDistinct(gc: *GC, ht: Value, key: Value, val: Value) error{OutOfMemory}!void {
-    std.debug.assert(key != value_mod.NIL); // NIL is the empty sentinel; a NIL key here is a caller bug
-    const cap_now = capacity(ht);
-    const len_now = size(ht);
+pub fn putDistinct(gc: *GC, ht_in: Value, key_in: Value, val_in: Value) error{OutOfMemory}!void {
+    std.debug.assert(key_in != value_mod.NIL); // NIL is the empty sentinel; a NIL key here is a caller bug
+    // zepo-jnk: rehashDistinct() allocates a new backing vector (moving GC
+    // possible), so root ht/key/val and read them back from the slots after.
+    var scope = HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const ht_s = scope.push(ht_in);
+    const key_s = scope.push(key_in);
+    const val_s = scope.push(val_in);
+    const cap_now = capacity(ht_s.*);
+    const len_now = size(ht_s.*);
     if ((len_now + 1) * LOAD_DEN >= cap_now * LOAD_NUM) {
-        try rehashDistinct(gc, ht, cap_now * 2);
+        try rehashDistinct(gc, ht_s.*, cap_now * 2);
     }
-    const back = backing(ht);
-    const slot = probeDistinct(back, capacity(ht), hash_mod.hashValue(key));
-    setKeyAt(gc, back, slot, key);
-    setValAt(gc, back, slot, val);
-    setLen(ht, size(ht) + 1);
+    const back = backing(ht_s.*);
+    const slot = probeDistinct(back, capacity(ht_s.*), hash_mod.hashValue(key_s.*));
+    setKeyAt(gc, back, slot, key_s.*);
+    setValAt(gc, back, slot, val_s.*);
+    setLen(ht_s.*, size(ht_s.*) + 1);
 }
 
 pub fn get(vm: *VM, ht: Value, key: Value, default_val: Value) LispError!Value {

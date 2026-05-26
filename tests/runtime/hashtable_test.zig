@@ -239,3 +239,48 @@ test "putDistinct: forces a resize and keeps all entries" {
     try expectInt(try hashtable.get(vm, ht_slot.*, k7, value_mod.FALSE), 7);
     try expectInt(try hashtable.get(vm, ht_slot.*, k0, value_mod.FALSE), 0);
 }
+
+// zepo-jnk: GC-pressure integrity exercise for set(). Each set() that triggers
+// a resize allocates a new backing vector; the churn vector below pushes the
+// nursery so those resizes coincide with moving minor collections. set() now
+// roots ht/key/val across the resize so the post-GC (forwarded) pointers are
+// used. NOTE: this is NOT a pre-fix crash repro — the unrooted code is masked
+// in practice by Cheney forwarding-pointer self-healing (the next GC heals the
+// backing's stale key slots), so it passes with or without the fix. This guards
+// integrity of the insert path under heavy GC and documents the intended
+// behaviour; the fix itself is defensive against that self-healing assumption.
+test "set: insert path stays intact under resize-coincident GC (zepo-jnk)" {
+    const hashtable = runtime.hashtable;
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval("(+ 1 1)"); // lazily initializes ctx.vm
+    const vm = &rig.ctx.vm.?;
+    const gc = &rig.gc;
+
+    var scope = zepo.gc.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const ht_slot = scope.push(try hashtable.make(gc));
+
+    const N: i63 = 300;
+    var i: i63 = 0;
+    while (i < N) : (i += 1) {
+        // Push the nursery bump near the end so the next allocation (the
+        // resize's backing vector, or makeString) forces a moving collect.
+        _ = try objects.makeVector(gc, 20000, value_mod.NIL);
+        var kbuf: [16]u8 = undefined;
+        const ks = try std.fmt.bufPrint(&kbuf, "k{d}", .{i});
+        const key = try objects.makeString(gc, ks);
+        _ = try hashtable.set(gc, vm, ht_slot.*, key, value_mod.fixnum(i));
+    }
+    try std.testing.expectEqual(@as(usize, @intCast(N)), hashtable.size(ht_slot.*));
+
+    // Every key must read back by a fresh equal? string.
+    i = 0;
+    while (i < N) : (i += 1) {
+        var kbuf: [16]u8 = undefined;
+        const ks = try std.fmt.bufPrint(&kbuf, "k{d}", .{i});
+        const key = try objects.makeString(gc, ks);
+        try expectInt(try hashtable.get(vm, ht_slot.*, key, value_mod.FALSE), i);
+    }
+}
