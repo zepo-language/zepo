@@ -21,6 +21,7 @@ const predicates = @import("predicates.zig");
 const equality = @import("equality.zig");
 const arith = @import("arith.zig");
 const apply_mod = @import("apply.zig");
+const eval_prim = @import("eval_prim.zig"); // zepo-ksw
 const io_mod = @import("io.zig");
 const sys_mod = @import("sys.zig");
 const tui_mod = @import("tui.zig");
@@ -82,6 +83,7 @@ const TABLE: []const Entry = &.{
 
     make("not", 1, apply_mod.primNot),
     make("apply", -1, apply_mod.primApply),
+    make("eval", 1, eval_prim.primEval), // zepo-ksw
     make("values", -1, apply_mod.primValues),
     make("call-with-values", 2, apply_mod.primCallWithValues),
 
