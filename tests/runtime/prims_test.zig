@@ -286,3 +286,18 @@ test "eval prim: data form -> callable -> result" {
     );
     try expectInt(try rig.eval("(eval 42)"), 42);
 }
+
+test "eval in a loop survives ctx.compiled reallocation (zepo-nhl)" {
+    // zepo-nhl
+    // Each (eval ...) compiles a fresh thunk appended to ctx.compiled; with
+    // value storage this reallocated the backing buffer and dangled live frame
+    // .func pointers + the dispatch loop's cached func/code -> segfault.
+    // Sum of 1..100000 = 5000050000. The stdlib pre-grows ctx.compiled, so a
+    // large k is needed to push past its capacity and force fresh doublings
+    // while live frames hold .func into the buffer.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        "(define (run-many k) (let loop ((i 0) (acc 0)) (if (>= i k) acc (loop (+ i 1) (+ acc (eval (list '+ i 1)))))))");
+    try expectInt(try rig.eval("(run-many 100000)"), 5000050000);
+}

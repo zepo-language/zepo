@@ -264,7 +264,7 @@ pub const Scheduler = struct {
     pub fn runMain(sched: *Scheduler, fn_id: u32, initial_args: []const Value) LispError!Value {
         const vm = sched.vm;
         if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
-        const func = &vm.compiled_fns[fn_id];
+        const func = vm.compiled_fns[fn_id]; // zepo-nhl
         vm.current_fiber_idx = 0;
         vm.scheduler = sched;
         defer vm.scheduler = null;
