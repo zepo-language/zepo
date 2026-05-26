@@ -353,7 +353,12 @@ pub const EvalContext = struct {
         }
     }
 
-    pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
+    // zepo-ksw
+    // Compile a single (already module/macro-dispatched) form into a top-level
+    // thunk and return its index in ctx.compiled. Performs the delicate
+    // no-GC/rooting dance and keeps ctx.vm.compiled_fns/globals in sync. The
+    // caller chooses how to execute the thunk (run vs execFn).
+    fn compileFormToFnId(ctx: *EvalContext, form: Value) !u32 {
         if (ctx.gc.trace.eval) {
             if (ctx.spans.get(form)) |span| {
                 std.debug.print("[eval] {s}:{d}:{d}\n", .{ span.file, span.start.line, span.start.col });
@@ -434,6 +439,11 @@ pub const EvalContext = struct {
             log.append(ctx.allocator, actual_fn_id) catch {};
         }
 
+        return actual_fn_id;
+    }
+
+    pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
+        const actual_fn_id = try ctx.compileFormToFnId(form);
         return ctx.vm.?.run(actual_fn_id, &.{});
     }
 };
