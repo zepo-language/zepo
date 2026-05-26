@@ -201,3 +201,79 @@ test "stress: every layout shape survives promotion + major" {
     const lenp: *u64 = @ptrCast(@alignCast(raw));
     try std.testing.expectEqual(@as(u64, 24), lenp.*); // "hello generational world" = 24 bytes
 }
+
+test "stress: large old-gen vector spanning >1 card keeps a young edge in a later card" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    var scope = gcmod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+
+    // A 1000-slot vector body = 1 (len) + 1000 = 1001 words = ~8 KB, spanning
+    // at least 2 cards (card = 512 words). Allocate it directly in old-gen via
+    // the large-object path so recordCardStart's spanning logic is exercised.
+    const len: usize = 1000;
+    const r = gc.old_gen.allocWithCap(1 + len) orelse return error.TestUnexpected;
+    const vh = r.hdr;
+    vh.* = ObjHeader.init(.vector, .old_gen, @intFromEnum(Kind.vector), @intCast(r.actual_words));
+    const raw: [*]u64 = @ptrCast(@alignCast(@as([*]u8, @ptrCast(vh)) + WORD));
+    raw[0] = @as(u64, len);
+    var i: usize = 0;
+    while (i < len) : (i += 1) bodyP(vh)[1 + i] = value_mod.NIL;
+    _ = scope.push(value_mod.fromPtr(vh));
+
+    // Slot index 700 lives at byte offset 8 + 700*8 = 5608 — past the first
+    // 4096-byte card, i.e. in card 1+. Store a YOUNG pair there via the write
+    // barrier. The young pair is NOT otherwise rooted: only this edge keeps it.
+    const young = try makePair(&gc, value_mod.fixnum(4242), value_mod.NIL);
+    const slot_idx: usize = 700;
+    gc.writeBarrier(vh, &bodyP(vh)[1 + slot_idx], young);
+    bodyP(vh)[1 + slot_idx] = young;
+
+    // The slot's card must be dirty (sanity for the test itself).
+    const slot_addr = @intFromPtr(&bodyP(vh)[1 + slot_idx]);
+    try std.testing.expect(gc.cards.isCardDirty(gc.cards.cardIndexFor(slot_addr)));
+
+    // Minor GC: the young pair must survive via the spanning remembered set.
+    try gc.minor();
+    try gcmod.Verifier.verify(&gc);
+
+    const e = bodyP(vh)[1 + slot_idx];
+    try std.testing.expect(value_mod.isPtr(e));
+    try std.testing.expectEqual(@as(i63, 4242), value_mod.fixnumVal(bodyP(value_mod.ptrVal(e))[0]));
+}
+
+test "stress: old->young edge created by PROMOTION survives the same collection" {
+    const alloc = std.testing.allocator;
+    var gc = try gcmod.GC.init(alloc);
+    defer gc.deinit();
+
+    var scope = gcmod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+
+    // A = (1 . NIL), rooted, aged to PROMOTE_AGE so the NEXT minor promotes it.
+    const a = scope.push(try makePair(&gc, value_mod.fixnum(1), value_mod.NIL));
+    var n: usize = 0;
+    while (n < gcmod.nursery.PROMOTE_AGE) : (n += 1) {
+        try gc.minor();
+        try gcmod.Verifier.verify(&gc);
+    }
+
+    // Build young B = (2 . NIL) and attach A.cdr = B. A is still young here, so
+    // no write barrier needed. On the next minor, A promotes to old-gen while B
+    // stays young — the COLLECTOR creates the old->young edge (zepo-jus).
+    const b = try makePair(&gc, value_mod.fixnum(2), value_mod.NIL);
+    bodyP(value_mod.ptrVal(a.*))[1] = b;
+
+    try gc.minor();
+    try gcmod.Verifier.verify(&gc);
+
+    // A is old, B reachable from A with car=2.
+    try std.testing.expect(gc.old_gen.contains(value_mod.ptrVal(a.*)));
+    const b_from_a = bodyP(value_mod.ptrVal(a.*))[1];
+    try std.testing.expect(value_mod.isPtr(b_from_a));
+    try std.testing.expectEqual(@as(i63, 2), value_mod.fixnumVal(bodyP(value_mod.ptrVal(b_from_a))[0]));
+}
