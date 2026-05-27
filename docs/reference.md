@@ -3084,6 +3084,21 @@ Exports: `make-rng` (seed → generator), `rng-next!` (raw 32-bit draw), `rng-fl
 (normal-sample! r 100 15)      ; => one N(100,15) draw
 ```
 
+### math/tensor
+
+Pure-Lisp n-dimensional arrays (row-major) for data shaping and small linear algebra. A tensor is a `{shape, data}` hashtable; every dimension is ≥ 1.
+
+Exports: `tensor` (shape + flat data), `zeros`, `ones`, `full`, `arange`, `from-nested`; `tensor?`, `shape` (→ list), `rank`, `size`, `tensor->nested`; `tref`/`tset!` (multi-index get/set); `reshape` (shares the buffer), `transpose` (reverses axes), `slice` (one axis, `[start,end)`); `t+`/`t-`/`t*`/`t/` (elementwise — identical-shape or tensor+scalar), `t-map`, `t-zip`, `t-equal?`; `t-sum`/`t-mean`/`t-max`/`t-min` (whole-tensor, or along an `axis`); `matmul` (2-D). No broadcasting and no strided views; shape mismatches and out-of-range indices/axes raise errors.
+
+```scheme
+(import math/tensor)
+(define a (from-nested (list (list 1 2 3) (list 4 5 6))))   ; 2x3
+(shape (transpose a))                       ; => (3 2)
+(tensor->nested (t* a 10))                   ; => ((10 20 30) (40 50 60))
+(tensor->nested (t-sum a 0))                 ; => (5 7 9)   column sums
+(tensor->nested (matmul a (transpose a)))    ; => ((14 32) (32 77))
+```
+
 ---
 
 ## Zig FFI
