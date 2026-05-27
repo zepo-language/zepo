@@ -55,7 +55,7 @@ lib/math/
 **Conventions**
 - Canonical sequence input is a Scheme **vector** of numbers. Lists are accepted
   via an internal `(->vec xs)` (list|vector → vector), so both
-  `(mean #(1 2 3))` and `(mean '(1 2 3))` work.
+  `(mean (vector 1 2 3))` and `(mean '(1 2 3))` work.
 - Variance/stdev/covariance default to the **sample** estimator (`/(n-1)`,
   Bessel), matching Python's `statistics` and R; population variants are
   `p`-prefixed (`/n`).
@@ -170,8 +170,8 @@ Files: `tests/math/stats_test.lisp`, `tests/math/dist_test.lisp`. Run with
 `abs-close?` / `almost-eq?`.
 
 **`stats` (deterministic, cross-checked against Python `statistics`/`numpy`):**
-- `(mean #(1 2 3 4))` → 2.5; sample `(variance #(2 4 4 4 5 5 7 9))` → 4.5714285…;
-  `(median #(1 2 3 4))` → 2.5; `(quantile #(1 2 3 4) 0.5)` → 2.5;
+- `(mean (vector 1 2 3 4))` → 2.5; sample `(variance (vector 2 4 4 4 5 5 7 9))` → 4.5714285…;
+  `(median (vector 1 2 3 4))` → 2.5; `(quantile (vector 1 2 3 4) 0.5)` → 2.5;
   `(correlation …)` on a known pair.
 - `linreg` on a known dataset → expected slope/intercept/r² (perfect line → r²=1).
 - `ols` on a small design matrix → recovers planted coefficients.

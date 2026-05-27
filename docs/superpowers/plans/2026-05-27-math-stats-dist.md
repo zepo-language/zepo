@@ -53,9 +53,9 @@ tests/math/dist_test.lisp  NEW
 (import math/stats)
 
 (deftest stats/sum-and-mean
-  (=check (sum #(1 2 3 4)) 10)
+  (=check (sum (vector 1 2 3 4)) 10)
   (=check (sum '(1 2 3 4)) 10)            ; list coerced
-  (is (abs-close? (mean #(1 2 3 4)) 2.5 1e-9))
+  (is (abs-close? (mean (vector 1 2 3 4)) 2.5 1e-9))
   (is (abs-close? (mean '(2 4 6)) 4.0 1e-9)))
 
 (run-tests)
@@ -114,12 +114,12 @@ git commit -m "feat(math/stats): module skeleton + ->vec, sum, mean (zepo-7uu)"
 
 ```lisp
 (deftest stats/variance-stdev
-  ;; sample variance of #(2 4 4 4 5 5 7 9) = 4.571428571...
-  (is (abs-close? (variance #(2 4 4 4 5 5 7 9)) 4.5714285714 1e-9))
-  (is (abs-close? (stdev    #(2 4 4 4 5 5 7 9)) 2.1380899353 1e-9))
+  ;; sample variance of (vector 2 4 4 4 5 5 7 9) = 4.571428571...
+  (is (abs-close? (variance (vector 2 4 4 4 5 5 7 9)) 4.5714285714 1e-9))
+  (is (abs-close? (stdev    (vector 2 4 4 4 5 5 7 9)) 2.1380899353 1e-9))
   ;; population variance of same data = 4.0, pstdev = 2.0
-  (is (abs-close? (pvariance #(2 4 4 4 5 5 7 9)) 4.0 1e-9))
-  (is (abs-close? (pstdev    #(2 4 4 4 5 5 7 9)) 2.0 1e-9)))
+  (is (abs-close? (pvariance (vector 2 4 4 4 5 5 7 9)) 4.0 1e-9))
+  (is (abs-close? (pstdev    (vector 2 4 4 4 5 5 7 9)) 2.0 1e-9)))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -176,18 +176,18 @@ git commit -m "feat(math/stats): sample + population variance/stdev (zepo-7uu)"
 
 ```lisp
 (deftest stats/order-stats
-  (is (abs-close? (median #(1 2 3 4))   2.5 1e-9))
-  (is (abs-close? (median #(1 2 3 4 5)) 3.0 1e-9))
-  (is (abs-close? (quantile #(1 2 3 4) 0.5)  2.5 1e-9))
-  (is (abs-close? (quantile #(1 2 3 4) 0.0)  1.0 1e-9))
-  (is (abs-close? (quantile #(1 2 3 4) 1.0)  4.0 1e-9))
+  (is (abs-close? (median (vector 1 2 3 4))   2.5 1e-9))
+  (is (abs-close? (median (vector 1 2 3 4 5)) 3.0 1e-9))
+  (is (abs-close? (quantile (vector 1 2 3 4) 0.5)  2.5 1e-9))
+  (is (abs-close? (quantile (vector 1 2 3 4) 0.0)  1.0 1e-9))
+  (is (abs-close? (quantile (vector 1 2 3 4) 1.0)  4.0 1e-9))
   ;; type-7: q=0.25 of 1..4 -> 1 + 0.75*(0.25*3 mod) = 1.75
-  (is (abs-close? (quantile #(1 2 3 4) 0.25) 1.75 1e-9))
-  (is (abs-close? (percentile #(1 2 3 4) 50) 2.5 1e-9))
-  (is (abs-close? (span #(3 1 4 1 5)) 4.0 1e-9))
-  (is (abs-close? (iqr  #(1 2 3 4 5 6 7 8)) 3.5 1e-9))
-  (=check (mode #(1 2 2 3 3 3 4)) 3)
-  (=check (mode #(4 4 1 1)) 1))            ; tie -> smallest
+  (is (abs-close? (quantile (vector 1 2 3 4) 0.25) 1.75 1e-9))
+  (is (abs-close? (percentile (vector 1 2 3 4) 50) 2.5 1e-9))
+  (is (abs-close? (span (vector 3 1 4 1 5)) 4.0 1e-9))
+  (is (abs-close? (iqr  (vector 1 2 3 4 5 6 7 8)) 3.5 1e-9))
+  (=check (mode (vector 1 2 2 3 3 3 4)) 3)
+  (=check (mode (vector 4 4 1 1)) 1))            ; tie -> smallest
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -270,12 +270,12 @@ git commit -m "feat(math/stats): median, quantile, percentile, span, iqr, mode (
 ```lisp
 (deftest stats/paired
   ;; perfectly correlated y = 2x + 1
-  (is (abs-close? (correlation #(1 2 3 4) #(3 5 7 9)) 1.0 1e-9))
-  (is (abs-close? (correlation #(1 2 3 4) #(9 7 5 3)) -1.0 1e-9))
+  (is (abs-close? (correlation (vector 1 2 3 4) (vector 3 5 7 9)) 1.0 1e-9))
+  (is (abs-close? (correlation (vector 1 2 3 4) (vector 9 7 5 3)) -1.0 1e-9))
   ;; sample covariance of x=1..4, y=2,4,5,4 : mean_x=2.5,mean_y=3.75
   ;; sum dev products = (-1.5)(-1.75)+(-.5)(.25)+(.5)(1.25)+(1.5)(.25)=3.0 ; /(4-1)=1.0
-  (is (abs-close? (covariance #(1 2 3 4) #(2 4 5 4)) 1.0 1e-9))
-  (is (abs-close? (pcovariance #(1 2 3 4) #(2 4 5 4)) 0.75 1e-9)))
+  (is (abs-close? (covariance (vector 1 2 3 4) (vector 2 4 5 4)) 1.0 1e-9))
+  (is (abs-close? (pcovariance (vector 1 2 3 4) (vector 2 4 5 4)) 0.75 1e-9)))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -339,10 +339,10 @@ git commit -m "feat(math/stats): covariance, pcovariance, correlation (zepo-7uu)
 
 ```lisp
 (deftest stats/transforms
-  (let ((z (standardize #(1 2 3 4 5))))
+  (let ((z (standardize (vector 1 2 3 4 5))))
     (is (abs-close? (mean z) 0.0 1e-9))
     (is (abs-close? (stdev z) 1.0 1e-9)))
-  (let ((u (normalize #(10 20 30))))
+  (let ((u (normalize (vector 10 20 30))))
     (is (abs-close? (vector-ref u 0) 0.0 1e-9))
     (is (abs-close? (vector-ref u 1) 0.5 1e-9))
     (is (abs-close? (vector-ref u 2) 1.0 1e-9))))
@@ -408,7 +408,7 @@ git commit -m "feat(math/stats): standardize + normalize transforms (zepo-7uu)"
 
 ```lisp
 (deftest stats/linreg
-  (let ((m (linreg #(1 2 3 4) #(3 5 7 9))))   ; y = 2x + 1 exactly
+  (let ((m (linreg (vector 1 2 3 4) (vector 3 5 7 9))))   ; y = 2x + 1 exactly
     (is (abs-close? (hash-get m 'slope 0)     2.0 1e-9))
     (is (abs-close? (hash-get m 'intercept 0) 1.0 1e-9))
     (is (abs-close? (hash-get m 'r2 0)        1.0 1e-9))
@@ -477,7 +477,7 @@ Uses `math/linear`'s `mat` (constructor `(mat rows cols v...)`), `mat-ref`, and 
 (deftest stats/ols
   ;; X columns: [1 (intercept), x] ; y = 1 + 2x exactly -> coeffs (1 2), r2 1
   (let* ((X (rows->mat (list (list 1 1) (list 1 2) (list 1 3) (list 1 4))))
-         (y #(3 5 7 9))
+         (y (vector 3 5 7 9))
          (m (ols X y))
          (c (hash-get m 'coeffs #f)))
     (is (abs-close? (vector-ref c 0) 1.0 1e-7))
@@ -567,7 +567,7 @@ git commit -m "feat(math/stats): multivariate ols via normal equations (zepo-7uu
 
 ```lisp
 (deftest stats/summary
-  (let ((s (summary #(1 2 3 4 5 6 7 8))))
+  (let ((s (summary (vector 1 2 3 4 5 6 7 8))))
     (=check (hash-get s 'n 0) 8)
     (is (abs-close? (hash-get s 'mean 0)   4.5 1e-9))
     (is (abs-close? (hash-get s 'min 0)    1.0 1e-9))
@@ -625,13 +625,13 @@ git commit -m "feat(math/stats): summary aggregate (zepo-7uu)"
 
 ```lisp
 (deftest stats/errors
-  (throws (mean #()))
-  (throws (variance #(5)))               ; n < 2
-  (is (abs-close? (pvariance #(5)) 0.0 1e-9))  ; population allows n=1
-  (throws (correlation #(1 1 1) #(1 2 3)))     ; zero variance in x
-  (throws (quantile #(1 2 3) 1.5))             ; q out of range
-  (throws (covariance #(1 2 3) #(1 2)))        ; unequal lengths
-  (throws (linreg #(1 1 1) #(2 4 6))))         ; x zero variance
+  (throws (mean (vector )))
+  (throws (variance (vector 5)))               ; n < 2
+  (is (abs-close? (pvariance (vector 5)) 0.0 1e-9))  ; population allows n=1
+  (throws (correlation (vector 1 1 1) (vector 1 2 3)))     ; zero variance in x
+  (throws (quantile (vector 1 2 3) 1.5))             ; q out of range
+  (throws (covariance (vector 1 2 3) (vector 1 2)))        ; unequal lengths
+  (throws (linreg (vector 1 1 1) (vector 2 4 6))))         ; x zero variance
 ```
 
 - [ ] **Step 2: Run test to verify it passes** (implementation already raises)
