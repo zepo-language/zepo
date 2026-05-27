@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -83,5 +83,37 @@
     (let ((dv (make-vector n 0)))
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
-            (begin (vector-set! dv i i) (loop (+ i 1))))))))
+            (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: infer shape from the first element down; flatten row-major.
+  (define (nested-shape n)
+    (if (pair? n) (cons (length n) (nested-shape (car n))) (quote ())))
+
+  (define (flatten-nested n)
+    (if (pair? n)
+        (apply append (map flatten-nested n))
+        (list n)))
+
+  (define (from-nested nested)
+    (if (not (pair? nested)) (error "from-nested: need a non-empty nested list"))
+    (let* ((shape-list (nested-shape nested))
+           (sv (list->vector shape-list))
+           (flat (flatten-nested nested)))
+      ;; rectangularity: flattened length must equal product of inferred shape
+      (if (not (= (length flat) (prod-vec sv)))
+          (error "from-nested: ragged or inconsistent nested list"))
+      (tensor sv flat)))
+
+  ;; rebuild nested lists from shape + flat data using offset arithmetic.
+  (define (tensor->nested t)
+    (let ((sv (tensor-shape-vec t)) (dv (tensor-data t)))
+      (let build ((axis 0) (off 0) (block (vector-length dv)))
+        (if (= axis (vector-length sv))
+            (vector-ref dv off)
+            (let* ((dim (vector-ref sv axis)) (sub (quotient block dim)))
+              (let loop ((k 0) (acc (quote ())))
+                (if (= k dim) (reverse acc)
+                    (loop (+ k 1)
+                          (cons (build (+ axis 1) (+ off (* k sub)) sub) acc)))))))))
+)
 

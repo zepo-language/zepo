@@ -25,5 +25,16 @@
     (=check (size a) 5))
   (throws (arange 0)))
 
+(deftest tensor/nested
+  (let ((t (from-nested (list (list 1 2 3) (list 4 5 6)))))
+    (=check (shape t) (list 2 3))
+    (=check (tensor->nested t) (list (list 1 2 3) (list 4 5 6))))
+  (let ((t (from-nested (list 1 2 3 4))))    ; 1-D
+    (=check (shape t) (list 4))
+    (=check (tensor->nested t) (list 1 2 3 4)))
+  (throws (from-nested (list (list 1 2) (list 3))))   ; ragged
+  (throws (from-nested (quote ()))))                   ; empty
+
 (run-tests)
+
 
