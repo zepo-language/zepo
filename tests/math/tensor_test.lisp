@@ -54,7 +54,19 @@
     (throws (tref t -1 0))     ; negative index
     (throws (tref t 2 0))))    ; out of bounds
 
+(deftest tensor/reshape
+  (let* ((a (arange 6))                 ; 0..5, shape (6)
+         (b (reshape a (list 2 3))))
+    (=check (shape b) (list 2 3))
+    (=check (tref b 0 0) 0)
+    (=check (tref b 1 2) 5)
+    (let ((c (reshape b (list 3 2))))
+      (=check (shape c) (list 3 2))
+      (=check (tref c 2 1) 5)))
+  (throws (reshape (arange 6) (list 2 2))))   ; size mismatch (4 != 6)
+
 (run-tests)
+
 
 
 

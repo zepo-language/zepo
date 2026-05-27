@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset!)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -84,6 +84,19 @@
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
             (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: same total size; SHARES the data buffer (row-major unchanged).
+  (define (reshape t shape)
+    (let ((sv (->vec shape)))
+      (let dloop ((i 0))
+        (if (< i (vector-length sv))
+            (let ((d (vector-ref sv i)))
+              (if (or (not (integer? d)) (< d 1))
+                  (error "reshape: every dimension must be an integer >= 1"))
+              (dloop (+ i 1)))))
+      (if (not (= (prod-vec sv) (size t)))
+          (error "reshape: new shape size does not match element count"))
+      (make-tensor sv (tensor-data t))))
 
   ;; zepo-py2: validate index list against the shape, return the flat offset.
   (define (check-index shape-vec idxs)
