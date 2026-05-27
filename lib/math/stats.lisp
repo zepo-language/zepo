@@ -1,7 +1,8 @@
 (module math/stats
   (export ->vec sum mean variance stdev pvariance pstdev
           median quantile percentile span iqr mode
-          covariance pcovariance correlation)
+          covariance pcovariance correlation
+          standardize normalize)
 
   (import math/core)    ; square, abs-close? (used later)
   (import math/linear)  ; solve, matvec, mat (used by ols)
@@ -109,4 +110,30 @@
   (define (correlation xs ys)
     (let ((sx (stdev xs)) (sy (stdev ys)))
       (if (or (= sx 0) (= sy 0)) (error "correlation: zero variance"))
-      (/ (covariance xs ys) (* sx sy)))))
+      (/ (covariance xs ys) (* sx sy))))
+
+  ;; zepo-7uu: z-score each element using the sample stdev.
+  (define (standardize xs)
+    (let* ((v (->vec xs)) (n (vector-length v)) (m (mean v)) (sd (stdev v)))
+      (if (= sd 0) (error "standardize: zero variance"))
+      (let ((out (make-vector n 0)))
+        (let loop ((i 0))
+          (if (= i n) out
+              (begin (vector-set! out i (/ (- (vector-ref v i) m) sd))
+                     (loop (+ i 1))))))))
+
+  ;; min-max scale into [0,1].
+  (define (normalize xs)
+    (let* ((v (->vec xs)) (n (vector-length v)))
+      (if (= n 0) (error "normalize: empty sequence"))
+      (let loop ((i 1) (lo (vector-ref v 0)) (hi (vector-ref v 0)))
+        (if (< i n)
+            (let ((x (vector-ref v i)))
+              (loop (+ i 1) (if (< x lo) x lo) (if (> x hi) x hi)))
+            (begin
+              (if (= lo hi) (error "normalize: zero range"))
+              (let ((out (make-vector n 0)) (rng (- hi lo)))
+                (let fill ((j 0))
+                  (if (= j n) out
+                      (begin (vector-set! out j (/ (- (vector-ref v j) lo) rng))
+                             (fill (+ j 1))))))))))))

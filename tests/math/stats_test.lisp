@@ -40,4 +40,13 @@
   (is (abs-close? (covariance (vector 1 2 3 4) (vector 2 4 5 4)) (/ 7.0 6.0) 1e-9))
   (is (abs-close? (pcovariance (vector 1 2 3 4) (vector 2 4 5 4)) 0.875 1e-9)))
 
+(deftest stats/transforms
+  (let ((z (standardize (vector 1 2 3 4 5))))
+    (is (abs-close? (mean z) 0.0 1e-9))
+    (is (abs-close? (stdev z) 1.0 1e-9)))
+  (let ((u (normalize (vector 10 20 30))))
+    (is (abs-close? (vector-ref u 0) 0.0 1e-9))
+    (is (abs-close? (vector-ref u 1) 0.5 1e-9))
+    (is (abs-close? (vector-ref u 2) 1.0 1e-9))))
+
 (run-tests)
