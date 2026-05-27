@@ -1,5 +1,5 @@
 (module math/dist
-  (export make-rng rng-next! rng-float! rng-int!)
+  (export make-rng rng-next! rng-float! rng-int! erf erfc)
 
   (import math/core)   ; pi, square (used later)
 
@@ -57,6 +57,20 @@
           (vector-set! st 2 (bitwise-xor n2 t))
           (vector-set! st 3 (rotl n3 11))
           result))))
+
+  ;; zepo-7uu: Abramowitz & Stegun 7.1.26 rational approximation, |err| <= 1.5e-7.
+  (define (erf x)
+    (let* ((ax (abs x))
+           (tt (/ 1.0 (+ 1.0 (* 0.3275911 ax))))
+           (poly (* tt (+ 0.254829592
+                          (* tt (+ -0.284496736
+                                   (* tt (+ 1.421413741
+                                            (* tt (+ -1.453152027
+                                                     (* tt 1.061405429))))))))))
+           (y (- 1.0 (* poly (exp (- (* ax ax)))))))
+      (if (< x 0) (- y) y)))
+
+  (define (erfc x) (- 1.0 (erf x)))
 
   (define two32 4294967296.0)           ; 2^32 as float
 

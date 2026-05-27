@@ -17,6 +17,13 @@
       (is (>= x 0))
       (is (< x 4294967296)))))
 
+(deftest dist/erf
+  (is (abs-close? (erf 0)  0.0       1e-7))
+  (is (abs-close? (erf 1)  0.8427007 1e-6))
+  (is (abs-close? (erf -1) -0.8427007 1e-6))   ; oddness
+  (is (abs-close? (erf 2)  0.9953222 1e-6))
+  (is (abs-close? (erfc 1) (- 1.0 (erf 1)) 1e-9)))
+
 (deftest dist/rng-float-int
   (let ((r (make-rng 99)))
     (let loop ((i 0))
