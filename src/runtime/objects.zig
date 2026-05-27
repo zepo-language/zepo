@@ -388,6 +388,68 @@ pub fn makeForeignRaw(
     return value_mod.fromPtr(h);
 }
 
+// -------------------- Fiber handle (zepo-4d6) --------------------
+// A fiber handle is its own GC kind (.fiber), allocated in old-gen. Body:
+//   body[0] = status (raw): FIBER_RUNNING | FIBER_DONE | FIBER_ERRORED
+//   body[1] = result (Value): NIL while running; on completion the fiber's
+//             return value (done) or raised value (errored). Traced as a GC
+//             child via the layout table, so it stays live while the handle is.
+//   body[2] = FiberState pointer (raw): valid while running, 0 once reaped.
+// The terminal status+result live in the handle (not the FiberState) so the
+// FiberState can be freed the moment the fiber completes — keeping the GC root
+// scan proportional to the number of *active* fibers, not all ever spawned.
+
+pub const FIBER_RUNNING: u64 = 0;
+pub const FIBER_DONE: u64 = 1;
+pub const FIBER_ERRORED: u64 = 2;
+
+pub fn makeFiber(gc: *GC, fs_ptr: *anyopaque) !Value {
+    // Allocate in the nursery (not old-gen like foreign): a spawn-then-join
+    // handle is short-lived garbage that minor GC reclaims cheaply. It has no
+    // finalizer, so the nursery's lack of a dead-object walk is fine. A handle
+    // that outlives a minor is promoted to old-gen by the normal copying path.
+    const h = try gc.alloc(.fiber, 3);
+    const body: [*]u64 = @ptrFromInt(@intFromPtr(h) + WORD);
+    body[0] = FIBER_RUNNING;
+    body[1] = @bitCast(value_mod.NIL);
+    body[2] = @intFromPtr(fs_ptr);
+    return value_mod.fromPtr(h);
+}
+
+pub fn isFiber(v: Value) bool {
+    return isKind(v, .fiber);
+}
+
+inline fn fiberBody(v: Value) [*]u64 {
+    const h = value_mod.ptrVal(v);
+    return @ptrFromInt(@intFromPtr(h) + WORD);
+}
+
+pub fn fiberStatus(v: Value) u64 {
+    return fiberBody(v)[0];
+}
+
+pub fn fiberResult(v: Value) Value {
+    return @bitCast(fiberBody(v)[1]);
+}
+
+pub fn fiberFsPtr(v: Value) ?*anyopaque {
+    const raw = fiberBody(v)[2];
+    return if (raw == 0) null else @ptrFromInt(@as(usize, @intCast(raw)));
+}
+
+/// Record terminal state on the handle. Writes the result through the GC write
+/// barrier (the handle is an old-gen object that may now point at a young
+/// result), sets the status, and clears the FiberState pointer.
+pub fn fiberComplete(gc: *GC, v: Value, status: u64, result: Value) void {
+    const body = fiberBody(v);
+    const result_slot: *Value = @ptrCast(@alignCast(&body[1]));
+    gc.writeBarrier(value_mod.ptrVal(v), result_slot, result);
+    body[0] = status;
+    result_slot.* = result;
+    body[2] = 0;
+}
+
 pub fn isForeign(v: Value) bool {
     return isKind(v, .foreign);
 }

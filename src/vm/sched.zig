@@ -19,6 +19,7 @@ const VM = dispatch_mod.VM;
 const FiberStatus = dispatch_mod.FiberStatus;
 const runtime = @import("../runtime/mod.zig");
 const LispError = runtime.LispError;
+const objects = @import("../runtime/objects.zig"); // zepo-4d6: fiber handle writes
 
 // ── POSIX poll(2) ─────────────────────────────────────────────────────────────
 
@@ -140,8 +141,8 @@ pub const Scheduler = struct {
             // zepo-9bi: swap handler stacks too — they're fiber-local.
             vm.main_handler_snapshot = vm.handler_stack;
         } else {
-            vm.fibers.items[active_idx].call_stack = vm.call_stack;
-            vm.fibers.items[active_idx].handler_stack = vm.handler_stack;
+            vm.fibers.items[active_idx].?.call_stack = vm.call_stack;
+            vm.fibers.items[active_idx].?.handler_stack = vm.handler_stack;
         }
         vm.call_stack = CallStack.init(vm.allocator);
         vm.handler_stack = .empty;
@@ -158,10 +159,10 @@ pub const Scheduler = struct {
             vm.handler_stack = vm.main_handler_snapshot;
             vm.main_handler_snapshot = .empty;
         } else {
-            vm.call_stack = vm.fibers.items[target_idx].call_stack;
-            vm.fibers.items[target_idx].call_stack = CallStack.init(vm.allocator);
-            vm.handler_stack = vm.fibers.items[target_idx].handler_stack;
-            vm.fibers.items[target_idx].handler_stack = .empty;
+            vm.call_stack = vm.fibers.items[target_idx].?.call_stack;
+            vm.fibers.items[target_idx].?.call_stack = CallStack.init(vm.allocator);
+            vm.handler_stack = vm.fibers.items[target_idx].?.handler_stack;
+            vm.fibers.items[target_idx].?.handler_stack = .empty;
         }
         vm.current_fiber_idx = if (target_idx == MAIN_FIBER) 0 else target_idx + 1;
     }
@@ -272,8 +273,10 @@ pub const Scheduler = struct {
         sched.initWakeupFd() catch {};
         // zepo-oav: re-enqueue runnable fibers from prior run() calls so fibers
         // spawned in a previous top-level form get dispatched this run.
-        for (vm.fibers.items, 0..) |fs, i| {
-            if (fs.status == .runnable) try sched.run_queue.append(sched.allocator, i);
+        for (vm.fibers.items, 0..) |maybe_fs, i| {
+            if (maybe_fs) |fs| {
+                if (fs.status == .runnable) try sched.run_queue.append(sched.allocator, i);
+            }
         }
 
         // Run main fiber. If it never yields, we're done immediately.
@@ -331,14 +334,15 @@ pub const Scheduler = struct {
                 // Real error.
                 std.debug.print("[sched] fiber {} error: {}\n", .{ next, e });
                 if (next == MAIN_FIBER) return e;
-                const fs_err = vm.fibers.items[next];
+                const fs_err = vm.fibers.items[next].?;
                 fs_err.status = .errored;
-                fs_err.error_val = vm.raised_val;
+                // zepo-4d6: record terminal state on the handle, then reap.
+                objects.fiberComplete(vm.gc, fs_err.handle, objects.FIBER_ERRORED, vm.raised_val);
                 // zepo-i19: wake fibers blocked in (fiber-join) on this one
                 for (fs_err.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
-                fs_err.waiters.clearRetainingCapacity();
                 vm.call_stack.frames.clearRetainingCapacity();
                 vm.call_stack.regs.shrinkRetainingCapacity(0);
+                vm.reapFiber(next);
                 break :blk null;
             };
 
@@ -347,12 +351,13 @@ pub const Scheduler = struct {
                     main_result = v;
                     main_done = true;
                 } else {
-                    const fs = vm.fibers.items[next];
+                    const fs = vm.fibers.items[next].?;
                     fs.status = .done;
-                    fs.result = v;
+                    // zepo-4d6: record terminal state on the handle, then reap.
+                    objects.fiberComplete(vm.gc, fs.handle, objects.FIBER_DONE, v);
                     // zepo-i19: wake fibers blocked in (fiber-join) on this one
                     for (fs.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
-                    fs.waiters.clearRetainingCapacity();
+                    vm.reapFiber(next);
                 }
             }
 

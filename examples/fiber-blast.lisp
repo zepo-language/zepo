@@ -119,9 +119,10 @@
 
 ;; B3: spawn + immediate fiber-join, serially. Measures green-thread
 ;; create/run/teardown (contrast with worker-blast's ~1ms OS-thread spawn).
-;; NOTE: this is currently SUPER-LINEAR in spawn-iters (zepo-4d6: dead fibers are
-;; retained and re-scanned by the GC), so the ops/sec here degrades as you raise
-;; the scale — it doubles as a regression probe for that fix.
+;; This scales linearly since zepo-4d6 (completed fibers are reaped from the
+;; scheduler set and their handles are nursery-collected, so neither the GC root
+;; scan nor old-gen pressure grows with total spawns). Kept as a regression guard:
+;; if ops/sec starts degrading as you raise the scale, that fix has regressed.
 (define spawn-iters (* 20000 scale))
 (bench "spawn+join" spawn-iters
   (lambda ()

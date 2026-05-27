@@ -14,9 +14,9 @@ const sched_mod = @import("../vm/sched.zig");
 const fiber_mod = @import("../vm/fiber.zig");
 const FiberState = fiber_mod.FiberState;
 
-// zepo-i19: type tag for fiber foreign handles.
-// Payload is *FiberState (system-allocated, not GC-managed).
-pub const TAG_FIBER: u64 = 0xF1BE_0000_0001;
+// zepo-4d6: fiber handles are their own GC kind (.fiber), not foreign objects.
+// The handle carries the terminal status+result so the FiberState can be freed
+// (reaped) the instant the fiber completes; see runtime/objects.zig.
 
 // ── (yield) → #void ───────────────────────────────────────────────────────────
 pub fn primYield(vm: *VM, args: []const Value) LispError!Value {
@@ -37,7 +37,7 @@ pub fn primSpawn(vm: *VM, args: []const Value) LispError!Value {
     const func = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
 
     const fiber_idx = try vm.addFiber();
-    const fs = vm.fibers.items[fiber_idx];
+    const fs = vm.fibers.items[fiber_idx].?;
 
     // Temporarily swap fiber's (empty) call_stack into vm to push the entry frame.
     const saved_cs = vm.call_stack;
@@ -57,46 +57,49 @@ pub fn primSpawn(vm: *VM, args: []const Value) LispError!Value {
     const sched = vm.scheduler orelse return error.ContractViolation;
     try sched.enqueue(fiber_idx);
 
-    return try objects.makeForeign(vm.gc, fs, null, TAG_FIBER);
+    // zepo-4d6: wrap the state in a .fiber handle and back-link it so the
+    // scheduler can write the terminal result into the handle on completion.
+    const handle = objects.makeFiber(vm.gc, fs) catch return error.OutOfMemory;
+    fs.handle = handle;
+    return handle;
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────
+// zepo-4d6: resolve the live FiberState behind a handle (valid only while the
+// fiber is still running; null once it has completed and been reaped).
 fn getFiber(v: Value) LispError!*FiberState {
-    if (!objects.isForeign(v)) return error.TypeError;
-    if (objects.foreignTypeTag(v) != TAG_FIBER) return error.TypeError;
-    const ptr = objects.foreignPayload(v) orelse return error.ContractViolation;
+    if (!objects.isFiber(v)) return error.TypeError;
+    const ptr = objects.fiberFsPtr(v) orelse return error.ContractViolation;
     return @ptrCast(@alignCast(ptr));
 }
 
 // ── (fiber? v) → bool ─────────────────────────────────────────────────────────
 pub fn primFiberQ(_: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    const is = objects.isForeign(args[0]) and objects.foreignTypeTag(args[0]) == TAG_FIBER;
-    return if (is) value_mod.TRUE else value_mod.FALSE;
+    return if (objects.isFiber(args[0])) value_mod.TRUE else value_mod.FALSE;
 }
 
 // ── (fiber-done? handle) → bool ───────────────────────────────────────────────
 pub fn primFiberDoneQ(_: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    const fs = try getFiber(args[0]);
-    return if (fs.status == .done) value_mod.TRUE else value_mod.FALSE;
+    if (!objects.isFiber(args[0])) return error.TypeError;
+    return if (objects.fiberStatus(args[0]) == objects.FIBER_DONE) value_mod.TRUE else value_mod.FALSE;
 }
 
 // ── (fiber-errored? handle) → bool ────────────────────────────────────────────
 pub fn primFiberErroredQ(_: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    const fs = try getFiber(args[0]);
-    return if (fs.status == .errored) value_mod.TRUE else value_mod.FALSE;
+    if (!objects.isFiber(args[0])) return error.TypeError;
+    return if (objects.fiberStatus(args[0]) == objects.FIBER_ERRORED) value_mod.TRUE else value_mod.FALSE;
 }
 
 // ── (fiber-result handle) → value ─────────────────────────────────────────────
 pub fn primFiberResult(_: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    const fs = try getFiber(args[0]);
-    return switch (fs.status) {
-        .done => fs.result,
-        .errored => fs.error_val,
-        else => error.ContractViolation,
+    if (!objects.isFiber(args[0])) return error.TypeError;
+    return switch (objects.fiberStatus(args[0])) {
+        objects.FIBER_DONE, objects.FIBER_ERRORED => objects.fiberResult(args[0]),
+        else => error.ContractViolation, // still running
     };
 }
 
@@ -132,12 +135,13 @@ pub fn primSleep(vm: *VM, args: []const Value) LispError!Value {
 // On resume (woken by scheduler after target finishes), re-checks status.
 pub fn primFiberJoin(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
-    const fs = try getFiber(args[0]);
+    if (!objects.isFiber(args[0])) return error.TypeError;
 
-    switch (fs.status) {
-        .done => return fs.result,
-        .errored => return error.UserError,
-        .runnable, .blocked => {
+    switch (objects.fiberStatus(args[0])) {
+        objects.FIBER_DONE => return objects.fiberResult(args[0]),
+        objects.FIBER_ERRORED => return error.UserError,
+        else => { // still running — register as a waiter and park
+            const fs = try getFiber(args[0]);
             const my_sched_idx: usize = if (vm.current_fiber_idx == 0)
                 sched_mod.MAIN_FIBER
             else

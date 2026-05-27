@@ -27,6 +27,7 @@ pub const Kind = enum(u4) {
     foreign = 10,
     hash_table = 11,
     bytevector = 12, // zepo-9qg
+    fiber = 13, // zepo-4d6: fiber handle — body [status][result][fs_ptr]
     _,
 };
 
