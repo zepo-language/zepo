@@ -82,7 +82,11 @@ pub const VM = struct {
     // zepo-4yr: spawned fiber states (not including the main fiber's call_stack,
     // which lives directly in vm.call_stack). current_fiber_idx == 0 means the
     // main execution context is running; >= 1 means a spawned fiber is active.
-    fibers: std.ArrayListUnmanaged(*FiberState) = .empty,
+    // zepo-4d6: slots are nulled when a fiber is reaped on completion; the index
+    // is recycled via free_fiber_slots. The root scan and re-enqueue skip nulls,
+    // so their cost tracks the number of *active* fibers, not all ever spawned.
+    fibers: std.ArrayListUnmanaged(?*FiberState) = .empty,
+    free_fiber_slots: std.ArrayListUnmanaged(usize) = .empty,
     current_fiber_idx: usize = 0,
     // zepo-0bo: when the main fiber is suspended (a spawned fiber is active),
     // its call stack is snapshotted here so GC can still walk its roots.
@@ -177,9 +181,10 @@ pub const VM = struct {
         // zepo-9bi: free handler-stack storage (both active and snapshot).
         vm.handler_stack.deinit(vm.allocator);
         vm.main_handler_snapshot.deinit(vm.allocator);
-        // zepo-4yr: free all spawned fiber states.
-        for (vm.fibers.items) |fs| fs.deinit();
+        // zepo-4yr: free all spawned fiber states. zepo-4d6: skip reaped (null) slots.
+        for (vm.fibers.items) |maybe_fs| if (maybe_fs) |fs| fs.deinit();
         vm.fibers.deinit(vm.allocator);
+        vm.free_fiber_slots.deinit(vm.allocator);
         // zepo-s64: channel list (channel memory freed by GC finalizers).
         vm.channels.deinit(vm.allocator);
     }
@@ -221,10 +226,15 @@ pub const VM = struct {
         // zepo-0bo: main fiber's snapshot (non-empty only when a spawned fiber runs).
         visitCallStack(&vm.main_cs_snapshot, visitor, visitor_ctx);
         // zepo-4yr: suspended fibers — their registers must also be GC roots.
-        for (vm.fibers.items) |fs| {
+        // zepo-4d6: only *active* fibers live here now (completed ones are
+        // reaped), so this is O(active). Each active fiber's handle is rooted
+        // too, so a handle the program dropped survives until the fiber finishes
+        // (the scheduler writes the result into it). The terminal result is then
+        // traced as the handle's own child — no per-fiber result root needed.
+        for (vm.fibers.items) |maybe_fs| {
+            const fs = maybe_fs orelse continue;
             visitCallStack(&fs.call_stack, visitor, visitor_ctx);
-            visitor(visitor_ctx, &fs.result);
-            visitor(visitor_ctx, &fs.error_val);
+            visitor(visitor_ctx, &fs.handle);
         }
         visitor(visitor_ctx, &vm.raised_val);
         // zepo-oju: channel buf/send_waiters hold ChannelValue (non-GC) — no tracing needed.
@@ -301,9 +311,25 @@ pub const VM = struct {
     // Context-switching logic lives in the scheduler (zepo-0bo).
     pub fn addFiber(vm: *VM) !usize {
         const fs = try FiberState.init(vm.allocator, VM.MAX_REGS);
+        // zepo-4d6: reuse a recycled slot if one is free, else grow.
+        if (vm.free_fiber_slots.pop()) |idx| {
+            vm.fibers.items[idx] = fs;
+            return idx;
+        }
         const idx = vm.fibers.items.len;
         try vm.fibers.append(vm.allocator, fs);
         return idx;
+    }
+
+    /// zepo-4d6: a fiber has completed; its terminal status+result already live
+    /// on its handle. Free the FiberState and recycle its slot so the GC root
+    /// scan and the scheduler's re-enqueue stay O(active fibers).
+    pub fn reapFiber(vm: *VM, idx: usize) void {
+        if (vm.fibers.items[idx]) |fs| {
+            fs.deinit();
+            vm.fibers.items[idx] = null;
+            vm.free_fiber_slots.append(vm.allocator, idx) catch {};
+        }
     }
 
     // zepo-5wg: place args from args_src into the new frame at `base`.

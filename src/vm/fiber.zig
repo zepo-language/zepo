@@ -34,9 +34,9 @@ pub const FiberStatus = enum {
     runnable,
     /// Waiting on an fd or timer; registered with poll(2) by the scheduler.
     blocked,
-    /// Completed normally; result holds the return value.
+    /// Completed normally; terminal result is stored on the .fiber handle.
     done,
-    /// Completed with an error; error_val holds the raised value.
+    /// Completed with an error; raised value is stored on the .fiber handle.
     errored,
 };
 
@@ -45,14 +45,14 @@ pub const FiberState = struct {
     /// zepo-9bi: per-fiber exception-handler stack. Top = most recent.
     handler_stack: std.ArrayListUnmanaged(HandlerFrame) = .empty,
     status: FiberStatus,
-    /// Final value when status == .done.
-    result: Value,
-    /// Raised value when status == .errored.
-    error_val: Value,
     allocator: std.mem.Allocator,
     // zepo-i19: fibers blocked in (fiber-join) waiting for this fiber to finish.
     // Indices are into vm.fibers (or MAIN_FIBER sentinel from sched.zig).
     waiters: std.ArrayListUnmanaged(usize) = .empty,
+    // zepo-4d6: the .fiber GC handle wrapping this state. Rooted by the VM while
+    // the fiber is active (so a dropped handle can't be collected mid-run) and
+    // updated with the terminal status+result when the fiber completes.
+    handle: Value,
 
     pub fn init(allocator: std.mem.Allocator, max_regs: usize) !*FiberState {
         const fs = try allocator.create(FiberState);
@@ -62,10 +62,9 @@ pub const FiberState = struct {
         fs.* = .{
             .call_stack = cs,
             .status = .runnable,
-            .result = value_mod.NIL,
-            .error_val = value_mod.NIL,
             .allocator = allocator,
             .waiters = .empty,
+            .handle = value_mod.NIL,
         };
         return fs;
     }
