@@ -1,6 +1,7 @@
 (module math/stats
   (export ->vec sum mean variance stdev pvariance pstdev
-          median quantile percentile span iqr mode)
+          median quantile percentile span iqr mode
+          covariance pcovariance correlation)
 
   (import math/core)    ; square, abs-close? (used later)
   (import math/linear)  ; solve, matvec, mat (used by ols)
@@ -81,4 +82,31 @@
                     (if (> c best-cnt)
                         (loop (+ i 1) cur c x c)
                         (loop (+ i 1) cur c best best-cnt)))
-                  (loop (+ i 1) x 1 best best-cnt))))))))
+                  (loop (+ i 1) x 1 best best-cnt)))))))
+
+  ;; zepo-7uu: sum of products of deviations (two-pass).
+  (define (sp xs ys)
+    (let* ((vx (->vec xs)) (vy (->vec ys)) (n (vector-length vx)))
+      (if (not (= n (vector-length vy)))
+          (error "covariance: sequences differ in length"))
+      (let ((mx (mean vx)) (my (mean vy)))
+        (let loop ((i 0) (acc 0))
+          (if (= i n) acc
+              (loop (+ i 1)
+                    (+ acc (* (- (vector-ref vx i) mx)
+                              (- (vector-ref vy i) my)))))))))
+
+  (define (pcovariance xs ys)
+    (let ((n (vector-length (->vec xs))))
+      (if (= n 0) (error "pcovariance: empty sequence"))
+      (/ (sp xs ys) n)))
+
+  (define (covariance xs ys)
+    (let ((n (vector-length (->vec xs))))
+      (if (< n 2) (error "covariance: needs >= 2 values"))
+      (/ (sp xs ys) (- n 1))))
+
+  (define (correlation xs ys)
+    (let ((sx (stdev xs)) (sy (stdev ys)))
+      (if (or (= sx 0) (= sy 0)) (error "correlation: zero variance"))
+      (/ (covariance xs ys) (* sx sy)))))

@@ -30,4 +30,14 @@
   (=check (mode (vector 1 2 2 3 3 3 4)) 3)
   (=check (mode (vector 4 4 1 1)) 1))            ; tie -> smallest
 
+(deftest stats/paired
+  ;; perfectly correlated y = 2x + 1
+  (is (abs-close? (correlation (vector 1 2 3 4) (vector 3 5 7 9)) 1.0 1e-9))
+  (is (abs-close? (correlation (vector 1 2 3 4) (vector 9 7 5 3)) -1.0 1e-9))
+  ;; sample covariance of x=1..4, y=2,4,5,4 : mean_x=2.5,mean_y=3.75
+  ;; sum dev products = (-1.5)(-1.75)+(-.5)(.25)+(.5)(1.25)+(1.5)(.25)=3.5 ; /(4-1)=7/6
+  ;; NOTE: plan had wrong expected value (3.0); corrected to 3.5 sum -> 7/6 cov, 7/8 pcov
+  (is (abs-close? (covariance (vector 1 2 3 4) (vector 2 4 5 4)) (/ 7.0 6.0) 1e-9))
+  (is (abs-close? (pcovariance (vector 1 2 3 4) (vector 2 4 5 4)) 0.875 1e-9)))
+
 (run-tests)
