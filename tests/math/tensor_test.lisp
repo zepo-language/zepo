@@ -99,7 +99,28 @@
     (is (not (t-equal? a b))))
   (throws (t+ (from-nested (list 1 2 3)) (from-nested (list 1 2)))))  ; shape mismatch
 
+(deftest tensor/reductions
+  (let ((a (from-nested (list (list 1 2 3) (list 4 5 6)))))   ; 2x3
+    ;; whole-tensor
+    (=check (t-sum a) 21)
+    (is (abs-close? (t-mean a) 3.5 1e-9))
+    (=check (t-max a) 6)
+    (=check (t-min a) 1)
+    ;; along axis 0 -> length-3 (column sums)
+    (=check (tensor->nested (t-sum a 0)) (list 5 7 9))
+    ;; along axis 1 -> length-2 (row sums)
+    (=check (tensor->nested (t-sum a 1)) (list 6 15))
+    (=check (tensor->nested (t-max a 0)) (list 4 5 6))
+    (is (abs-close? (car (tensor->nested (t-mean a 1))) 2.0 1e-9)))
+  ;; reducing a 1-D tensor's only axis -> scalar
+  (=check (t-sum (from-nested (list 1 2 3 4)) 0) 10)
+  (throws (t-sum (arange 3) 1))    ; axis out of range
+  ;; 3-D axis-at-end check: (2,2,2) reduce axis 2
+  (let ((t3 (from-nested (list (list (list 1 2) (list 3 4)) (list (list 5 6) (list 7 8))))))
+    (=check (tensor->nested (t-sum t3 2)) (list (list 3 7) (list 11 15)))))
+
 (run-tests)
+
 
 
 

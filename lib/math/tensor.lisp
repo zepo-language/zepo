@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice t+ t- t* t/ t-map t-zip t-equal?)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean t-max t-min)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -84,6 +84,67 @@
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
             (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: shape vector with one axis removed; index list with k inserted.
+  (define (remove-index v axis)
+    (let ((n (vector-length v)) (out (make-vector (- (vector-length v) 1) 0)))
+      (let loop ((i 0) (j 0))
+        (if (= i n) out
+            (if (= i axis) (loop (+ i 1) j)
+                (begin (vector-set! out j (vector-ref v i)) (loop (+ i 1) (+ j 1))))))))
+
+  ;; splice k into the output-index list at position axis -> input-index list.
+  (define (splice-index oidx axis k)
+    (let loop ((i 0) (rest oidx) (acc (quote ())))
+      (cond ((= i axis)
+             ;; insert k here, then continue copying the rest at shifted positions
+             (let cont ((r rest) (a (cons k acc)))
+               (if (null? r) (reverse a) (cont (cdr r) (cons (car r) a)))))
+            ((null? rest) (reverse (cons k acc)))   ; axis == rank-of-output (append at end)
+            (else (loop (+ i 1) (cdr rest) (cons (car rest) acc))))))
+
+  ;; combine with a sentinel so max/min can use the first value as the seed.
+  (define (seeded f) (lambda (acc x) (if (null? acc) x (f acc x))))
+
+  (define (reduce-axis combine seed final t axis)
+    (let* ((sv (tensor-shape-vec t)) (r (vector-length sv)))
+      (if (or (not (integer? axis)) (< axis 0) (>= axis r))
+          (error "reduce: axis out of range"))
+      (let ((dim (vector-ref sv axis)) (dv (tensor-data t)))
+        (if (= r 1)
+            (let loop ((k 0) (acc seed))
+              (if (= k dim) (final acc dim) (loop (+ k 1) (combine acc (vector-ref dv k)))))
+            (let* ((out-sv (remove-index sv axis)) (n (prod-vec out-sv)) (out (make-vector n 0)))
+              (let ocell ((flat 0))
+                (if (= flat n)
+                    (make-tensor out-sv out)
+                    (let ((oidx (unflatten out-sv flat)))
+                      (let rloop ((k 0) (acc seed))
+                        (if (= k dim)
+                            (begin (vector-set! out flat (final acc dim)) (ocell (+ flat 1)))
+                            (let ((ioff (flat-offset sv (splice-index oidx axis k))))
+                              (rloop (+ k 1) (combine acc (vector-ref dv ioff))))))))))))))
+
+  ;; whole-tensor folds.
+  (define (fold-all combine seed t)
+    (let* ((d (tensor-data t)) (n (vector-length d)))
+      (let loop ((i 0) (acc seed)) (if (= i n) acc (loop (+ i 1) (combine acc (vector-ref d i)))))))
+
+  (define (t-sum t . rest)
+    (if (null? rest) (fold-all + 0 t)
+        (reduce-axis + 0 (lambda (a c) a) t (car rest))))
+
+  (define (t-mean t . rest)
+    (if (null? rest) (/ (fold-all + 0 t) (size t))
+        (reduce-axis + 0 (lambda (a c) (/ a c)) t (car rest))))
+
+  (define (t-max t . rest)
+    (if (null? rest) (fold-all (seeded max) (quote ()) t)
+        (reduce-axis (seeded max) (quote ()) (lambda (a c) a) t (car rest))))
+
+  (define (t-min t . rest)
+    (if (null? rest) (fold-all (seeded min) (quote ()) t)
+        (reduce-axis (seeded min) (quote ()) (lambda (a c) a) t (car rest))))
 
   ;; zepo-py2: elementwise. Both tensors (identical shape) OR tensor + scalar.
   (define (same-shape? a b)
@@ -231,6 +292,5 @@
               (let loop ((k 0) (acc (quote ())))
                 (if (= k dim) (reverse acc)
                     (loop (+ k 1)
-                          (cons (build (+ axis 1) (+ off (* k sub)) sub) acc)))))))))
-)
+                          (cons (build (+ axis 1) (+ off (* k sub)) sub) acc))))))))))
 
