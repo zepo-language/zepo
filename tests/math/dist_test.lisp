@@ -17,6 +17,14 @@
       (is (>= x 0))
       (is (< x 4294967296)))))
 
+(deftest dist/normal
+  (is (abs-close? (normal-pdf 0 0 1) 0.3989422804 1e-9))   ; 1/sqrt(2pi)
+  (is (abs-close? (normal-cdf 0 0 1) 0.5 1e-9))
+  (is (abs-close? (normal-cdf 1 0 1) 0.8413447 1e-6))
+  (is (abs-close? (normal-cdf -1 0 1) 0.1586553 1e-6))
+  (throws (normal-pdf 0 0 0))             ; sigma <= 0
+  (throws (normal-sample! (make-rng 1) 0 -1)))
+
 (deftest dist/uniform
   (is (abs-close? (uniform-pdf 5 0 10) 0.1 1e-9))
   (is (abs-close? (uniform-pdf -1 0 10) 0.0 1e-9))

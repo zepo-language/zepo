@@ -1,11 +1,17 @@
 (module math/dist
-  (export make-rng rng-next! rng-float! rng-int! erf erfc uniform-pdf uniform-cdf uniform-sample!)
+  (export make-rng rng-next! rng-float! rng-int!
+          erf erfc
+          uniform-pdf uniform-cdf uniform-sample!
+          normal-pdf normal-cdf normal-sample!)
 
   (import math/core)   ; pi, square (used later)
 
   ;; zepo-7uu: 32-bit helpers. Lanes are kept as non-negative fixnums < 2^32.
   (define mask32 4294967295)            ; #xFFFFFFFF
-  (define (m32 x) (bitwise-and x mask32))
+
+  (define (m32 x)
+    (bitwise-and x mask32))
+
   (define (rotl x k)
     (m32 (bitwise-or (m32 (arithmetic-shift x k))
                      (arithmetic-shift x (- k 32)))))
@@ -20,10 +26,11 @@
 
   ;; splitmix32 step — expands a seed into well-mixed 32-bit words (mul32 keeps
   ;; the multiplies overflow-safe).
-  (define (splitmix32-next state)        ; returns (cons new-state output)
-    (let* ((z0 (m32 (+ state 2654435769)))           ; +0x9E3779B9
-           (z1 (mul32 (bitwise-xor z0 (arithmetic-shift z0 -16)) 569420461))  ; *0x21F0AAAD
-           (z2 (mul32 (bitwise-xor z1 (arithmetic-shift z1 -15)) 1935289751)) ; *0x735A2D97
+  ;; returns (cons new-state output)
+  (define (splitmix32-next state)
+    (let* ((z0 (m32 (+ state 2654435769)))
+           (z1 (mul32 (bitwise-xor z0 (arithmetic-shift z0 -16)) 569420461))
+           (z2 (mul32 (bitwise-xor z1 (arithmetic-shift z1 -15)) 1935289751))
            (z3 (m32 (bitwise-xor z2 (arithmetic-shift z2 -15)))))
       (cons z0 z3)))
 
@@ -33,9 +40,10 @@
       (let loop ((i 0) (s (m32 seed)))
         (if (= i 4)
             (begin
-              ;; guard against the all-zero state
-              (if (and (= (vector-ref st 0) 0) (= (vector-ref st 1) 0)
-                       (= (vector-ref st 2) 0) (= (vector-ref st 3) 0))
+              (if (and (= (vector-ref st 0) 0)
+                       (= (vector-ref st 1) 0)
+                       (= (vector-ref st 2) 0)
+                       (= (vector-ref st 3) 0))
                   (vector-set! st 0 1))
               st)
             (let ((p (splitmix32-next s)))
@@ -44,19 +52,38 @@
 
   ;; xoshiro128** next 32-bit output; advances state in place.
   (define (rng-next! st)
-    (let* ((s0 (vector-ref st 0)) (s1 (vector-ref st 1))
-           (s2 (vector-ref st 2)) (s3 (vector-ref st 3))
+    (let* ((s0 (vector-ref st 0))
+           (s1 (vector-ref st 1))
+           (s2 (vector-ref st 2))
+           (s3 (vector-ref st 3))
            (result (m32 (* (rotl (m32 (* s1 5)) 7) 9)))
-           (t (m32 (arithmetic-shift s1 9))))
-      (let ((n2 (bitwise-xor s2 s0))
-            (n3 (bitwise-xor s3 s1)))
-        (let ((n1 (bitwise-xor s1 n2))
-              (n0 (bitwise-xor s0 n3)))
-          (vector-set! st 0 n0)
-          (vector-set! st 1 n1)
-          (vector-set! st 2 (bitwise-xor n2 t))
-          (vector-set! st 3 (rotl n3 11))
-          result))))
+           (t (m32 (arithmetic-shift s1 9)))
+           (n2 (bitwise-xor s2 s0))
+           (n3 (bitwise-xor s3 s1))
+           (n1 (bitwise-xor s1 n2))
+           (n0 (bitwise-xor s0 n3)))
+      (vector-set! st 0 n0)
+      (vector-set! st 1 n1)
+      (vector-set! st 2 (bitwise-xor n2 t))
+      (vector-set! st 3 (rotl n3 11))
+      result))
+
+  (define two32 4294967296.0)           ; 2^32 as float
+
+  ;; uniform float in [0,1) at 32-bit precision.
+  (define (rng-float! st)
+    (/ (rng-next! st) two32))
+
+  ;; zepo-7uu: uniform integer in [lo,hi) — rejection sampling to avoid modulo bias.
+  (define (rng-int! st lo hi)
+    (let ((range (- hi lo)))
+      (if (<= range 0) (error "rng-int!: hi must be > lo"))
+      (let ((threshold (- 4294967296 (modulo 4294967296 range))))
+        (let loop ()
+          (let ((x (rng-next! st)))
+            (if (< x threshold)
+                (+ lo (modulo x range))
+                (loop)))))))
 
   ;; zepo-7uu: Abramowitz & Stegun 7.1.26 rational approximation, |err| <= 1.5e-7.
   (define (erf x)
@@ -70,26 +97,15 @@
            (y (- 1.0 (* poly (exp (- (* ax ax)))))))
       (if (< x 0) (- y) y)))
 
-  (define (erfc x) (- 1.0 (erf x)))
-
-  (define two32 4294967296.0)           ; 2^32 as float
-
-  ;; uniform float in [0,1) at 32-bit precision.
-  (define (rng-float! st) (/ (rng-next! st) two32))
-
-  ;; zepo-7uu: uniform integer in [lo,hi) — rejection sampling to avoid modulo bias.
-  (define (rng-int! st lo hi)
-    (let ((range (- hi lo)))
-      (if (<= range 0) (error "rng-int!: hi must be > lo"))
-      (let ((threshold (- 4294967296 (modulo 4294967296 range))))
-        (let loop ()
-          (let ((x (rng-next! st)))
-            (if (< x threshold) (+ lo (modulo x range)) (loop)))))))
+  (define (erfc x)
+    (- 1.0 (erf x)))
 
   ;; zepo-7uu: uniform distribution on [a,b].
   (define (uniform-pdf x a b)
     (if (< b a) (error "uniform-pdf: b must be >= a"))
-    (if (or (< x a) (> x b)) 0.0 (/ 1.0 (- b a))))
+    (if (or (< x a) (> x b))
+        0.0
+        (/ 1.0 (- b a))))
 
   (define (uniform-cdf x a b)
     (if (< b a) (error "uniform-cdf: b must be >= a"))
@@ -99,4 +115,26 @@
 
   (define (uniform-sample! st a b)
     (if (< b a) (error "uniform-sample!: b must be >= a"))
-    (+ a (* (- b a) (rng-float! st)))))
+    (+ a (* (- b a) (rng-float! st))))
+
+  ;; zepo-7uu: normal distribution — pdf/cdf/sample.
+  (define sqrt2 1.4142135623730951)
+
+  (define (normal-pdf x mu sigma)
+    (if (<= sigma 0) (error "normal-pdf: sigma must be > 0"))
+    (let ((z (/ (- x mu) sigma)))
+      (/ (exp (* -0.5 (square z)))
+         (* sigma (sqrt (* 2.0 pi))))))
+
+  (define (normal-cdf x mu sigma)
+    (if (<= sigma 0) (error "normal-cdf: sigma must be > 0"))
+    (* 0.5 (+ 1.0 (erf (/ (- x mu) (* sigma sqrt2))))))
+
+  ;; Box-Muller: one normal per two uniforms (no spare-value caching).
+  (define (normal-sample! st mu sigma)
+    (if (<= sigma 0) (error "normal-sample!: sigma must be > 0"))
+    (let* ((u1 (rng-float! st))
+           (u2 (rng-float! st))
+           (uu (if (= u1 0.0) 1e-12 u1)))
+      (+ mu (* sigma (* (sqrt (* -2.0 (ln uu)))
+                        (cos (* 2.0 pi u2))))))))
