@@ -77,4 +77,13 @@
     (is (abs-close? (hash-get s 'q1 0)     2.75 1e-9))
     (is (abs-close? (hash-get s 'q3 0)     6.25 1e-9))))
 
+(deftest stats/errors
+  (throws (mean (vector )))
+  (throws (variance (vector 5)))               ; n < 2
+  (is (abs-close? (pvariance (vector 5)) 0.0 1e-9))  ; population allows n=1
+  (throws (correlation (vector 1 1 1) (vector 1 2 3)))     ; zero variance in x
+  (throws (quantile (vector 1 2 3) 1.5))             ; q out of range
+  (throws (covariance (vector 1 2 3) (vector 1 2)))        ; unequal lengths
+  (throws (linreg (vector 1 1 1) (vector 2 4 6))))         ; x zero variance
+
 (run-tests)
