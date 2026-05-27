@@ -93,7 +93,7 @@
   (define (sp xs ys)
     (let* ((vx (->vec xs)) (vy (->vec ys)) (n (vector-length vx)))
       (if (not (= n (vector-length vy)))
-          (error "covariance: sequences differ in length"))
+          (error "stats: sequences differ in length"))
       (let ((mx (mean vx)) (my (mean vy)))
         (let loop ((i 0) (acc 0))
           (if (= i n)
@@ -113,9 +113,11 @@
       (/ (sp xs ys) (- n 1))))
 
   (define (correlation xs ys)
-    (let ((sx (stdev xs)) (sy (stdev ys)))
-      (if (or (= sx 0) (= sy 0)) (error "correlation: zero variance"))
-      (/ (covariance xs ys) (* sx sy))))
+    (let ((n (vector-length (->vec xs))))
+      (if (< n 2) (error "correlation: needs >= 2 values"))
+      (let ((sx (stdev xs)) (sy (stdev ys)))
+        (if (or (= sx 0) (= sy 0)) (error "correlation: zero variance"))
+        (/ (covariance xs ys) (* sx sy)))))
 
   ;; zepo-7uu: z-score each element using the sample stdev.
   (define (standardize xs)
