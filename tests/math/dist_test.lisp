@@ -17,6 +17,18 @@
       (is (>= x 0))
       (is (< x 4294967296)))))
 
+(deftest dist/rng-float-int
+  (let ((r (make-rng 99)))
+    (let loop ((i 0))
+      (if (< i 1000)
+          (let ((f (rng-float! r)) (k (rng-int! r 5 10)))
+            (is (>= f 0.0)) (is (< f 1.0))
+            (is (>= k 5)) (is (< k 10))
+            (loop (+ i 1))))))
+  ;; degenerate / error cases
+  (throws (rng-int! (make-rng 1) 5 5))     ; empty half-open range
+  (throws (rng-int! (make-rng 1) 9 2)))    ; hi < lo
+
 (deftest dist/rng-golden
   (let ((r (make-rng 42)))
     (=check (rng-next! r) 660444221)

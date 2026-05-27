@@ -1,5 +1,5 @@
 (module math/dist
-  (export make-rng rng-next!)
+  (export make-rng rng-next! rng-float! rng-int!)
 
   (import math/core)   ; pi, square (used later)
 
@@ -56,4 +56,18 @@
           (vector-set! st 1 n1)
           (vector-set! st 2 (bitwise-xor n2 t))
           (vector-set! st 3 (rotl n3 11))
-          result)))))
+          result))))
+
+  (define two32 4294967296.0)           ; 2^32 as float
+
+  ;; uniform float in [0,1) at 32-bit precision.
+  (define (rng-float! st) (/ (rng-next! st) two32))
+
+  ;; zepo-7uu: uniform integer in [lo,hi) — rejection sampling to avoid modulo bias.
+  (define (rng-int! st lo hi)
+    (let ((range (- hi lo)))
+      (if (<= range 0) (error "rng-int!: hi must be > lo"))
+      (let ((threshold (- 4294967296 (modulo 4294967296 range))))
+        (let loop ()
+          (let ((x (rng-next! st)))
+            (if (< x threshold) (+ lo (modulo x range)) (loop))))))))
