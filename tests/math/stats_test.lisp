@@ -1,5 +1,6 @@
 (import test)
-(import math/core)   ; abs-close?
+(import math/core)     ; abs-close?
+(import math/linear)   ; rows->mat for ols test
 (import math/stats)
 
 (deftest stats/sum-and-mean
@@ -55,5 +56,15 @@
     (is (abs-close? (hash-get m 'intercept 0) 1.0 1e-9))
     (is (abs-close? (hash-get m 'r2 0)        1.0 1e-9))
     (=check (hash-get m 'n 0) 4)))
+
+(deftest stats/ols
+  ;; X columns: [1 (intercept), x] ; y = 1 + 2x exactly -> coeffs (1 2), r2 1
+  (let* ((X (rows->mat (list (list 1 1) (list 1 2) (list 1 3) (list 1 4))))
+         (y (vector 3 5 7 9))
+         (m (ols X y))
+         (c (hash-get m 'coeffs #f)))
+    (is (abs-close? (vector-ref c 0) 1.0 1e-7))
+    (is (abs-close? (vector-ref c 1) 2.0 1e-7))
+    (is (abs-close? (hash-get m 'r2 0) 1.0 1e-7))))
 
 (run-tests)

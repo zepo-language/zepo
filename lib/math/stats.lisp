@@ -2,10 +2,10 @@
   (export ->vec sum mean variance stdev pvariance pstdev
           median quantile percentile span iqr mode
           covariance pcovariance correlation
-          standardize normalize linreg)
+          standardize normalize linreg ols)
 
   (import math/core)    ; square, abs-close? (used later)
-  (import math/linear)  ; solve, matvec, mat (used by ols)
+  (import math/linear)  ; solve, matvec, mat, rows->mat, mat-rows, mat-cols, mat-ref, dot
 
   ;; zepo-7uu: canonical input is a vector; accept a list too.
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -169,4 +169,51 @@
                     m)))
               (let ((dx (- (vector-ref vx i) mx))
                     (dy (- (vector-ref vy i) my)))
-                (loop (+ i 1) (+ sxy (* dx dy)) (+ sxx (* dx dx))))))))))
+                (loop (+ i 1) (+ sxy (* dx dy)) (+ sxx (* dx dx)))))))))
+
+  ;; zepo-7uu: column i of design matrix X as a vector (rows = observations).
+  (define (col X i)
+    (let* ((r (mat-rows X)) (out (make-vector r 0)))
+      (let loop ((k 0))
+        (if (= k r)
+            out
+            (begin (vector-set! out k (mat-ref X k i)) (loop (+ k 1)))))))
+
+  ;; multivariate OLS via the normal equations (XtX) b = Xty, solved with math/linear.
+  (define (ols X y)
+    (let* ((vy   (->vec y))
+           (rows (mat-rows X))
+           (cols (mat-cols X)))
+      (if (not (= rows (vector-length vy)))
+          (error "ols: X rows must match y length"))
+      ;; build cvecs: a vector of column vectors
+      (let ((cvecs (let loop ((j 0) (acc '()))
+                     (if (= j cols)
+                         (list->vector (reverse acc))
+                         (loop (+ j 1) (cons (col X j) acc)))))
+            (a-vals (make-vector (* cols cols) 0))
+            (b      (make-vector cols 0)))
+        (let iloop ((i 0))
+          (if (< i cols)
+              (begin
+                (vector-set! b i (dot (vector-ref cvecs i) vy))
+                (let jloop ((j 0))
+                  (if (< j cols)
+                      (begin
+                        (vector-set! a-vals (+ (* i cols) j)
+                                     (dot (vector-ref cvecs i) (vector-ref cvecs j)))
+                        (jloop (+ j 1)))))
+                (iloop (+ i 1)))))
+        (let* ((A      (apply mat cols cols (vector->list a-vals)))
+               (coeffs (solve A b))
+               (yhat   (matvec X coeffs))
+               (ybar   (mean vy)))
+          (let loop ((k 0) (ss-res 0) (ss-tot 0))
+            (if (= k rows)
+                (let ((m (make-hash-table)))
+                  (hash-set! m 'coeffs coeffs)
+                  (hash-set! m 'r2 (if (= ss-tot 0) 1.0 (- 1.0 (/ ss-res ss-tot))))
+                  m)
+                (loop (+ k 1)
+                      (+ ss-res (square (- (vector-ref vy k) (vector-ref yhat k))))
+                      (+ ss-tot (square (- (vector-ref vy k) ybar)))))))))))
