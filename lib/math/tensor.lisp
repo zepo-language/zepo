@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset!)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -84,6 +84,25 @@
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
             (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: validate index list against the shape, return the flat offset.
+  (define (check-index shape-vec idxs)
+    (let ((r (vector-length shape-vec)))
+      (if (not (= (length idxs) r))
+          (error "tensor index: wrong number of indices for rank"))
+      (let loop ((i 0) (rest idxs))
+        (if (< i r)
+            (let ((k (car rest)) (d (vector-ref shape-vec i)))
+              (if (or (not (integer? k)) (< k 0) (>= k d))
+                  (error "tensor index: out of bounds"))
+              (loop (+ i 1) (cdr rest)))))
+      (flat-offset shape-vec idxs)))
+
+  (define (tref t . idxs)
+    (vector-ref (tensor-data t) (check-index (tensor-shape-vec t) idxs)))
+
+  (define (tset! t val . idxs)
+    (vector-set! (tensor-data t) (check-index (tensor-shape-vec t) idxs) val))
 
   ;; zepo-py2: infer shape from the first element down; flatten row-major.
   (define (nested-shape n)

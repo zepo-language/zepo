@@ -25,6 +25,14 @@
     (=check (size a) 5))
   (throws (arange 0)))
 
+(deftest tensor/factories-values
+  (let ((z (zeros (list 3)))) (is (abs-close? (tref z 0) 0 1e-9)))
+  (let ((o (ones (list 3))))  (is (abs-close? (tref o 2) 1 1e-9)))
+  (let ((f (full (list 2 2) 7))) (is (abs-close? (tref f 1 1) 7 1e-9)))
+  (let ((a (arange 5)))
+    (=check (tref a 0) 0)
+    (=check (tref a 4) 4)))
+
 (deftest tensor/nested
   (let ((t (from-nested (list (list 1 2 3) (list 4 5 6)))))
     (=check (shape t) (list 2 3))
@@ -35,6 +43,18 @@
   (throws (from-nested (list (list 1 2) (list 3))))   ; ragged
   (throws (from-nested (quote ()))))                   ; empty
 
+(deftest tensor/index
+  (let ((t (from-nested (list (list 1 2 3) (list 4 5 6)))))
+    (=check (tref t 0 0) 1)
+    (=check (tref t 1 2) 6)
+    (tset! t 99 0 1)
+    (=check (tref t 0 1) 99)
+    (throws (tref t 0))        ; too few indices (rank 2)
+    (throws (tref t 0 5))      ; out of bounds
+    (throws (tref t -1 0))     ; negative index
+    (throws (tref t 2 0))))    ; out of bounds
+
 (run-tests)
+
 
 
