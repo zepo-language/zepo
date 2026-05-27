@@ -1,5 +1,5 @@
 (module math/stats
-  (export ->vec sum mean variance stdev pvariance pstdev
+  (export sum mean variance stdev pvariance pstdev
           median quantile percentile span iqr mode
           covariance pcovariance correlation
           standardize normalize linreg ols summary)
@@ -226,6 +226,7 @@
       (let ((s (sorted-vec v)) (m (make-hash-table)))
         (hash-set! m 'n n)
         (hash-set! m 'mean (mean v))
+        ;; n=1 has no sample stdev; report 0.0 rather than erroring so summary stays total.
         (hash-set! m 'stdev (if (< n 2) 0.0 (stdev v)))
         (hash-set! m 'min (vector-ref s 0))
         (hash-set! m 'max (vector-ref s (- n 1)))
