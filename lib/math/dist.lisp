@@ -1,5 +1,5 @@
 (module math/dist
-  (export make-rng rng-next! rng-float! rng-int! erf erfc)
+  (export make-rng rng-next! rng-float! rng-int! erf erfc uniform-pdf uniform-cdf uniform-sample!)
 
   (import math/core)   ; pi, square (used later)
 
@@ -84,4 +84,19 @@
       (let ((threshold (- 4294967296 (modulo 4294967296 range))))
         (let loop ()
           (let ((x (rng-next! st)))
-            (if (< x threshold) (+ lo (modulo x range)) (loop))))))))
+            (if (< x threshold) (+ lo (modulo x range)) (loop)))))))
+
+  ;; zepo-7uu: uniform distribution on [a,b].
+  (define (uniform-pdf x a b)
+    (if (< b a) (error "uniform-pdf: b must be >= a"))
+    (if (or (< x a) (> x b)) 0.0 (/ 1.0 (- b a))))
+
+  (define (uniform-cdf x a b)
+    (if (< b a) (error "uniform-cdf: b must be >= a"))
+    (cond ((< x a) 0.0)
+          ((> x b) 1.0)
+          (else (/ (- x a) (- b a)))))
+
+  (define (uniform-sample! st a b)
+    (if (< b a) (error "uniform-sample!: b must be >= a"))
+    (+ a (* (- b a) (rng-float! st)))))

@@ -17,6 +17,19 @@
       (is (>= x 0))
       (is (< x 4294967296)))))
 
+(deftest dist/uniform
+  (is (abs-close? (uniform-pdf 5 0 10) 0.1 1e-9))
+  (is (abs-close? (uniform-pdf -1 0 10) 0.0 1e-9))
+  (is (abs-close? (uniform-cdf 2.5 0 10) 0.25 1e-9))
+  (is (abs-close? (uniform-cdf -5 0 10) 0.0 1e-9))
+  (is (abs-close? (uniform-cdf 99 0 10) 1.0 1e-9))
+  (let ((r (make-rng 3)))
+    (let loop ((i 0))
+      (if (< i 1000)
+          (let ((x (uniform-sample! r 2 8)))
+            (is (>= x 2)) (is (< x 8)) (loop (+ i 1))))))
+  (throws (uniform-pdf 5 10 0)))           ; b < a
+
 (deftest dist/erf
   (is (abs-close? (erf 0)  0.0       1e-7))
   (is (abs-close? (erf 1)  0.8427007 1e-6))
