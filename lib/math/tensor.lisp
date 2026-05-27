@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice t+ t- t* t/ t-map t-zip t-equal?)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -84,6 +84,48 @@
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
             (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: elementwise. Both tensors (identical shape) OR tensor + scalar.
+  (define (same-shape? a b)
+    (equal? (vector->list (tensor-shape-vec a)) (vector->list (tensor-shape-vec b))))
+
+  (define (t-zip f a b)
+    (cond
+      ((and (tensor? a) (tensor? b))
+       (if (not (same-shape? a b)) (error "t-zip: shape mismatch"))
+       (let* ((da (tensor-data a)) (db (tensor-data b)) (n (vector-length da))
+              (out (make-vector n 0)))
+         (let loop ((i 0))
+           (if (= i n) (make-tensor (vector-copy (tensor-shape-vec a)) out)
+               (begin (vector-set! out i (f (vector-ref da i) (vector-ref db i)))
+                      (loop (+ i 1)))))))
+      ((and (tensor? a) (number? b))
+       (let* ((da (tensor-data a)) (n (vector-length da)) (out (make-vector n 0)))
+         (let loop ((i 0))
+           (if (= i n) (make-tensor (vector-copy (tensor-shape-vec a)) out)
+               (begin (vector-set! out i (f (vector-ref da i) b)) (loop (+ i 1)))))))
+      ((and (number? a) (tensor? b))
+       (let* ((db (tensor-data b)) (n (vector-length db)) (out (make-vector n 0)))
+         (let loop ((i 0))
+           (if (= i n) (make-tensor (vector-copy (tensor-shape-vec b)) out)
+               (begin (vector-set! out i (f a (vector-ref db i))) (loop (+ i 1)))))))
+      (else (error "t-zip: operands must be tensors or numbers"))))
+
+  (define (t+ a b) (t-zip + a b))
+  (define (t- a b) (t-zip - a b))
+  (define (t* a b) (t-zip * a b))
+  (define (t/ a b) (t-zip / a b))
+
+  (define (t-map f t)
+    (let* ((d (tensor-data t)) (n (vector-length d)) (out (make-vector n 0)))
+      (let loop ((i 0))
+        (if (= i n) (make-tensor (vector-copy (tensor-shape-vec t)) out)
+            (begin (vector-set! out i (f (vector-ref d i))) (loop (+ i 1)))))))
+
+  (define (t-equal? a b)
+    (and (tensor? a) (tensor? b)
+         (same-shape? a b)
+         (equal? (vector->list (tensor-data a)) (vector->list (tensor-data b)))))
 
   ;; zepo-py2: copy the sub-tensor along one axis over [start,end).
   (define (bump-axis idx axis start)

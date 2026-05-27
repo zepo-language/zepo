@@ -71,7 +71,7 @@
     (=check (shape b) (list 3 2))
     (=check (tensor->nested b) (list (list 1 4) (list 2 5) (list 3 6))))
   (let ((a (from-nested (list (list 1 2) (list 3 4)))))
-    (=check (tensor->nested (transpose (transpose a))) (list (list 1 2) (list 3 4)))))
+    (is (t-equal? (transpose (transpose a)) a))))
 
 (deftest tensor/slice
   (let* ((a (from-nested (list (list 1 2 3 4)        ; 3x4
@@ -86,7 +86,21 @@
   (throws (slice (arange 5) 0 2 2))     ; start not < end
   (throws (slice (arange 5) 0 0 9)))    ; end > dim
 
+(deftest tensor/elementwise
+  (let ((a (from-nested (list (list 1 2) (list 3 4))))
+        (b (from-nested (list (list 10 20) (list 30 40)))))
+    (=check (tensor->nested (t+ a b)) (list (list 11 22) (list 33 44)))
+    (=check (tensor->nested (t* a 2)) (list (list 2 4) (list 6 8)))
+    (=check (tensor->nested (t* 2 a)) (list (list 2 4) (list 6 8)))
+    (=check (tensor->nested (t- b a)) (list (list 9 18) (list 27 36)))
+    (=check (tensor->nested (t-map (lambda (x) (* x x)) a)) (list (list 1 4) (list 9 16)))
+    (=check (tensor->nested (t-zip max a b)) (list (list 10 20) (list 30 40)))
+    (is (t-equal? a a))
+    (is (not (t-equal? a b))))
+  (throws (t+ (from-nested (list 1 2 3)) (from-nested (list 1 2)))))  ; shape mismatch
+
 (run-tests)
+
 
 
 
