@@ -1,5 +1,6 @@
 (module math/stats
-  (export ->vec sum mean variance stdev pvariance pstdev)
+  (export ->vec sum mean variance stdev pvariance pstdev
+          median quantile percentile span iqr mode)
 
   (import math/core)    ; square, abs-close? (used later)
   (import math/linear)  ; solve, matvec, mat (used by ols)
@@ -35,4 +36,49 @@
       (/ (ss v) (- n 1))))
 
   (define (pstdev xs) (sqrt (pvariance xs)))
-  (define (stdev  xs) (sqrt (variance  xs))))
+  (define (stdev  xs) (sqrt (variance  xs)))
+
+  ;; zepo-7uu: sorted copy as a vector (sort works on lists).
+  (define (sorted-vec xs) (list->vector (sort (vector->list (->vec xs)) <)))
+
+  ;; type-7 quantile with linear interpolation (numpy/R default).
+  (define (quantile xs q)
+    (if (or (< q 0) (> q 1)) (error "quantile: q must be in [0,1]"))
+    (let* ((s (sorted-vec xs)) (n (vector-length s)))
+      (if (= n 0) (error "quantile: empty sequence"))
+      (if (= n 1) (vector-ref s 0)
+          (let* ((h  (* (- n 1) q))
+                 (lo (floor h))
+                 (frac (- h lo))
+                 (i (inexact->exact lo)))
+            (if (>= i (- n 1)) (vector-ref s (- n 1))
+                (+ (vector-ref s i)
+                   (* frac (- (vector-ref s (+ i 1)) (vector-ref s i)))))))))
+
+  (define (percentile xs p) (quantile xs (/ p 100)))
+  (define (median xs)       (quantile xs 0.5))
+  (define (iqr xs)          (- (quantile xs 0.75) (quantile xs 0.25)))
+
+  (define (span xs)
+    (let* ((v (->vec xs)) (n (vector-length v)))
+      (if (= n 0) (error "span: empty sequence"))
+      (let loop ((i 1) (lo (vector-ref v 0)) (hi (vector-ref v 0)))
+        (if (= i n) (- hi lo)
+            (let ((x (vector-ref v i)))
+              (loop (+ i 1) (if (< x lo) x lo) (if (> x hi) x hi)))))))
+
+  ;; mode: most frequent value; smallest value on a tie (operates on sorted run-lengths).
+  (define (mode xs)
+    (let* ((s (sorted-vec xs)) (n (vector-length s)))
+      (if (= n 0) (error "mode: empty sequence"))
+      (let loop ((i 1)
+                 (cur (vector-ref s 0)) (cur-cnt 1)
+                 (best (vector-ref s 0)) (best-cnt 1))
+        (if (= i n) best
+            (let ((x (vector-ref s i)))
+              (if (= x cur)
+                  (let ((c (+ cur-cnt 1)))
+                    (if (> c best-cnt)
+                        (loop (+ i 1) cur c x c)
+                        (loop (+ i 1) cur c best best-cnt)))
+                  (loop (+ i 1) x 1 best best-cnt))))))))
