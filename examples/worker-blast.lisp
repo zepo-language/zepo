@@ -125,5 +125,96 @@
           (channel-send! in 'done)                       ; sentinel: stop worker loop
           (check "20 hashtables streamed, products summed" sum 420)))))
 
-;; ── Summary ─────────────────────────────────────────────────────────────────
+;; ── Correctness summary ─────────────────────────────────────────────────────
 (display "ALL ") (display checks) (display " CHECKS PASSED") (newline)
+(newline)
+
+;; ── Benchmark phase ─────────────────────────────────────────────────────────
+;; This example doubles as a benchmark. Each workload is timed with
+;; current-time-ms (ms resolution, so iteration counts are sized to run for
+;; tens of ms). Tune volume with a numeric arg:  zepo worker-blast.lisp -- 4
+(define (parse-scale args)                                 ; zepo-782
+  (let loop ((a args) (found 1))
+    (if (null? a) found
+        (let ((n (string->number (car a))))
+          (loop (cdr a) (if (and n (> n 0)) n found))))))
+(define scale (parse-scale (argv)))
+
+(define (bench label ops thunk)
+  ;; ops = number of logical operations the thunk performs; thunk does the work.
+  (let ((t0 (current-time-ms)))
+    (thunk)
+    (let ((dt (- (current-time-ms) t0)))
+      (display "  ") (display label) (display ": ")
+      (display ops) (display " ops in ") (display dt) (display " ms")
+      (if (> dt 0)
+          (begin (display "  (")
+                 (display (quotient (* ops 1000) dt))
+                 (display " ops/sec)")))
+      (newline))))
+
+(display "Benchmark (scale=") (display scale) (display ")") (newline)
+
+;; B1: worker spawn + form-entry compile + one channel roundtrip, serially so
+;; only one worker is live at a time. Measures spawn/compile/teardown cost.
+(define spawn-iters (* 100 scale))
+(bench "spawn+form-entry roundtrip" spawn-iters
+  (lambda ()
+    (let loop ((i 0))
+      (if (< i spawn-iters)
+          (let ((in (make-channel 1)) (out (make-channel 1)))
+            (spawn-worker
+              `(lambda (in out)
+                 (channel-send! out (* (channel-recv! in) 2)))
+              in out)
+            (channel-send! in i)
+            (channel-recv! out)
+            (loop (+ i 1)))))))
+
+;; B2: captured-form streaming through one long-lived worker. The form is
+;; compiled once with captured constants baked in; we then stream scalars and
+;; measure channel + compute throughput (no per-op spawn).
+(define stream-iters (* 5000 scale))
+(define k 7)
+(bench "captured-form scalar stream" stream-iters
+  (lambda ()
+    (let ((in (make-channel 8)) (out (make-channel 8)))
+      (spawn-worker
+        `(lambda (in out)
+           (let loop ()
+             (let ((m (channel-recv! in)))
+               (if (number? m)
+                   (begin (channel-send! out (+ (* m ,k) ,offset)) (loop))))))
+        in out)
+      (let loop ((i 0))
+        (if (< i stream-iters)
+            (begin (channel-send! in i) (channel-recv! out) (loop (+ i 1)))
+            (channel-send! in 'done))))))
+
+;; B3: portable hashtable serialize/deserialize throughput. Each op sends a
+;; multi-entry table with a nested list value in, and receives a table back.
+(define ht-iters (* 2000 scale))
+(bench "portable-hashtable roundtrip" ht-iters
+  (lambda ()
+    (let ((in (make-channel 8)) (out (make-channel 8)))
+      (spawn-worker
+        `(lambda (in out)
+           (let loop ()
+             (let ((m (channel-recv! in)))
+               (if (hash-table? m)
+                   (let ((r (make-hash-table)))
+                     (hash-set! r "sum" (+ (hash-get m "a" 0) (hash-get m "b" 0)))
+                     (hash-set! r "tags" (hash-get m "tags" (quote ())))
+                     (channel-send! out r)
+                     (loop))))))
+        in out)
+      (let loop ((i 0))
+        (if (< i ht-iters)
+            (let ((m (make-hash-table)))
+              (hash-set! m "a" i)
+              (hash-set! m "b" (* i 2))
+              (hash-set! m "tags" (list "x" "y" "z"))
+              (channel-send! in m)
+              (channel-recv! out)
+              (loop (+ i 1)))
+            (channel-send! in 'done))))))
