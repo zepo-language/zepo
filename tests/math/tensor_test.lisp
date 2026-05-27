@@ -15,4 +15,15 @@
   (is (not (tensor? 5)))
   (is (not (tensor? (list 1 2)))))
 
+(deftest tensor/factories
+  (=check (shape (zeros (list 2 2))) (list 2 2))
+  (=check (size (zeros (list 2 2))) 4)
+  (=check (shape (ones (list 3))) (list 3))
+  (=check (shape (full (list 2 2) 7)) (list 2 2))
+  (let ((a (arange 5)))
+    (=check (shape a) (list 5))
+    (=check (size a) 5))
+  (throws (arange 0)))
+
 (run-tests)
+

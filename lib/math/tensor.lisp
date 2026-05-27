@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size)
+  (export tensor tensor? shape rank size zeros ones full arange)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -62,4 +62,26 @@
 
   (define (shape t) (vector->list (tensor-shape-vec t)))
   (define (rank t)  (vector-length (tensor-shape-vec t)))
-  (define (size t)  (vector-length (tensor-data t))))
+  (define (size t)  (vector-length (tensor-data t)))
+
+  ;; zepo-py2: factory constructors.
+  (define (full shape v)
+    (let ((sv (->vec shape)))
+      (let dloop ((i 0))
+        (if (< i (vector-length sv))
+            (let ((d (vector-ref sv i)))
+              (if (or (not (integer? d)) (< d 1))
+                  (error "full: every dimension must be an integer >= 1"))
+              (dloop (+ i 1)))))
+      (make-tensor sv (make-vector (prod-vec sv) v))))
+
+  (define (zeros shape) (full shape 0))
+  (define (ones  shape) (full shape 1))
+
+  (define (arange n)
+    (if (or (not (integer? n)) (< n 1)) (error "arange: n must be an integer >= 1"))
+    (let ((dv (make-vector n 0)))
+      (let loop ((i 0))
+        (if (= i n) (make-tensor (vector n) dv)
+            (begin (vector-set! dv i i) (loop (+ i 1))))))))
+
