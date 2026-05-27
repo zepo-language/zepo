@@ -131,6 +131,9 @@
                   (from-nested (list (list 1 2 3)))))             ; 1x3 (inner 2 != 1)
   (throws (matmul (arange 4) (arange 4))))   ; not rank 2
 
+(deftest tensor/full-nonnumeric
+  (throws (full (list 2 2) "oops")))
+
 (deftest tensor/errors
   (throws (tensor (list 2 2) (list 1 2 3)))     ; data length != product
   (throws (tensor (list 0 2) (list)))           ; dim < 1

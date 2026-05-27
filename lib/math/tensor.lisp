@@ -73,6 +73,7 @@
               (if (or (not (integer? d)) (< d 1))
                   (error "full: every dimension must be an integer >= 1"))
               (dloop (+ i 1)))))
+      (if (not (number? v)) (error "full: fill value must be numeric"))
       (make-tensor sv (make-vector (prod-vec sv) v))))
 
   (define (zeros shape) (full shape 0))
