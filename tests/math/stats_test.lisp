@@ -49,4 +49,11 @@
     (is (abs-close? (vector-ref u 1) 0.5 1e-9))
     (is (abs-close? (vector-ref u 2) 1.0 1e-9))))
 
+(deftest stats/linreg
+  (let ((m (linreg (vector 1 2 3 4) (vector 3 5 7 9))))   ; y = 2x + 1 exactly
+    (is (abs-close? (hash-get m 'slope 0)     2.0 1e-9))
+    (is (abs-close? (hash-get m 'intercept 0) 1.0 1e-9))
+    (is (abs-close? (hash-get m 'r2 0)        1.0 1e-9))
+    (=check (hash-get m 'n 0) 4)))
+
 (run-tests)

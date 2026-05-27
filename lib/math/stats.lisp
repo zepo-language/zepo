@@ -2,7 +2,7 @@
   (export ->vec sum mean variance stdev pvariance pstdev
           median quantile percentile span iqr mode
           covariance pcovariance correlation
-          standardize normalize)
+          standardize normalize linreg)
 
   (import math/core)    ; square, abs-close? (used later)
   (import math/linear)  ; solve, matvec, mat (used by ols)
@@ -48,12 +48,14 @@
     (if (or (< q 0) (> q 1)) (error "quantile: q must be in [0,1]"))
     (let* ((s (sorted-vec xs)) (n (vector-length s)))
       (if (= n 0) (error "quantile: empty sequence"))
-      (if (= n 1) (vector-ref s 0)
-          (let* ((h  (* (- n 1) q))
-                 (lo (floor h))
+      (if (= n 1)
+          (vector-ref s 0)
+          (let* ((h    (* (- n 1) q))
+                 (lo   (floor h))
                  (frac (- h lo))
-                 (i (inexact->exact lo)))
-            (if (>= i (- n 1)) (vector-ref s (- n 1))
+                 (i    (inexact->exact lo)))
+            (if (>= i (- n 1))
+                (vector-ref s (- n 1))
                 (+ (vector-ref s i)
                    (* frac (- (vector-ref s (+ i 1)) (vector-ref s i)))))))))
 
@@ -65,18 +67,20 @@
     (let* ((v (->vec xs)) (n (vector-length v)))
       (if (= n 0) (error "span: empty sequence"))
       (let loop ((i 1) (lo (vector-ref v 0)) (hi (vector-ref v 0)))
-        (if (= i n) (- hi lo)
+        (if (= i n)
+            (- hi lo)
             (let ((x (vector-ref v i)))
               (loop (+ i 1) (if (< x lo) x lo) (if (> x hi) x hi)))))))
 
-  ;; mode: most frequent value; smallest value on a tie (operates on sorted run-lengths).
+  ;; mode: most frequent value; smallest value on a tie.
   (define (mode xs)
     (let* ((s (sorted-vec xs)) (n (vector-length s)))
       (if (= n 0) (error "mode: empty sequence"))
       (let loop ((i 1)
                  (cur (vector-ref s 0)) (cur-cnt 1)
                  (best (vector-ref s 0)) (best-cnt 1))
-        (if (= i n) best
+        (if (= i n)
+            best
             (let ((x (vector-ref s i)))
               (if (= x cur)
                   (let ((c (+ cur-cnt 1)))
@@ -92,7 +96,8 @@
           (error "covariance: sequences differ in length"))
       (let ((mx (mean vx)) (my (mean vy)))
         (let loop ((i 0) (acc 0))
-          (if (= i n) acc
+          (if (= i n)
+              acc
               (loop (+ i 1)
                     (+ acc (* (- (vector-ref vx i) mx)
                               (- (vector-ref vy i) my)))))))))
@@ -118,9 +123,11 @@
       (if (= sd 0) (error "standardize: zero variance"))
       (let ((out (make-vector n 0)))
         (let loop ((i 0))
-          (if (= i n) out
-              (begin (vector-set! out i (/ (- (vector-ref v i) m) sd))
-                     (loop (+ i 1))))))))
+          (if (= i n)
+              out
+              (begin
+                (vector-set! out i (/ (- (vector-ref v i) m) sd))
+                (loop (+ i 1))))))))
 
   ;; min-max scale into [0,1].
   (define (normalize xs)
@@ -134,6 +141,32 @@
               (if (= lo hi) (error "normalize: zero range"))
               (let ((out (make-vector n 0)) (rng (- hi lo)))
                 (let fill ((j 0))
-                  (if (= j n) out
-                      (begin (vector-set! out j (/ (- (vector-ref v j) lo) rng))
-                             (fill (+ j 1))))))))))))
+                  (if (= j n)
+                      out
+                      (begin
+                        (vector-set! out j (/ (- (vector-ref v j) lo) rng))
+                        (fill (+ j 1)))))))))))
+
+  ;; zepo-7uu: ordinary least squares for a single predictor.
+  (define (linreg xs ys)
+    (let* ((vx (->vec xs)) (vy (->vec ys)) (n (vector-length vx)))
+      (if (not (= n (vector-length vy)))
+          (error "linreg: sequences differ in length"))
+      (if (< n 2) (error "linreg: needs >= 2 points"))
+      (let ((mx (mean vx)) (my (mean vy)))
+        (let loop ((i 0) (sxy 0) (sxx 0))
+          (if (= i n)
+              (begin
+                (if (= sxx 0) (error "linreg: x has zero variance"))
+                (let* ((slope     (/ sxy sxx))
+                       (intercept (- my (* slope mx)))
+                       (r         (correlation vx vy)))
+                  (let ((m (make-hash-table)))
+                    (hash-set! m 'slope slope)
+                    (hash-set! m 'intercept intercept)
+                    (hash-set! m 'r2 (square r))
+                    (hash-set! m 'n n)
+                    m)))
+              (let ((dx (- (vector-ref vx i) mx))
+                    (dy (- (vector-ref vy i) my)))
+                (loop (+ i 1) (+ sxy (* dx dy)) (+ sxx (* dx dx))))))))))
