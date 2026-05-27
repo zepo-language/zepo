@@ -131,7 +131,19 @@
                   (from-nested (list (list 1 2 3)))))             ; 1x3 (inner 2 != 1)
   (throws (matmul (arange 4) (arange 4))))   ; not rank 2
 
+(deftest tensor/errors
+  (throws (tensor (list 2 2) (list 1 2 3)))     ; data length != product
+  (throws (tensor (list 0 2) (list)))           ; dim < 1
+  (throws (tensor (list 2) (list "a" "b")))     ; non-numeric data
+  (throws (arange 0))                           ; n < 1
+  (throws (from-nested (list (list 1 2) (list 3))))  ; ragged
+  (throws (reshape (arange 6) (list 4)))        ; size mismatch
+  (throws (slice (arange 5) 0 3 1))             ; start >= end
+  (throws (t* (from-nested (list 1 2)) (from-nested (list 1 2 3))))  ; shape mismatch
+  (throws (matmul (arange 3) (arange 3))))      ; not rank 2
+
 (run-tests)
+
 
 
 
