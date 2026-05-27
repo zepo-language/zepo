@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean t-max t-min)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean t-max t-min matmul)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -281,6 +281,31 @@
       (if (not (= (length flat) (prod-vec sv)))
           (error "from-nested: ragged or inconsistent nested list"))
       (tensor sv flat)))
+
+  ;; zepo-py2: 2-D matrix multiply (m k).(k n) -> (m n).
+  (define (matmul a b)
+    (let ((sa (tensor-shape-vec a)) (sb (tensor-shape-vec b)))
+      (if (or (not (= (vector-length sa) 2)) (not (= (vector-length sb) 2)))
+          (error "matmul: both operands must be rank 2"))
+      (let ((m (vector-ref sa 0)) (k (vector-ref sa 1))
+            (k2 (vector-ref sb 0)) (n (vector-ref sb 1)))
+        (if (not (= k k2)) (error "matmul: inner dimensions must match"))
+        (let ((da (tensor-data a)) (db (tensor-data b)) (out (make-vector (* m n) 0)))
+          (let iloop ((i 0))
+            (if (= i m)
+                (make-tensor (list->vector (list m n)) out)
+                (begin
+                  (let jloop ((j 0))
+                    (if (< j n)
+                        (begin
+                          (let ((s (let ploop ((p 0) (acc 0))
+                                     (if (= p k) acc
+                                         (ploop (+ p 1)
+                                                (+ acc (* (vector-ref da (+ (* i k) p))
+                                                          (vector-ref db (+ (* p n) j)))))))))
+                            (vector-set! out (+ (* i n) j) s))
+                          (jloop (+ j 1)))))
+                  (iloop (+ i 1)))))))))
 
   ;; rebuild nested lists from shape + flat data using offset arithmetic.
   (define (tensor->nested t)

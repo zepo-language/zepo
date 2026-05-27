@@ -119,7 +119,20 @@
   (let ((t3 (from-nested (list (list (list 1 2) (list 3 4)) (list (list 5 6) (list 7 8))))))
     (=check (tensor->nested (t-sum t3 2)) (list (list 3 7) (list 11 15)))))
 
+(deftest tensor/matmul
+  (let ((a (from-nested (list (list 1 2 3) (list 4 5 6))))      ; 2x3
+        (b (from-nested (list (list 7 8) (list 9 10) (list 11 12)))))  ; 3x2
+    ;; [[1*7+2*9+3*11, 1*8+2*10+3*12],[4*7+5*9+6*11, 4*8+5*10+6*12]]
+    (=check (tensor->nested (matmul a b)) (list (list 58 64) (list 139 154))))
+  (let ((id (from-nested (list (list 1 0) (list 0 1))))
+        (m  (from-nested (list (list 5 6) (list 7 8)))))
+    (is (t-equal? (matmul id m) m)))
+  (throws (matmul (from-nested (list (list 1 2) (list 3 4)))      ; 2x2
+                  (from-nested (list (list 1 2 3)))))             ; 1x3 (inner 2 != 1)
+  (throws (matmul (arange 4) (arange 4))))   ; not rank 2
+
 (run-tests)
+
 
 
 
