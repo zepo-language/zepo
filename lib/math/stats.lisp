@@ -2,7 +2,7 @@
   (export ->vec sum mean variance stdev pvariance pstdev
           median quantile percentile span iqr mode
           covariance pcovariance correlation
-          standardize normalize linreg ols)
+          standardize normalize linreg ols summary)
 
   (import math/core)    ; square, abs-close? (used later)
   (import math/linear)  ; solve, matvec, mat, rows->mat, mat-rows, mat-cols, mat-ref, dot
@@ -186,7 +186,6 @@
            (cols (mat-cols X)))
       (if (not (= rows (vector-length vy)))
           (error "ols: X rows must match y length"))
-      ;; build cvecs: a vector of column vectors
       (let ((cvecs (let loop ((j 0) (acc '()))
                      (if (= j cols)
                          (list->vector (reverse acc))
@@ -216,4 +215,19 @@
                   m)
                 (loop (+ k 1)
                       (+ ss-res (square (- (vector-ref vy k) (vector-ref yhat k))))
-                      (+ ss-tot (square (- (vector-ref vy k) ybar)))))))))))
+                      (+ ss-tot (square (- (vector-ref vy k) ybar))))))))))
+
+  ;; zepo-7uu: five-number summary plus n, mean, stdev.
+  (define (summary xs)
+    (let* ((v (->vec xs)) (n (vector-length v)))
+      (if (= n 0) (error "summary: empty sequence"))
+      (let ((s (sorted-vec v)) (m (make-hash-table)))
+        (hash-set! m 'n n)
+        (hash-set! m 'mean (mean v))
+        (hash-set! m 'stdev (if (< n 2) 0.0 (stdev v)))
+        (hash-set! m 'min (vector-ref s 0))
+        (hash-set! m 'max (vector-ref s (- n 1)))
+        (hash-set! m 'q1 (quantile v 0.25))
+        (hash-set! m 'median (quantile v 0.5))
+        (hash-set! m 'q3 (quantile v 0.75))
+        m))))

@@ -67,4 +67,14 @@
     (is (abs-close? (vector-ref c 1) 2.0 1e-7))
     (is (abs-close? (hash-get m 'r2 0) 1.0 1e-7))))
 
+(deftest stats/summary
+  (let ((s (summary (vector 1 2 3 4 5 6 7 8))))
+    (=check (hash-get s 'n 0) 8)
+    (is (abs-close? (hash-get s 'mean 0)   4.5 1e-9))
+    (is (abs-close? (hash-get s 'min 0)    1.0 1e-9))
+    (is (abs-close? (hash-get s 'max 0)    8.0 1e-9))
+    (is (abs-close? (hash-get s 'median 0) 4.5 1e-9))
+    (is (abs-close? (hash-get s 'q1 0)     2.75 1e-9))
+    (is (abs-close? (hash-get s 'q3 0)     6.25 1e-9))))
+
 (run-tests)
