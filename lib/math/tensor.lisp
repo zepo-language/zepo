@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -84,6 +84,32 @@
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
             (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: copy the sub-tensor along one axis over [start,end).
+  (define (bump-axis idx axis start)
+    (let loop ((i 0) (rest idx) (acc (quote ())))
+      (if (null? rest) (reverse acc)
+          (loop (+ i 1) (cdr rest)
+                (cons (if (= i axis) (+ (car rest) start) (car rest)) acc)))))
+
+  (define (slice t axis start end)
+    (let* ((sv (tensor-shape-vec t)) (r (vector-length sv)))
+      (if (or (not (integer? axis)) (< axis 0) (>= axis r))
+          (error "slice: axis out of range"))
+      (let ((dim (vector-ref sv axis)))
+        (if (not (and (integer? start) (integer? end)
+                      (<= 0 start) (< start end) (<= end dim)))
+            (error "slice: bad range (need 0 <= start < end <= dim)"))
+        (let ((out-sv (vector-copy sv)))
+          (vector-set! out-sv axis (- end start))
+          (let* ((n (prod-vec out-sv)) (dv (tensor-data t)) (out (make-vector n 0)))
+            (let loop ((flat 0))
+              (if (= flat n) (make-tensor out-sv out)
+                  (let* ((oidx (unflatten out-sv flat))
+                         (iidx (bump-axis oidx axis start))
+                         (ioff (flat-offset sv iidx)))
+                    (vector-set! out flat (vector-ref dv ioff))
+                    (loop (+ flat 1))))))))))
 
   ;; zepo-py2: reverse all axes; copy with remapped indices.
   (define (reverse-vec v) (list->vector (reverse (vector->list v))))

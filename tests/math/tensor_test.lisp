@@ -73,7 +73,21 @@
   (let ((a (from-nested (list (list 1 2) (list 3 4)))))
     (=check (tensor->nested (transpose (transpose a))) (list (list 1 2) (list 3 4)))))
 
+(deftest tensor/slice
+  (let* ((a (from-nested (list (list 1 2 3 4)        ; 3x4
+                               (list 5 6 7 8)
+                               (list 9 10 11 12))))
+         (b (slice a 1 1 3)))                          ; cols [1,3) -> 3x2
+    (=check (shape b) (list 3 2))
+    (=check (tensor->nested b) (list (list 2 3) (list 6 7) (list 10 11))))
+  (let ((a (from-nested (list (list 1 2) (list 3 4) (list 5 6)))))  ; 3x2
+    (=check (tensor->nested (slice a 0 1 3)) (list (list 3 4) (list 5 6))))  ; rows [1,3)
+  (throws (slice (arange 5) 1 0 2))     ; axis out of range
+  (throws (slice (arange 5) 0 2 2))     ; start not < end
+  (throws (slice (arange 5) 0 0 9)))    ; end > dim
+
 (run-tests)
+
 
 
 
