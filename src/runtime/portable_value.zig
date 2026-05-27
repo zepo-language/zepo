@@ -372,7 +372,9 @@ pub fn serializeToChannel(val: Value, alloc: std.mem.Allocator) anyerror!*Channe
     if (value_mod.isFixnum(val)) { cv.* = .{ .fixnum = value_mod.fixnumVal(val) }; return cv; }
     if (value_mod.isChar(val))   { cv.* = .{ .char = value_mod.charVal(val) };     return cv; }
 
-    if (!value_mod.isPtr(val)) { alloc.destroy(cv); return error.NonPortableValue; }
+    // zepo-qay/zepo-uee: rely on the top-level `errdefer alloc.destroy(cv)` to
+    // free cv exactly once; an explicit destroy here double-freed it (abort).
+    if (!value_mod.isPtr(val)) return error.NonPortableValue;
 
     if (runtime.isFloat(val)) {
         cv.* = .{ .float = runtime.floatVal(val) };
@@ -451,7 +453,8 @@ pub fn serializeToChannel(val: Value, alloc: std.mem.Allocator) anyerror!*Channe
         return cv;
     }
 
-    alloc.destroy(cv);
+    // zepo-qay/zepo-uee: errdefer above frees cv; an explicit destroy here
+    // double-freed it for non-portable heap values (e.g. closures) -> abort.
     return error.NonPortableValue;
 }
 
@@ -702,4 +705,18 @@ test "portable: multi-entry hashtable with nested vector value roundtrips" {
     try std.testing.expectEqual(value_mod.fixnum(10), runtime.vectorGet(rv, 0));
     try std.testing.expectEqual(value_mod.fixnum(20), runtime.vectorGet(rv, 1));
     try std.testing.expectEqual(value_mod.fixnum(30), runtime.vectorGet(rv, 2));
+}
+
+test "serialize: non-portable value frees cv exactly once (zepo-qay/zepo-uee)" {
+    // A foreign object is non-portable. serializeToChannel must return
+    // error.NonPortableValue and free its ChannelValue box exactly once — the
+    // old explicit alloc.destroy(cv) on this path raced the top-level errdefer
+    // into a double free (libc abort / SIGTRAP when sending a closure over a
+    // channel). std.testing.allocator detects a double free, so this test
+    // crashes pre-fix and passes post-fix.
+    const alloc = std.testing.allocator;
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    const foreign = try runtime.makeForeign(&gc, null, null, 0xdead);
+    try std.testing.expectError(error.NonPortableValue, serializeToChannel(foreign, alloc));
 }
