@@ -3056,6 +3056,34 @@ Root finding.
 (secant-root f 1.0 2.0)       ; => ≈ 1.414
 ```
 
+### math/stats
+
+Descriptive statistics, paired statistics, transforms, and linear regression over numeric **vectors** (lists are accepted and coerced). Variance/stdev/covariance default to the **sample** estimator (`/(n-1)`); population variants are `p`-prefixed (`/n`).
+
+Exports: `mean`, `sum`, `variance`, `stdev`, `pvariance`, `pstdev` (variance/stdev, sample & population), `median`, `quantile` (q∈[0,1], type-7), `percentile`, `mode`, `span` (max−min), `iqr`, `covariance`, `pcovariance`, `correlation` (Pearson r), `standardize` (z-scores), `normalize` (min-max to [0,1]), `linreg` (simple OLS → hashtable `{slope intercept r2 n}`), `ols` (multivariate via normal equations → hashtable `{coeffs r2}`), `summary` (→ hashtable `{n mean stdev min q1 median q3 max}`). Empty input, `n<2` for sample variance/covariance/correlation, out-of-range quantile, zero variance, and unequal-length pairs all raise an explicit error.
+
+```scheme
+(import math/stats)
+(mean (vector 1 2 3 4))            ; => 2.5
+(stdev (vector 2 4 4 4 5 5 7 9))   ; => 2.138... (sample)
+(correlation (vector 1 2 3 4) (vector 3 5 7 9))  ; => 1.0
+(hash-get (linreg (vector 1 2 3 4) (vector 3 5 7 9)) 'slope 0)  ; => 2.0
+```
+
+### math/dist
+
+A seeded `xoshiro128**` pseudo-random generator (explicit generator objects only — no global RNG) plus the error function and the uniform and normal distributions.
+
+Exports: `make-rng` (seed → generator), `rng-next!` (raw 32-bit draw), `rng-float!` ([0,1)), `rng-int!` (`lo hi` → integer in [lo,hi), unbiased), `erf`, `erfc`, `uniform-pdf`/`uniform-cdf`/`uniform-sample!`, `normal-pdf`/`normal-cdf`/`normal-sample!`. Samplers take an explicit `rng` (so runs are reproducible). `sigma<=0` and `b<=a` raise errors.
+
+```scheme
+(import math/dist)
+(define r (make-rng 42))
+(rng-int! r 1 7)               ; => a die roll in 1..6
+(normal-cdf 1 0 1)             ; => ≈ 0.8413
+(normal-sample! r 100 15)      ; => one N(100,15) draw
+```
+
 ---
 
 ## Zig FFI
