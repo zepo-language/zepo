@@ -1,6 +1,22 @@
 (import test)
 (import math/core)
 (import math/dist)
+(import math/stats)   ; test-time only: validate sample moments
+
+(deftest dist/sampling-moments
+  ;; 10k normal(5,2) draws -> sample mean ~5, sample stdev ~2
+  (let ((r (make-rng 12345)) (n 10000))
+    (let ((xs (make-vector n 0)))
+      (let loop ((i 0))
+        (if (< i n) (begin (vector-set! xs i (normal-sample! r 5 2)) (loop (+ i 1)))))
+      (is (abs-close? (mean xs)  5.0 0.1))
+      (is (abs-close? (stdev xs) 2.0 0.1))))
+  ;; 10k uniform(0,10) draws -> mean ~5
+  (let ((r (make-rng 678)) (n 10000))
+    (let ((xs (make-vector n 0)))
+      (let loop ((i 0))
+        (if (< i n) (begin (vector-set! xs i (uniform-sample! r 0 10)) (loop (+ i 1)))))
+      (is (abs-close? (mean xs) 5.0 0.15)))))
 
 (deftest dist/rng-determinism
   ;; same seed -> identical streams
