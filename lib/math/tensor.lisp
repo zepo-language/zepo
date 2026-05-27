@@ -1,5 +1,5 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape)
+  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -84,6 +84,23 @@
       (let loop ((i 0))
         (if (= i n) (make-tensor (vector n) dv)
             (begin (vector-set! dv i i) (loop (+ i 1)))))))
+
+  ;; zepo-py2: reverse all axes; copy with remapped indices.
+  (define (reverse-vec v) (list->vector (reverse (vector->list v))))
+
+  (define (transpose t)
+    (let* ((sv (tensor-shape-vec t))
+           (out-sv (reverse-vec sv))
+           (dv (tensor-data t))
+           (n (vector-length dv))
+           (out (make-vector n 0)))
+      (let loop ((flat 0))
+        (if (= flat n) (make-tensor out-sv out)
+            (let* ((idx (unflatten sv flat))
+                   (oidx (reverse idx))
+                   (ooff (flat-offset out-sv oidx)))
+              (vector-set! out ooff (vector-ref dv flat))
+              (loop (+ flat 1)))))))
 
   ;; zepo-py2: same total size; SHARES the data buffer (row-major unchanged).
   (define (reshape t shape)
