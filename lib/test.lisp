@@ -3,7 +3,11 @@
   (export
     deftest is =check throws
     run-tests run-tests/tap
-    clear-tests! make-suite)
+    clear-tests! make-suite
+    ;; zepo-zc0: macros expand into the importer's scope, so their helpers
+    ;; must be public. Until macros track a home-module for hygenic name
+    ;; resolution, these are formally part of the API surface.
+    register-test is-impl =check-impl throws-impl)
 
   (define *tests* '())
   (define *passed* 0)

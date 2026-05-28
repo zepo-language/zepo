@@ -69,6 +69,10 @@ pub const Op = union(enum) {
 
     load_global: struct { dst: Reg, name: []const u8 },
     store_global: struct { name: []const u8, src: Reg },
+    // zepo-zc0: (set! …) on a global — distinct from define so the VM can
+    // resolve the existing binding through the active/fallback/home_env chain
+    // instead of creating an importer-side shadow.
+    set_global: struct { name: []const u8, src: Reg },
 
     alloc_box: struct { dst: Reg, init: Reg },
     load_box: struct { dst: Reg, box: Reg },

@@ -301,6 +301,23 @@ pub fn evalPackageDecl(ctx: *EvalContext, form: Value) !Value {
             ctx.leaveModule();
             return e;
         };
+        // zepo-zc0: package has no explicit (export ...) form — by design,
+        // anything `define`d in a package body is public. Auto-export the
+        // defined name. Imports above DO NOT reach this point, so the
+        // package's transitively-imported names stay private.
+        if (isHeadSymbol(body_form, "define")) {
+            const rest_form = objects.pairCdr(body_form).*;
+            if (objects.isPair(rest_form)) {
+                const head = objects.pairCar(rest_form).*;
+                const defined_name_v = if (objects.isPair(head)) objects.pairCar(head).* else head;
+                if (objects.isSymbol(defined_name_v)) {
+                    m.markExport(objects.symbolName(defined_name_v)) catch |e| {
+                        ctx.leaveModule();
+                        return e;
+                    };
+                }
+            }
+        }
     }
 
     ctx.leaveModule();
@@ -666,8 +683,12 @@ pub fn doImportByName(
         }
         return;
     }
-    // import all — existing binding wins, silently skip conflicts
+    // zepo-zc0: import all — only the target module's DECLARED exports,
+    // never its transitively-imported names. Existing binding wins; silently
+    // skip conflicts.
     for (target.env.entries.items) |entry| {
+        const nm = runtime_objects.symbolName(entry.sym_slot.*);
+        if (!target.isExported(nm)) continue;
         active.importEntry(entry) catch |e| switch (e) {
             error.ImportNameConflict => {},
             else => return e,
@@ -896,12 +917,15 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     const active = ctx.currentEnv();
 
     if (value_mod.isNil(tail)) {
-        // Full import: bring ALL of the module's env entries into the active
-        // env so that closures defined in the module can resolve their
-        // internal LOAD_GLOBAL references. Name conflicts are silently skipped
-        // — the existing binding wins. This lets stdlib modules re-export
-        // primitives without colliding with the globals already present.
+        // zepo-zc0: Full import brings ONLY the module's declared exports into
+        // the active env. Non-exported names (including the module's own
+        // transitively-imported deps) stay private — closures defined inside
+        // the module still resolve them via LOAD_GLOBAL's closure home_env
+        // fallback (see vm/dispatch.zig). Name conflicts are silently skipped
+        // — existing binding wins.
         for (target.env.entries.items) |entry| {
+            const nm = runtime_objects.symbolName(entry.sym_slot.*);
+            if (!target.isExported(nm)) continue;
             active.importEntry(entry) catch |e| switch (e) {
                 error.ImportNameConflict => {},
                 else => return e,

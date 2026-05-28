@@ -320,11 +320,11 @@ pub const Compiler = struct {
                 try ctx.func.emit(.{ .store_box = .{ .box = box_r, .src = v } });
             } else {
                 // Unexpected: capturing a non-boxed mutable var. Treat as global set.
-                try ctx.func.emit(.{ .store_global = .{ .name = name, .src = v } });
+                try ctx.func.emit(.{ .set_global = .{ .name = name, .src = v } });
             }
             return v;
         }
-        try ctx.func.emit(.{ .store_global = .{ .name = name, .src = v } });
+        try ctx.func.emit(.{ .set_global = .{ .name = name, .src = v } });
         return v;
     }
 

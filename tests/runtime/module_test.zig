@@ -133,6 +133,27 @@ test "module: selective import does not import unlisted names" {
     try std.testing.expectError(error.UnboundVariable, v);
 }
 
+test "module: imports are non-transitive — N's exports do not leak through M" {
+    // zepo-zc0: when M (import N), importers of M see only M's declared
+    // exports, never N's. Regression for the math/stats -> math/linear
+    // transpose collision (zepo-cu3).
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module inner (export secret) (define secret 99))
+    );
+    _ = try rig.eval(
+        \\(module outer (export pub) (import inner) (define pub (+ secret 1)))
+    );
+    // outer can use inner's `secret` internally
+    const pub_v = try rig.eval("(import outer) pub");
+    try expectInt(pub_v, 100);
+    // but importing outer must NOT bring `secret` into the importer's scope
+    const leaked = rig.eval("secret");
+    try std.testing.expectError(error.UnboundVariable, leaked);
+}
+
 test "module: :keyword metadata is parsed and ignored at eval time" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();

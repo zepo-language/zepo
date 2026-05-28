@@ -621,6 +621,41 @@ pub const VM = struct {
                     const v = vm.call_stack.reg(a).*;
                     vm.globals.define(sym, v) catch return error.OutOfMemory;
                 },
+                .SET_GLOBAL => {
+                    // zepo-zc0: (set! …) must mutate the existing binding,
+                    // wherever it lives. Mirrors LOAD_GLOBAL's resolution
+                    // chain so cross-module set! against a closure-captured
+                    // global actually updates the home slot instead of
+                    // creating an importer-side shadow.
+                    const a = bytecode.decodeA(instr);
+                    const ni = bytecode.decodeBC(instr);
+                    const sym = func.name_syms[ni];
+                    const name = func.names[ni];
+                    const v = vm.call_stack.reg(a).*;
+                    if (vm.globals.findEntry(sym)) |e| {
+                        e.val_slot.* = v;
+                        continue;
+                    }
+                    if (vm.fallback_globals) |fb| {
+                        if (fb.findEntry(sym)) |e| {
+                            e.val_slot.* = v;
+                            continue;
+                        }
+                    }
+                    const frame_closure = vm.call_stack.currentFrame().closure_val;
+                    if (objects.isClosure(frame_closure)) {
+                        const home_ptr = objects.closureHomeEnvPtr(frame_closure);
+                        if (home_ptr != 0 and home_ptr != @intFromPtr(vm.globals)) {
+                            const home: *GlobalEnv = @ptrFromInt(home_ptr);
+                            if (home.findEntry(sym)) |e| {
+                                e.val_slot.* = v;
+                                continue;
+                            }
+                        }
+                    }
+                    std.debug.print("error: set! on undefined variable: {s}\n", .{name});
+                    return error.UnboundVariable;
+                },
                 .ALLOC_BOX => {
                     const a = bytecode.decodeA(instr);
                     const b = bytecode.decodeB(instr);

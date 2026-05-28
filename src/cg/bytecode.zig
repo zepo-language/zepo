@@ -22,6 +22,7 @@ pub const Opcode = enum(u8) {
     STORE_LOCAL,
     LOAD_GLOBAL,
     STORE_GLOBAL,
+    SET_GLOBAL,
     // Box cells
     ALLOC_BOX,
     LOAD_BOX,

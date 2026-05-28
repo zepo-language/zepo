@@ -215,6 +215,7 @@ fn computeMaxReg(f: *Function) Reg {
             .store_local => |x| upd.go(x.src, &max_r),
             .load_global => |x| upd.go(x.dst, &max_r),
             .store_global => |x| upd.go(x.src, &max_r),
+            .set_global => |x| upd.go(x.src, &max_r),
             .alloc_box => |x| {
                 upd.go(x.dst, &max_r);
                 upd.go(x.init, &max_r);
@@ -455,6 +456,10 @@ const FnEmit = struct {
                 const ni = try c.addName(x.name);
                 // STORE_GLOBAL A=src_reg, BC=name_idx.
                 try c.emitInstr(bytecode.encodeBC(.STORE_GLOBAL, c.phys(x.src), ni));
+            },
+            .set_global => |x| {
+                const ni = try c.addName(x.name);
+                try c.emitInstr(bytecode.encodeBC(.SET_GLOBAL, c.phys(x.src), ni));
             },
             .alloc_box => |x| try c.emitInstr(bytecode.encode(.ALLOC_BOX, c.phys(x.dst), c.phys(x.init), 0)),
             .load_box => |x| try c.emitInstr(bytecode.encode(.LOAD_BOX, c.phys(x.dst), c.phys(x.box), 0)),
