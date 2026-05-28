@@ -1,5 +1,8 @@
 (module math/tensor
-  (export tensor tensor? shape rank size zeros ones full arange from-nested tensor->nested tref tset! reshape transpose slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean t-max t-min matmul)
+  (export tensor tensor? shape rank size zeros ones full arange
+          from-nested tensor->nested tref tset! reshape tensor-transpose
+          slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean t-max
+          t-min matmul)
 
   ;; ── internal helpers (zepo-py2) ──────────────────────────────────────────
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
@@ -218,7 +221,7 @@
   ;; zepo-py2: reverse all axes; copy with remapped indices.
   (define (reverse-vec v) (list->vector (reverse (vector->list v))))
 
-  (define (transpose t)
+  (define (tensor-transpose t)
     (let* ((sv (tensor-shape-vec t))
            (out-sv (reverse-vec sv))
            (dv (tensor-data t))
