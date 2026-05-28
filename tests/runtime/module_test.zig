@@ -133,6 +133,54 @@ test "module: selective import does not import unlisted names" {
     try std.testing.expectError(error.UnboundVariable, v);
 }
 
+test "module: :as binds alias to a namespace; alias.name resolves the export" {
+    // zepo-aqm: (import M :as A) makes A a namespace value; A.x is a qualified
+    // reference resolved through it. Both ':as' and bare 'as' accepted.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module mq (export x y) (define x 7) (define y 11))
+    );
+    _ = try rig.eval("(import mq :as q)");
+    const x = try rig.eval("q.x");
+    try expectInt(x, 7);
+    const y = try rig.eval("q.y");
+    try expectInt(y, 11);
+}
+
+test "module: two modules with same export name disambiguated via :as" {
+    // zepo-aqm: the headline case. tensor:transpose and linear:transpose
+    // coexist without collision.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module tn (export transpose) (define (transpose v) (list 'tn v)))
+    );
+    _ = try rig.eval(
+        \\(module ln (export transpose) (define (transpose m) (list 'ln m)))
+    );
+    _ = try rig.eval("(import tn :as t)");
+    _ = try rig.eval("(import ln :as l)");
+    const tv = try rig.eval("(t.transpose 'A)");
+    try std.testing.expect(!(tv == 0));
+    const lv = try rig.eval("(l.transpose 'M)");
+    try std.testing.expect(!(lv == 0));
+}
+
+test "module: alias.missing-name errors as UnboundVariable" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module mq2 (export a) (define a 1))
+    );
+    _ = try rig.eval("(import mq2 :as q)");
+    const r = rig.eval("q.bogus");
+    try std.testing.expectError(error.UnboundVariable, r);
+}
+
 test "module: imports are non-transitive — N's exports do not leak through M" {
     // zepo-zc0: when M (import N), importers of M see only M's declared
     // exports, never N's. Regression for the math/stats -> math/linear

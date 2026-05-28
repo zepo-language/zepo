@@ -63,6 +63,7 @@ const module_mod = @import("module.zig");
 const ContainerMeta = module_mod.ContainerMeta;
 
 const runtime_objects = @import("objects.zig");
+const hashtable = @import("hashtable.zig");
 const eval = @import("eval.zig");
 const EvalContext = eval.EvalContext;
 const isHeadSymbol = eval.isHeadSymbol;
@@ -938,21 +939,36 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     const selector = objects.pairCar(tail).*;
     const after_selector = objects.pairCdr(tail).*;
 
-    // (import name as alias) — defines alias.exported-name for every export.
-    if (objects.isSymbol(selector) and std.mem.eql(u8, objects.symbolName(selector), "as")) {
+    // zepo-aqm: (import name :as alias)
+    //
+    // Binds `alias` in the importer's env to a NAMESPACE VALUE (currently a
+    // hash_table keyed by symbol). Accessing members is done via the qualified
+    // syntax `alias.name` (ADR 0001), which LOAD_GLOBAL detects at lookup time
+    // and resolves into the namespace.
+    //
+    // `:as` is the canonical spelling (keyword-flavored to match :version etc.).
+    // Bare `as` is also accepted as a transitional convenience.
+    if (objects.isSymbol(selector) and
+        (std.mem.eql(u8, objects.symbolName(selector), ":as") or
+            std.mem.eql(u8, objects.symbolName(selector), "as")))
+    {
         if (!objects.isPair(after_selector)) return error.InvalidSpecialForm;
         const alias_v = objects.pairCar(after_selector).*;
         if (!objects.isSymbol(alias_v)) return error.InvalidSpecialForm;
         if (!value_mod.isNil(objects.pairCdr(after_selector).*)) return error.InvalidSpecialForm;
-        const alias = objects.symbolName(alias_v);
+
+        // Build the namespace hash_table.
+        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+        const ns_slot = scope.push(ns);
         for (target.env.entries.items) |entry| {
             const nm = runtime_objects.symbolName(entry.sym_slot.*);
             if (!target.isExported(nm)) continue;
-            const prefixed = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ alias, nm });
-            defer ctx.allocator.free(prefixed);
-            const sym = try ctx.symbols.intern(prefixed);
-            try active.define(sym, entry.val_slot.*);
+            const key_sym = try ctx.symbols.intern(nm);
+            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+                return error.OutOfMemory;
         }
+        const alias_sym = try ctx.symbols.intern(objects.symbolName(alias_v));
+        try active.define(alias_sym, ns_slot.*);
         return value_mod.NIL;
     }
 

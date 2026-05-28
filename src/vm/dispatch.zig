@@ -22,6 +22,7 @@ const runtime = @import("../runtime/mod.zig");
 const objects = runtime.objects;
 const SymbolTable = runtime.SymbolTable;
 const GlobalEnv = runtime.GlobalEnv;
+const hashtable = runtime.hashtable;
 
 const errs = @import("../runtime/errors.zig");
 const LispError = errs.LispError;
@@ -594,7 +595,7 @@ pub const VM = struct {
                         vm.call_stack.reg(a).* = sym;
                         continue;
                     }
-                    const slot: *Value = blk: {
+                    const slot: ?*Value = blk: {
                         if (vm.globals.findEntry(sym)) |e| break :blk e.val_slot;
                         if (vm.fallback_globals) |fb| {
                             if (fb.findEntry(sym)) |e| break :blk e.val_slot;
@@ -607,11 +608,58 @@ pub const VM = struct {
                                 if (home.findEntry(sym)) |e| break :blk e.val_slot;
                             }
                         }
-                        std.debug.print("error: unbound variable: {s}\n", .{name});
-                        return error.UnboundVariable;
+                        break :blk null;
                     };
-                    func.name_caches[ni] = slot;
-                    vm.call_stack.reg(a).* = slot.*;
+                    if (slot) |s| {
+                        func.name_caches[ni] = s;
+                        vm.call_stack.reg(a).* = s.*;
+                        continue;
+                    }
+                    // zepo-aqm: qualified access — `alias.member`. The flat
+                    // lookup missed; try splitting on the first `.` and
+                    // resolving the prefix as a namespace value. ADR 0001.
+                    if (std.mem.indexOfScalar(u8, name, '.')) |dot_idx| {
+                        const prefix = name[0..dot_idx];
+                        const suffix = name[dot_idx + 1 ..];
+                        const prefix_sym = vm.symbols.intern(prefix) catch
+                            return error.OutOfMemory;
+                        const ns_val: ?Value = ns_blk: {
+                            if (vm.globals.findEntry(prefix_sym)) |e| break :ns_blk e.val_slot.*;
+                            if (vm.fallback_globals) |fb| {
+                                if (fb.findEntry(prefix_sym)) |e| break :ns_blk e.val_slot.*;
+                            }
+                            const fc = vm.call_stack.currentFrame().closure_val;
+                            if (objects.isClosure(fc)) {
+                                const hp = objects.closureHomeEnvPtr(fc);
+                                if (hp != 0 and hp != @intFromPtr(vm.globals)) {
+                                    const home: *GlobalEnv = @ptrFromInt(hp);
+                                    if (home.findEntry(prefix_sym)) |e| break :ns_blk e.val_slot.*;
+                                }
+                            }
+                            break :ns_blk null;
+                        };
+                        if (ns_val) |ns| {
+                            if (hashtable.isHashTable(ns)) {
+                                const suffix_sym = vm.symbols.intern(suffix) catch
+                                    return error.OutOfMemory;
+                                // Use a sentinel UNBOUND marker; symbol-keys
+                                // can't collide with it.
+                                const unbound = value_mod.NIL;
+                                const found = hashtable.contains(vm, ns, suffix_sym) catch
+                                    return error.OutOfMemory;
+                                if (found) {
+                                    const v = hashtable.get(vm, ns, suffix_sym, unbound) catch
+                                        return error.OutOfMemory;
+                                    vm.call_stack.reg(a).* = v;
+                                    continue;
+                                }
+                                std.debug.print("error: namespace '{s}' has no member '{s}'\n", .{ prefix, suffix });
+                                return error.UnboundVariable;
+                            }
+                        }
+                    }
+                    std.debug.print("error: unbound variable: {s}\n", .{name});
+                    return error.UnboundVariable;
                 },
                 .STORE_GLOBAL => {
                     const a = bytecode.decodeA(instr);
