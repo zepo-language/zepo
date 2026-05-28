@@ -130,6 +130,12 @@ pub const Lexer = struct {
             c == '?' or c == '^' or c == '_' or c == '~';
     }
 
+    // zepo-x9w: `.` is reserved as the qualified-access separator (ADR 0001).
+    // It IS a valid symbol-continuation char today, so `t.transpose` lexes as
+    // a single symbol; the namespace AST/lookup work in zepo-aqm splits on
+    // `.` post-lex. The reader contract for that downstream work is that any
+    // `.` mid-symbol is a separator — there must be no introduction of new
+    // dotted identifiers that aren't qualified references.
     fn isSymbolCont(c: u8) bool {
         return isSymbolStart(c) or std.ascii.isDigit(c) or c == '+' or c == '-' or c == '.' or c == '@';
     }

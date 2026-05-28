@@ -279,6 +279,54 @@ test "error: unbalanced paren" {
     try std.testing.expectError(ReaderError.UnbalancedParen, result);
 }
 
+// zepo-x9w: `.` is the qualified-access separator (see ADR 0001).
+// These tests lock in the lexer contract that the rest of the namespace
+// work (zepo-aqm) builds on: `t.transpose` is a single symbol whose name
+// contains a `.`, and it never gets confused with a number.
+test "x9w: qualified symbol t.transpose is one symbol" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    const s = try parse(&gc, &syms, &spans, "t.transpose");
+    try std.testing.expect(objects.isSymbol(s));
+    try std.testing.expectEqualStrings("t.transpose", objects.symbolName(s));
+}
+
+test "x9w: chained qualified symbol math.tensor.transpose is one symbol" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    const s = try parse(&gc, &syms, &spans, "math.tensor.transpose");
+    try std.testing.expect(objects.isSymbol(s));
+    try std.testing.expectEqualStrings("math.tensor.transpose", objects.symbolName(s));
+}
+
+test "x9w: float and qualified symbol are unambiguous" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    // Leading digit → float, even if followed by alpha that could *look* like a member.
+    const n = try parse(&gc, &syms, &spans, "1.5");
+    try std.testing.expect(!objects.isSymbol(n));
+
+    // Leading alpha → symbol all the way.
+    const s = try parse(&gc, &syms, &spans, "x.5");
+    try std.testing.expect(objects.isSymbol(s));
+    try std.testing.expectEqualStrings("x.5", objects.symbolName(s));
+}
+
 test "error: unterminated string" {
     var gc = try GC.init(alloc);
     defer gc.deinit();
