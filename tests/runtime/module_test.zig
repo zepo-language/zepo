@@ -133,6 +133,23 @@ test "module: selective import does not import unlisted names" {
     try std.testing.expectError(error.UnboundVariable, v);
 }
 
+test "module: (import M (a b)) is sugar for (import M (only a b))" {
+    // zepo-ug3: a bare name-list after the module is equivalent to (only ...).
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module mug (export a b c) (define a 10) (define b 20) (define c 30))
+    );
+    _ = try rig.eval("(import mug (a c))");
+    const a = try rig.eval("a");
+    try expectInt(a, 10);
+    const c = try rig.eval("c");
+    try expectInt(c, 30);
+    const b = rig.eval("b");
+    try std.testing.expectError(error.UnboundVariable, b);
+}
+
 test "module: :as binds alias to a namespace; alias.name resolves the export" {
     // zepo-aqm: (import M :as A) makes A a namespace value; A.x is a qualified
     // reference resolved through it. Both ':as' and bare 'as' accepted.

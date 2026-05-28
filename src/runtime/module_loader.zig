@@ -973,9 +973,19 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     }
 
     if (!value_mod.isNil(after_selector)) return error.InvalidSpecialForm;
-    if (!isHeadSymbol(selector, "only")) return error.InvalidSpecialForm;
-
-    var cur = objects.pairCdr(selector).*;
+    // zepo-ug3: two shapes accepted for selective import:
+    //   (import M (only a b c))  -- explicit, original form
+    //   (import M (a b c))       -- sugar, all elements are names
+    // Discriminator: if the list's head is a non-symbol or a symbol other than
+    // `only`, treat the whole list as the name list.
+    if (!objects.isPair(selector)) return error.InvalidSpecialForm;
+    var cur = blk: {
+        const head_v = objects.pairCar(selector).*;
+        if (objects.isSymbol(head_v) and std.mem.eql(u8, objects.symbolName(head_v), "only")) {
+            break :blk objects.pairCdr(selector).*;
+        }
+        break :blk selector; // sugar: entire list is the name list
+    };
     while (!value_mod.isNil(cur)) {
         if (!objects.isPair(cur)) return error.InvalidSpecialForm;
         const nm_v = objects.pairCar(cur).*;
