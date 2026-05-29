@@ -1,4 +1,7 @@
-(import clap)
+(import clap (make-program make-command make-option make-positional ; zepo-y1a4
+              opt-set cmd-add-option cmd-add-positional
+              parse parse-error? render-error
+              result-option result-positional result-command))
 ; Adjust these to your actual JSON API if the names differ:
 ; Assume:
 ;   (json-parse-string s) -> alist representation of JSON

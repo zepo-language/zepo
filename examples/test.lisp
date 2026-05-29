@@ -1,4 +1,4 @@
-(import test)
+(import test (deftest is =check throws run-tests)) ; zepo-y1a4
 
 (deftest math-works
   (is (> 2 1))

@@ -9,7 +9,10 @@
 ;   zepo examples/clap-demo.lisp -- serve --port 8080
 ;   zepo examples/clap-demo.lisp -- --unknwon          ; typo → suggestion
 
-(import clap)
+(import clap (make-program make-command make-option make-positional ; zepo-y1a4
+              opt-set cmd-add-option cmd-add-positional
+              parse parse-error? render-help render-error
+              result-option result-positional result-command))
 
 ;;; ── Build the "serve" subcommand ──────────────────────────────────────────
 

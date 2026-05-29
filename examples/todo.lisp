@@ -7,7 +7,9 @@
 ;
 ; NOTE: This stores todos only in memory for the current run, just to demo clap.
 
-(import clap)
+(import clap (make-program make-command make-option make-positional ; zepo-y1a4
+              opt-set cmd-add-option cmd-add-positional
+              run result-option result-positional))
 
 ;;; ── In-memory store ─────────────────────────────────────────────────────────
 

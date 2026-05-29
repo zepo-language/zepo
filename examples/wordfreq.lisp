@@ -1,4 +1,6 @@
-(import clap)
+(import clap (make-program make-command make-option ; zepo-y1a4
+              opt-set cmd-add-option
+              parse parse-error? render-error result-option))
 
 (define (strip-char str ch)
   (list->string
