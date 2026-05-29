@@ -5,7 +5,7 @@
 ; Each integer used exactly once. Fractions are allowed mid-computation.
 ; Output: all solvable non-decreasing quadruples, one per line.
 
-(import format)
+(import format (format))   ; zepo-y1a4
 
 ; ── Rational arithmetic ───────────────────────────────────────────────────────
 ; Represent rationals as (num . den), den always positive, fully reduced.

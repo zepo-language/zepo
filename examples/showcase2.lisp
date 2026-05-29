@@ -1,7 +1,7 @@
 ; showcase2.lisp — macros, exceptions, higher-order ops, plists, strings
 ; zepo-8p3
 
-(import format)
+(import format (format))   ; zepo-y1a4
 
 ; ── Macros ────────────────────────────────────────────────────────────────────
 
