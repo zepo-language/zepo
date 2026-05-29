@@ -24,7 +24,7 @@
   (export plan-from-json plan-from-data
           plan-step-from-json plan-step-from-data)
 
-  (import orch/registry)   ; zepo-0rs: tool-effect, for the verify rule
+  (import orch/registry (tool-effect))   ; zepo-y1a4 / zepo-0rs
 
   ; Parse JSON text and convert it to a core plan form.
   ; Returns (ok core-form) | (err 'json-parse-failed msg) | (err 'invalid-plan reason).

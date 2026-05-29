@@ -16,8 +16,9 @@
 (module orch/agent
   (export run-agent render-observation)
 
-  (import orch/exec)
-  (import orch/registry)   ; tool-effect, for the mutating-tool gate
+  ;; zepo-y1a4: selective imports.
+  (import orch/exec     (run-plan step-result-of))
+  (import orch/registry (tool-effect))
 
   ; Drive the loop until next-step says (finish ...), the max-iters
   ; budget is spent, or the same action repeats (no progress).

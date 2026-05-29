@@ -21,9 +21,10 @@
   (export resolve-sources build-index build-index-with
           default-cache-path source-extensions)
 
-  (import orch/chunker)
-  (import orch/embed)
-  (import orch/vector_store)
+  ;; zepo-y1a4: selective imports.
+  (import orch/chunker      (chunk-file))
+  (import orch/embed        (embed-text))
+  (import orch/vector_store (make-store store-add!))
 
   (define default-cache-path ".zepo-index/cache.json")
 

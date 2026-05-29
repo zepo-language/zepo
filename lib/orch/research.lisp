@@ -23,13 +23,14 @@
 (module orch/research
   (export research research-with grep-sources)
 
-  (import orch/registry)
-  (import orch/agent)
-  (import orch/embed)
-  (import orch/vector_store)
-  (import orch/planner)
-  (import orch/http)
-  (import orch/symbols)   ; zepo-fzi: find_def / find_refs
+  ;; zepo-y1a4: selective imports.
+  (import orch/registry     (lookup-tool call-tool))
+  (import orch/agent        (run-agent))
+  (import orch/embed        (embed-text))
+  (import orch/vector_store (store-search))
+  (import orch/planner      (plan-next-step-with default-retries))
+  (import orch/http         (http-post-json))
+  (import orch/symbols      (build-symbol-index find-def find-refs))   ; zepo-fzi
 
   (define max-research-iters 6)      ; bound iterations (and transcript growth)
   (define retrieve-k         6)      ; hits per retrieve_code call

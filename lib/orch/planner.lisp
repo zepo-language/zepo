@@ -14,9 +14,10 @@
           default-planner-model default-planner-url default-retries
           build-system-prompt build-next-step-system-prompt)
 
-  (import orch/http)
-  (import orch/plan)
-  (import orch/registry)
+  ;; zepo-y1a4: selective imports.
+  (import orch/http     (http-post-json))
+  (import orch/plan     (plan-from-json plan-step-from-json))
+  (import orch/registry (list-tools lookup-tool))
 
   (define default-planner-model "llama3.1:8b")
   (define default-planner-url   "http://localhost:11434/v1/chat/completions")

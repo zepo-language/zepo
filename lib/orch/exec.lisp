@@ -29,7 +29,7 @@
 (module orch/exec
   (export run-plan plan-result step-result-of)
 
-  (import orch/registry)
+  (import orch/registry (lookup-tool call-tool))   ; zepo-y1a4
 
   ; Top-level entry. ctx starts empty; each step may append (id . result).
   ; zepo-qjk: an optional seed-ctx replays a saved/partial run — any

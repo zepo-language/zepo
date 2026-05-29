@@ -18,7 +18,7 @@
 (module orch/tools
   (export register-builtin-tools! set-tools-root! tools-root)
 
-  (import orch/registry)
+  (import orch/registry (register-tool!))   ; zepo-y1a4
 
   ; Confinement root, in a one-cell vector so set-tools-root! can change
   ; it without rebinding. #f means "use the current working directory".

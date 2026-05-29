@@ -8,7 +8,7 @@
 (module orch/embed
   (export embed-text embed-text-with default-embed-model default-embed-url)
 
-  (import orch/http)
+  (import orch/http (http-post-json))   ; zepo-y1a4
 
   ; Defaults — override via (embed-text-with ...) when you need to.
   (define default-embed-url   "http://localhost:11434/v1/embeddings")
