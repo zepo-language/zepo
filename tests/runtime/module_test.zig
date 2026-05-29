@@ -133,6 +133,22 @@ test "module: selective import does not import unlisted names" {
     try std.testing.expectError(error.UnboundVariable, v);
 }
 
+test "module: (import M) auto-aliases the full module path as a namespace" {
+    // zepo-cnj4: every default import gets a free namespace alias bound to
+    // the module's FULL path (`math/tensor` not just `tensor`), so qualified
+    // access works without an explicit :as. The full path is used so the
+    // alias never collides with an exported short name.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module mp/sub (export x) (define x 99))
+    );
+    _ = try rig.eval("(import mp/sub)");
+    const x = try rig.eval("mp/sub.x");
+    try expectInt(x, 99);
+}
+
 test "module: (import M (a b)) is sugar for (import M (only a b))" {
     // zepo-ug3: a bare name-list after the module is equivalent to (only ...).
     const rig = try Rig.init(std.testing.allocator);

@@ -932,6 +932,28 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
                 else => return e,
             };
         }
+        // zepo-cnj4: ALSO bind the module's FULL path as a namespace alias,
+        // so callers get qualified access for free without an explicit :as
+        // clause. The full path (e.g. `math/tensor`) is used rather than the
+        // last segment so it never collides with an exported short name (the
+        // module that exports `tensor` as a constructor can still be aliased
+        // because `math/tensor` is a distinct symbol). The leading `(import
+        // math/tensor)` flat-dump still works for back compat; once
+        // [[zepo-cnj4-rm]] migrates call sites, the flat-dump goes away and
+        // qualified access becomes mandatory.
+        const path_sym = try ctx.symbols.intern(mod_name);
+        if (active.findEntry(path_sym) == null) {
+            const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+            const ns_slot = scope.push(ns);
+            for (target.env.entries.items) |entry| {
+                const nm = runtime_objects.symbolName(entry.sym_slot.*);
+                if (!target.isExported(nm)) continue;
+                const key_sym = try ctx.symbols.intern(nm);
+                hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+                    return error.OutOfMemory;
+            }
+            try active.define(path_sym, ns_slot.*);
+        }
         return value_mod.NIL;
     }
 
