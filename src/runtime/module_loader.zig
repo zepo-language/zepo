@@ -1032,5 +1032,21 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
         };
         cur = objects.pairCdr(cur).*;
     }
+    // zepo-y1a4 + zepo-we7e: selective imports also bind the auto-alias
+    // namespace so macros expanded from the imported module can still reach
+    // their home internals via the qualified `home/path.name` form (which
+    // we7e rewrites them to at defmacro time).
+    const path_sym2 = try ctx.symbols.intern(mod_name);
+    if (active.findEntry(path_sym2) == null) {
+        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+        const ns_slot = scope.push(ns);
+        for (target.env.entries.items) |entry| {
+            const nm = runtime_objects.symbolName(entry.sym_slot.*);
+            const key_sym = try ctx.symbols.intern(nm);
+            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+                return error.OutOfMemory;
+        }
+        try active.define(path_sym2, ns_slot.*);
+    }
     return value_mod.NIL;
 }

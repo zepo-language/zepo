@@ -1,7 +1,11 @@
-(import test)
-(import math/core)     ; abs-close?
-(import math/linear)   ; rows->mat for ols test
-(import math/stats)
+;; zepo-y1a4: selective imports.
+(import test (deftest is =check throws run-tests))
+(import math/core   (abs-close?))
+(import math/linear (rows->mat))
+(import math/stats  (sum mean variance stdev pvariance pstdev
+                     median quantile percentile span iqr mode
+                     covariance pcovariance correlation
+                     standardize normalize linreg ols summary))
 
 (deftest stats/sum-and-mean
   (=check (sum (vector 1 2 3 4)) 10)

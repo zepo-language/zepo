@@ -1,6 +1,10 @@
-(import test)
-(import math/core)     ; abs-close?
-(import math/tensor)
+;; zepo-y1a4: selective imports.
+(import test (deftest is =check throws run-tests))
+(import math/core (abs-close?))
+(import math/tensor (tensor tensor? shape rank size zeros ones full arange
+                     from-nested tensor->nested tref tset! reshape transpose
+                     slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean
+                     t-max t-min matmul))
 
 (deftest tensor/construct-introspect
   (let ((t (tensor (list 2 3) (list 1 2 3 4 5 6))))

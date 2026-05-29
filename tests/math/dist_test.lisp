@@ -1,7 +1,11 @@
-(import test)
-(import math/core)
-(import math/dist)
-(import math/stats)   ; test-time only: validate sample moments
+;; zepo-y1a4: selective imports.
+(import test       (deftest is =check throws run-tests))
+(import math/core  (abs-close?))
+(import math/dist  (make-rng rng-next! rng-float! rng-int!
+                    erf erfc
+                    uniform-pdf uniform-cdf uniform-sample!
+                    normal-pdf normal-cdf normal-sample!))
+(import math/stats (mean stdev))   ; test-time only: validate sample moments
 
 (deftest dist/sampling-moments
   ;; 10k normal(5,2) draws -> sample mean ~5, sample stdev ~2
