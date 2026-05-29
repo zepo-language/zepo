@@ -1,5 +1,6 @@
-(import test)
-(import format)
+;; zepo-y1a4: selective imports.
+(import test   (deftest is =check throws run-tests))
+(import format (format))
 
 ; ── Directive: ~a (display) ───────────────────────────────────────────────────
 

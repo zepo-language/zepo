@@ -1,4 +1,5 @@
-(import test)
+;; zepo-y1a4: selective imports.
+(import test (deftest is =check throws run-tests))
 
 ; ── error-object? predicate ───────────────────────────────────────────────────
 
