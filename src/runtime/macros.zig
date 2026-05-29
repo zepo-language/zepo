@@ -13,6 +13,70 @@ const runtime_objects = @import("objects.zig");
 const eval = @import("eval.zig");
 const EvalContext = eval.EvalContext;
 const syntax_rules = @import("syntax_rules.zig"); // zepo-ajf
+const module_mod = @import("module.zig");
+const Module = module_mod.Module;
+
+// zepo-we7e: walk a macro body and rewrite bare symbols that match the
+// macro's home module's exports into qualified `home/path.name` form.
+//
+// This makes the macro hygenic across module boundaries: the expansion's
+// references to internal helpers (e.g. `register-test` inside `deftest`)
+// resolve via the namespace alias that (import home/path) auto-binds
+// (zepo-cnj4), instead of relying on the importer having flat-imported the
+// helper into their unqualified scope.
+//
+// Quoted forms (`'X` / `(quote X)`) are NOT walked — their symbols are
+// data, not references. Quasiquote bodies ARE walked because the literal
+// pieces of the template represent the structural output, but (quote ...)
+// and (unquote ...)/(unquote-splicing ...) inside a quasi-quoted template
+// are skipped — substituted values come from the caller's scope.
+fn rewriteForHome(
+    ctx: *EvalContext,
+    home: *Module,
+    form: Value,
+    skip_inside_quote: bool,
+) anyerror!Value {
+    const objs = runtime_objects;
+    if (objs.isPair(form)) {
+        const head = objs.pairCar(form).*;
+        // (quote X), (unquote X), (unquote-splicing X) — leave inner X alone.
+        if (objs.isSymbol(head)) {
+            const hn = objs.symbolName(head);
+            if (std.mem.eql(u8, hn, "quote") or
+                std.mem.eql(u8, hn, "unquote") or
+                std.mem.eql(u8, hn, "unquote-splicing"))
+            {
+                return form;
+            }
+            _ = skip_inside_quote;
+        }
+        // Recursively rewrite car and cdr, building a new pair if changed.
+        var scope = HandleScope{};
+        ctx.gc.roots.pushHandleScope(&scope);
+        defer ctx.gc.roots.popHandleScope();
+        const old_car = scope.push(objs.pairCar(form).*);
+        const old_cdr = scope.push(objs.pairCdr(form).*);
+        const new_car = scope.push(try rewriteForHome(ctx, home, old_car.*, false));
+        const new_cdr = scope.push(try rewriteForHome(ctx, home, old_cdr.*, false));
+        if (new_car.* == old_car.* and new_cdr.* == old_cdr.*) return form;
+        return try objs.makePairFromSlots(ctx.gc, new_car, new_cdr);
+    }
+    if (objs.isSymbol(form)) {
+        const nm = objs.symbolName(form);
+        // Don't qualify already-qualified names (anything containing `.`).
+        if (std.mem.indexOfScalar(u8, nm, '.') != null) return form;
+        // Rewrite if the symbol is defined in the home module — exported or
+        // not. Internal helpers are exactly the names that need hygenic
+        // resolution (they're typically not in the public API).
+        const key = try ctx.symbols.intern(nm);
+        if (home.env.findEntry(key) != null) {
+            const qualified = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ home.name, nm });
+            defer ctx.allocator.free(qualified);
+            return try ctx.symbols.intern(qualified);
+        }
+    }
+    return form;
+}
 
 pub fn evalDefmacro(ctx: *EvalContext, form: Value) !Value {
     const objs = runtime_objects;
@@ -29,6 +93,21 @@ pub fn evalDefmacro(ctx: *EvalContext, form: Value) !Value {
     ctx.gc.roots.pushHandleScope(&scope);
     defer ctx.gc.roots.popHandleScope();
     const tail_slot = scope.push(objs.pairCdr(rest).*);
+    // zepo-we7e: if defmacro runs inside a module body, rewrite the macro's
+    // body so references to the module's own exports are qualified with the
+    // module's path. The expansion then resolves those names via the
+    // namespace alias auto-bound by (import home/path), regardless of what
+    // the importer has flat-imported.
+    if (ctx.current_module) |home| {
+        // tail = (params body...). Skip the params list (head) — its symbols
+        // are bound names, not references — and walk only the body forms.
+        if (objs.isPair(tail_slot.*)) {
+            const params = scope.push(objs.pairCar(tail_slot.*).*);
+            const body_in = scope.push(objs.pairCdr(tail_slot.*).*);
+            const body_out = scope.push(try rewriteForHome(ctx, home, body_in.*, false));
+            tail_slot.* = try objs.makePairFromSlots(ctx.gc, params, body_out);
+        }
+    }
     const lambda_sym = try ctx.symbols.intern("lambda");
     const sym_slot = scope.push(lambda_sym);
     const form_slot = scope.push(try objs.makePairFromSlots(ctx.gc, sym_slot, tail_slot));

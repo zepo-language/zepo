@@ -947,7 +947,13 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
             const ns_slot = scope.push(ns);
             for (target.env.entries.items) |entry| {
                 const nm = runtime_objects.symbolName(entry.sym_slot.*);
-                if (!target.isExported(nm)) continue;
+                // zepo-we7e: include ALL of the module's bindings — exported
+                // AND non-exported. Non-exports are accessible only via the
+                // qualified `home/path.name` syntax (never unqualified — that
+                // would be the zepo-zc0 leak). This is the same Python-style
+                // "private by convention" model: accessible by qualifier when
+                // you really need it (e.g. macro hygiene), discouraged by
+                // convention.
                 const key_sym = try ctx.symbols.intern(nm);
                 hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
                     return error.OutOfMemory;

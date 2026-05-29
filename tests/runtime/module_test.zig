@@ -133,6 +133,35 @@ test "module: selective import does not import unlisted names" {
     try std.testing.expectError(error.UnboundVariable, v);
 }
 
+test "module: macro hygiene — defmacro body refs its module's internals via qualified path" {
+    // zepo-we7e: a macro defined inside a module that references a private
+    // helper (a `define` that is NOT in the module's `export` list) still
+    // works when expanded from outside the module — the body gets rewritten
+    // at defmacro time so the helper is reached via `home/path.name`, which
+    // the auto-bound namespace alias (zepo-cnj4) resolves to the home env.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval(
+        \\(module mhyg (export mac)
+        \\  (define helper-counter 0)
+        \\  (define (private-helper) (set! helper-counter (+ helper-counter 1)) helper-counter)
+        \\  (defmacro mac () `(private-helper)))
+    );
+    _ = try rig.eval("(import mhyg)");
+    // helper-counter and private-helper are NOT exported, so they must not
+    // be visible in the importer's unqualified scope:
+    const leak1 = rig.eval("private-helper");
+    try std.testing.expectError(error.UnboundVariable, leak1);
+    // But the macro expansion still works — the (private-helper) reference
+    // inside the macro body was rewritten at defmacro time to its qualified
+    // form (mhyg.private-helper).
+    const v1 = try rig.eval("(mac)");
+    try expectInt(v1, 1);
+    const v2 = try rig.eval("(mac)");
+    try expectInt(v2, 2);
+}
+
 test "module: (import M) auto-aliases the full module path as a namespace" {
     // zepo-cnj4: every default import gets a free namespace alias bound to
     // the module's FULL path (`math/tensor` not just `tensor`), so qualified
