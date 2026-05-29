@@ -14,12 +14,11 @@
 ;
 ; zepo-dad
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/tools))
-(import :libs (orch/approval))
-(import :libs (orch/planner))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/agent    (run-agent)
+               orch/tools    (register-builtin-tools! set-tools-root!)
+               orch/approval (interactive-confirm)
+               orch/planner  (plan-next-step-with default-retries)))
 
 ; argv = (binary script arg ...) once Zepo has stripped "--".
 (define raw-argv (argv))

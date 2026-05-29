@@ -1,7 +1,7 @@
 ; showcase.lisp — exercises string ports, values, vector ops, and hooks/advice
 
-(import hooks)
-(import format)
+(import hooks (add-hook defadvice run-hooks)) ; zepo-y1a4
+(import format (format)) ; zepo-y1a4
 
 ; ── String ports: build strings without concatenation ────────────────────────
 

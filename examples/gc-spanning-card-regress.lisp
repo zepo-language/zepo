@@ -18,9 +18,8 @@
 ;
 ; zepo-gol
 
-(import :libs (orch/registry))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
+(import :libs (orch/vector_store (store-search) ; zepo-y1a4
+               orch/corpus       (resolve-sources build-index-with)))
 
 (define (big-vec n)
   (let ((v (make-vector n 0.0)))

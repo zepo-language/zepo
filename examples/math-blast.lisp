@@ -4,10 +4,12 @@
 ;; generate data with dist, summarize it with stats, shape/reduce it with tensor,
 ;; and cross-check the three against each other. Any mismatch aborts via (error).
 ;; A timed benchmark phase follows; tune volume with:  zepo math-blast.lisp -- 4
-(import math/core)
-(import math/tensor)
-(import math/stats)
-(import math/dist)
+(import math/core   (abs-close?)) ; zepo-y1a4
+(import math/tensor (from-nested shape transpose tensor->nested reshape ; zepo-y1a4
+                     slice t* t+ t-zip t-sum t-equal? matmul tensor t-mean))
+(import math/stats  (mean stdev median quantile correlation summary linreg sum)) ; zepo-y1a4
+(import math/dist   (make-rng rng-next! rng-float! erf ; zepo-y1a4
+                     normal-cdf normal-sample! uniform-sample!))
 
 (define checks 0)
 (define (check label got want)

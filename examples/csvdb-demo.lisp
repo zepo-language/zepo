@@ -1,8 +1,9 @@
 ; csvdb-demo.lisp — exercises the full csvdb library
 ; Creates a small employee database, runs queries, mutates, saves, reloads.
 
-(import csvdb/api)
-(import format)
+(import csvdb/api (csv-open csv-row-count csv-columns csv-select ; zepo-y1a4
+                   csv-insert! csv-update! csv-delete! csv-save!))
+(import format (format)) ; zepo-y1a4
 
 (define (hr) (display "================================") (newline))
 (define (section title) (newline) (hr) (display title) (newline) (hr))

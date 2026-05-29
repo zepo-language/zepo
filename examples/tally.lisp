@@ -7,8 +7,10 @@
 ;   TALLY_FORMAT=csv zepo examples/tally.lisp -- words README.md
 ;   zepo examples/tally.lisp -- docs
 
-(import clap)
-(import format)
+(import clap (option positional command defprogram ; zepo-y1a4
+              ctx-option ctx-positional ctx-program
+              render-help render-markdown run))
+(import format (format)) ; zepo-y1a4
 
 ;;; ── Counting primitives ────────────────────────────────────────────────────
 

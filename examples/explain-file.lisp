@@ -18,13 +18,14 @@
 ;
 ; zepo-dqo / zepo-zrc
 
-(import :libs (orch/chunker))
-(import :libs (orch/embed))
-(import :libs (orch/vector_store))
-(import :libs (orch/registry))
-(import :libs (orch/planner))
-(import :libs (orch/exec))
-(import :libs (orch/http))
+(import :libs (orch/chunker      (chunk-file) ; zepo-y1a4
+               orch/embed        (embed-text)
+               orch/vector_store (make-store store-add! store-save store-load
+                                  store-search store-size)
+               orch/registry     (reset-registry! register-tool!)
+               orch/planner      (plan-with default-planner-url default-retries)
+               orch/exec         (run-plan plan-result)
+               orch/http         (http-post-json)))
 
 ; --- argv ----------------------------------------------------------------
 ; argv = (binary script arg ...) once Zepo has stripped "--".

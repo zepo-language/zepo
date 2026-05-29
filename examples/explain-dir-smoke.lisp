@@ -12,9 +12,9 @@
 ;
 ; zepo-1j2
 
-(import :libs (orch/embed))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
+(import :libs (orch/embed        (embed-text) ; zepo-y1a4
+               orch/vector_store (store-search store-size)
+               orch/corpus       (resolve-sources build-index-with)))
 
 ; Index lib/orch via glob (base dir + .lisp extension), cache under /tmp.
 (define sources (result-value (resolve-sources "lib/orch/**/*.lisp")))

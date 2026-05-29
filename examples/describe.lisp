@@ -3,8 +3,8 @@
 ;; Opens the CSV with csvdb, pulls the named column, coerces each field with
 ;; string->number (skipping blank/non-numeric cells), then prints n, mean,
 ;; stdev, the five-number summary, and an equal-width ASCII histogram.
-(import csvdb/api)
-(import math/stats)
+(import csvdb/api (csv-open csv-columns csv-select)) ; zepo-y1a4
+(import math/stats (summary)) ; zepo-y1a4
 
 ;; argv after the script path is (script "--" file column [nbuckets]); drop the
 ;; script path and the "--" separator to get the positional args.

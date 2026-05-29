@@ -12,8 +12,8 @@
 ;
 ; zepo-frz
 
-(import :libs (orch/vector_store))
-(import :libs (orch/research))
+(import :libs (orch/vector_store (store-load store-size) ; zepo-y1a4
+               orch/research     (research)))
 
 (define store-path   ".zepo-index/store.json")
 (define sources-path ".zepo-index/sources.json")

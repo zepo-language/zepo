@@ -1,7 +1,7 @@
 ;; tui-counter.lisp — minimal BubbleTea-style counter app.
 ;; Keys: ↑ increment, ↓ decrement, q / ctrl-c quit.
 
-(import tui/tui)
+(import tui/tui (event-key vstack style-bold style-fg style-dim)) ; zepo-y1a4
 
 (define (update model event)
   (define k (event-key event))

@@ -2,7 +2,7 @@
 ;; Type characters to build a string.
 ;; backspace removes last char, enter confirms, ctrl-c quits.
 
-(import tui/tui)
+(import tui/tui (event-key vstack style-bold style-fg style-dim)) ; zepo-y1a4
 
 (define (make-model) (list :text "" :submitted #f))
 (define (model-text m) (cadr m))
