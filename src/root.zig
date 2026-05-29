@@ -14,6 +14,7 @@ pub const cg = @import("cg/mod.zig");
 pub const vm = @import("vm/mod.zig");
 pub const prims = @import("prims/mod.zig");
 pub const ffi = @import("ffi/zig_ffi.zig");
+pub const lsp = @import("lsp/mod.zig");
 
 pub const Value = abi.Value;
 pub const ObjHeader = abi.ObjHeader;
@@ -34,4 +35,5 @@ test {
     _ = vm;
     _ = prims;
     _ = ffi;
+    _ = lsp;
 }

@@ -126,7 +126,11 @@ fn realMain() !void {
     }
 
     if (std.mem.eql(u8, arg, "lsp")) {
-        try lsp_cmd.runLsp(alloc);
+        // zepo-k9hh: new LSP module exposes hover/def/completion in addition
+        // to diagnostics. Old runLsp kept reachable for compatibility but the
+        // CLI now routes through the new server.
+        _ = lsp_cmd;
+        try zepo.lsp.runStdio(alloc);
         return;
     }
 
