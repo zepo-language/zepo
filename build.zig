@@ -438,7 +438,39 @@ pub fn build(b: *std.Build) void {
         install_global.dependOn(&cp_lib.step);
     }
 
+    // --- zepo-k9hh: standalone LSP binary ---
+    {
+        const lsp_exe_mod = b.createModule(.{
+            .root_source_file = b.path("src/lsp/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zepo", .module = mod },
+            },
+        });
+        const lsp_exe = b.addExecutable(.{
+            .name = "zepo-lsp",
+            .root_module = lsp_exe_mod,
+        });
+        const install_lsp = b.addInstallArtifact(lsp_exe, .{});
+        const lsp_step = b.step("lsp", "Build the standalone zepo-lsp binary");
+        lsp_step.dependOn(&install_lsp.step);
+    }
+
+    // --- zepo-k9hh: LSP tests ---
+    const lsp_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/lsp/server_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const lsp_tests = b.addTest(.{ .root_module = lsp_test_mod });
+    const run_lsp_tests = b.addRunArtifact(lsp_tests);
+    const lsp_test_step = b.step("lsp_test", "Run LSP server tests");
+    lsp_test_step.dependOn(&run_lsp_tests.step);
+
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_lsp_tests.step);
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_gc_tests.step);
