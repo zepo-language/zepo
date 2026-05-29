@@ -40,8 +40,45 @@
   (define (pstdev xs) (sqrt (pvariance xs)))
   (define (stdev  xs) (sqrt (variance  xs)))
 
-  ;; zepo-7uu: sorted copy as a vector (sort works on lists).
-  (define (sorted-vec xs) (list->vector (sort (vector->list (->vec xs)) <)))
+  ;; zepo-sb7: bottom-up iterative merge sort directly on a vector copy.
+  ;; The previous version went list -> sort -> list -> vector, which both
+  ;; deep-recursed in merge AND allocated O(n log n) cons cells; that OOM'd
+  ;; around 50k elements (lib/stdlib.lisp:sort got the same treatment but a
+  ;; cell-per-element approach hits the GC ceiling on big inputs regardless).
+  ;; This routine allocates one aux vector and does width-doubling merge
+  ;; passes — O(n log n) time, O(n) heap, no recursion to speak of.
+  (define (sorted-vec xs)
+    (let* ((src (->vec xs))
+           (n   (vector-length src))
+           (a   (make-vector n 0))
+           (b   (make-vector n 0)))
+      ;; copy src into a
+      (let ((i 0))
+        (let init-loop ((i 0))
+          (if (< i n)
+              (begin (vector-set! a i (vector-ref src i)) (init-loop (+ i 1))))))
+      (let pass-loop ((from a) (to b) (width 1))
+        (if (>= width n) from
+            (let merge-runs ((lo 0))
+              (if (>= lo n)
+                  (pass-loop to from (* width 2))
+                  (let ((mid (if (< (+ lo width) n) (+ lo width) n))
+                        (hi  (if (< (+ lo (* 2 width)) n) (+ lo (* 2 width)) n)))
+                    (let merge-step ((i lo) (j mid) (k lo))
+                      (cond
+                        ((and (< i mid) (< j hi))
+                         (let ((ai (vector-ref from i))
+                               (aj (vector-ref from j)))
+                           (if (< ai aj)
+                               (begin (vector-set! to k ai) (merge-step (+ i 1) j (+ k 1)))
+                               (begin (vector-set! to k aj) (merge-step i (+ j 1) (+ k 1))))))
+                        ((< i mid)
+                         (vector-set! to k (vector-ref from i))
+                         (merge-step (+ i 1) j (+ k 1)))
+                        ((< j hi)
+                         (vector-set! to k (vector-ref from j))
+                         (merge-step i (+ j 1) (+ k 1)))))
+                    (merge-runs (+ lo (* 2 width))))))))))
 
   ;; type-7 quantile with linear interpolation (numpy/R default).
   (define (quantile xs q)

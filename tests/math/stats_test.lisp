@@ -86,4 +86,15 @@
   (throws (covariance (vector 1 2 3) (vector 1 2)))        ; unequal lengths
   (throws (linreg (vector 1 1 1) (vector 2 4 6))))         ; x zero variance
 
+;; zepo-sb7: regression — median over 50k elements used to OOM (stdlib's
+;; list-based sort blew the stack). The vector merge sort in sorted-vec
+;; should handle this comfortably.
+(deftest stats/sort-large
+  (let* ((n 50000)
+         (v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (modulo (* i 7919) n)) (loop (+ i 1)))))
+    ;; median of a permutation of 0..n-1 is (n-1)/2
+    (is (abs-close? (median v) (/ (- n 1) 2.0) 1e-9))))
+
 (run-tests)

@@ -373,13 +373,24 @@
 
 ;;; ── Sort ──────────────────────────────────────────────────────────────────
 
+;; zepo-sb7: tail-recursive merge sort. The old version's `merge` was
+;; non-tail-recursive — every cons added a stack frame, so a list of 50k
+;; elements stacked 50k frames per merge pass and blew the heap. Now merge
+;; builds its result in reverse via an accumulator then splices it back with
+;; rev-append, both of which are tail calls. Split is unchanged (already
+;; tail-recursive). The recursion in `sort` itself is depth log2(n).
 (define (sort lst less?)
+  (define (rev-append rev tail)
+    (if (null? rev) tail
+        (rev-append (cdr rev) (cons (car rev) tail))))
   (define (merge a b)
-    (cond ((null? a) b)
-          ((null? b) a)
-          ((less? (car a) (car b))
-           (cons (car a) (merge (cdr a) b)))
-          (#t (cons (car b) (merge a (cdr b))))))
+    (let loop ((a a) (b b) (acc (quote ())))
+      (cond ((null? a) (rev-append acc b))
+            ((null? b) (rev-append acc a))
+            ((less? (car a) (car b))
+             (loop (cdr a) b (cons (car a) acc)))
+            (#t
+             (loop a (cdr b) (cons (car b) acc))))))
   (define (split lst)
     (let loop ((fast lst) (slow lst) (left (quote ())))
       (if (or (null? fast) (null? (cdr fast)))

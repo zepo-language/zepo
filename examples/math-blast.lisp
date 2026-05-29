@@ -163,7 +163,8 @@
     (let loop ((i 0)) (if (< i S) (begin (normal-sample! r 0 1) (loop (+ i 1))))))))
 
 ;; B5: stats summary, repeated. summary sorts (for quantiles) so it is the
-;; O(n log n) heavy op; size fixed at 10k (stdlib `sort` is fine to ~20k, OOMs by ~50k).
-(let ((xs (gen-vec 10000 (let ((r (make-rng 4))) (lambda () (rng-float! r))))))
-  (bench "stats summary (sort-bound)" (* scale 10000)
+;; O(n log n) heavy op. Post-zepo-sb7 stats has a vector-based bottom-up
+;; merge sort, so 100k fits in the default heap with room to spare.
+(let ((xs (gen-vec 50000 (let ((r (make-rng 4))) (lambda () (rng-float! r))))))
+  (bench "stats summary (sort-bound)" (* scale 50000)
          (lambda () (repeat scale (lambda () (summary xs))))))
