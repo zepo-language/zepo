@@ -4,8 +4,9 @@
           table-set-rows! table-set-dirty!
           row-ref row-set! row->map)
 
-  (import csvdb/parser)
-  (import csvdb/schema)
+  ;; zepo-y1a4: selective imports.
+  (import csvdb/parser (parse-csv))
+  (import csvdb/schema (infer-schema coerce-row schema-columns schema-name->index column-name))
 
   ; ── Table record ──────────────────────────────────────────────────────────
 

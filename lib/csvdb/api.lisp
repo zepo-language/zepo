@@ -2,10 +2,14 @@
   (export csv-open csv-select csv-insert! csv-update! csv-delete! csv-save!
           csv-row-count csv-columns)
 
-  (import csvdb/parser)
-  (import csvdb/schema)
-  (import csvdb/store)
-  (import csvdb/query)
+  ;; zepo-y1a4: selective imports.
+  (import csvdb/parser (emit-csv))
+  (import csvdb/schema (schema-columns schema-name->index schema-delimiter
+                        column-name column-default))
+  (import csvdb/store  (load-table table-path table-schema table-rows
+                        table-readonly? table-set-rows! table-set-dirty!
+                        table-dirty?))
+  (import csvdb/query  (eval-pred select-rows))
 
   ; ── Open ──────────────────────────────────────────────────────────────────
 

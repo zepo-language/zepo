@@ -1,8 +1,9 @@
 (module csvdb/query
   (export eval-pred select-rows)
 
-  (import csvdb/schema)
-  (import csvdb/store)
+  ;; zepo-y1a4: selective imports.
+  (import csvdb/schema (schema-name->index))
+  (import csvdb/store  (table-rows table-schema row->map))
 
   ; ── Predicate evaluator ───────────────────────────────────────────────────
   ;
