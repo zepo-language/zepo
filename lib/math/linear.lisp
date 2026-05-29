@@ -2,7 +2,7 @@
   (export vec mat mat-rows mat-cols mat-ref mat-shape
           vec-add dot norm rows->mat transpose matvec solve det)
 
-  (import math/core)
+  (import math/core (almost-eq?))   ; zepo-y1a4: selective
 
   (define (vec . xs) (apply vector xs))
 

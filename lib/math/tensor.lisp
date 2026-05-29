@@ -1,6 +1,6 @@
 (module math/tensor
   (export tensor tensor? shape rank size zeros ones full arange
-          from-nested tensor->nested tref tset! reshape tensor-transpose
+          from-nested tensor->nested tref tset! reshape transpose
           slice t+ t- t* t/ t-map t-zip t-equal? t-sum t-mean t-max
           t-min matmul)
 
@@ -221,7 +221,7 @@
   ;; zepo-py2: reverse all axes; copy with remapped indices.
   (define (reverse-vec v) (list->vector (reverse (vector->list v))))
 
-  (define (tensor-transpose t)
+  (define (transpose t)
     (let* ((sv (tensor-shape-vec t))
            (out-sv (reverse-vec sv))
            (dv (tensor-data t))

@@ -4,7 +4,7 @@
           uniform-pdf uniform-cdf uniform-sample!
           normal-pdf normal-cdf normal-sample!)
 
-  (import math/core)   ; pi, square (used later)
+  (import math/core (pi square))   ; zepo-y1a4: selective
 
   ;; zepo-7uu: 32-bit helpers. Lanes are kept as non-negative fixnums < 2^32.
   (define mask32 4294967295)            ; #xFFFFFFFF

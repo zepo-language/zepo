@@ -4,10 +4,7 @@
 ;; generate data with dist, summarize it with stats, shape/reduce it with tensor,
 ;; and cross-check the three against each other. Any mismatch aborts via (error).
 ;; A timed benchmark phase follows; tune volume with:  zepo math-blast.lisp -- 4
-(import math/core)     ; abs-close?
-;; zepo-cu3: math/tensor's `transpose` was renamed to `tensor-transpose` so it no
-;; longer collides with math/linear's `transpose` (transitively imported via
-;; math/stats). Import order no longer matters for this name.
+(import math/core)
 (import math/tensor)
 (import math/stats)
 (import math/dist)
@@ -70,8 +67,8 @@
 (display "Section 3: tensor (shape ops + reductions + matmul)") (newline)
 (define A (from-nested (list (list 1 2 3) (list 4 5 6))))    ; 2x3
 (check "shape"            (shape A)            (list 2 3))
-(check "transpose shape"  (shape (tensor-transpose A)) (list 3 2))
-(check "transpose data"   (tensor->nested (tensor-transpose A)) (list (list 1 4) (list 2 5) (list 3 6)))
+(check "transpose shape"  (shape (transpose A)) (list 3 2))
+(check "transpose data"   (tensor->nested (transpose A)) (list (list 1 4) (list 2 5) (list 3 6)))
 (check "reshape"          (tensor->nested (reshape A (list 3 2))) (list (list 1 2) (list 3 4) (list 5 6)))
 (check "slice axis1 [1,3)" (tensor->nested (slice A 1 1 3)) (list (list 2 3) (list 5 6)))
 (check "scalar t* (order-free)" (tensor->nested (t* A 10)) (list (list 10 20 30) (list 40 50 60)))
@@ -79,7 +76,7 @@
 (check "t-zip max"        (tensor->nested (t-zip max A (t* A 0))) (list (list 1 2 3) (list 4 5 6)))
 (check "t-sum axis0 (cols)" (tensor->nested (t-sum A 0)) (list 5 7 9))
 (check "t-sum axis1 (rows)" (tensor->nested (t-sum A 1)) (list 6 15))
-(check "matmul A·Aᵀ"      (tensor->nested (matmul A (tensor-transpose A))) (list (list 14 32) (list 32 77)))
+(check "matmul A·Aᵀ"      (tensor->nested (matmul A (transpose A))) (list (list 14 32) (list 32 77)))
 (check "t-equal? self"    (t-equal? A A) #t)
 
 ;; ── Section 4: integration — the three modules cross-checking each other ────

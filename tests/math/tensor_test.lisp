@@ -65,13 +65,13 @@
       (=check (tref c 2 1) 5)))
   (throws (reshape (arange 6) (list 2 2))))   ; size mismatch (4 != 6)
 
-(deftest tensor/tensor-transpose
+(deftest tensor/transpose
   (let* ((a (from-nested (list (list 1 2 3) (list 4 5 6))))   ; 2x3
-         (b (tensor-transpose a)))                                    ; 3x2
+         (b (transpose a)))                                    ; 3x2
     (=check (shape b) (list 3 2))
     (=check (tensor->nested b) (list (list 1 4) (list 2 5) (list 3 6))))
   (let ((a (from-nested (list (list 1 2) (list 3 4)))))
-    (is (t-equal? (tensor-transpose (tensor-transpose a)) a))))
+    (is (t-equal? (transpose (transpose a)) a))))
 
 (deftest tensor/slice
   (let* ((a (from-nested (list (list 1 2 3 4)        ; 3x4

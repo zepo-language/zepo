@@ -4,8 +4,9 @@
           covariance pcovariance correlation
           standardize normalize linreg ols summary)
 
-  (import math/core)    ; square, abs-close? (used later)
-  (import math/linear)  ; solve, matvec, mat, rows->mat, mat-rows, mat-cols, mat-ref, dot
+  ;; zepo-y1a4: selective imports — only the names actually used.
+  (import math/core   (square abs-close?))
+  (import math/linear (solve matvec mat rows->mat mat-rows mat-cols mat-ref dot))
 
   ;; zepo-7uu: canonical input is a vector; accept a list too.
   (define (->vec xs) (if (vector? xs) xs (list->vector xs)))
