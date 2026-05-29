@@ -11,10 +11,10 @@
 ;
 ; zepo-fao
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/plan))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec     (step-result-of)
+               orch/agent    (run-agent)
+               orch/plan     (plan-from-json)))
 
 (define calls (vector 0))
 (define (bump!) (vector-set! calls 0 (+ (vector-ref calls 0) 1)))

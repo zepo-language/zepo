@@ -10,7 +10,7 @@
 ;
 ; zepo-6yz
 
-(import :libs (orch/chunker))
+(import :libs (orch/chunker (chunk-file detect-kind))) ; zepo-y1a4
 
 (define (assert label cond-true)
   (cond

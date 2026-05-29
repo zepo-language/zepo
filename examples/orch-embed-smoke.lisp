@@ -8,7 +8,7 @@
 ;
 ; zepo-d26
 
-(import :libs (orch/embed))
+(import :libs (orch/embed (embed-text))) ; zepo-y1a4
 
 (define r (embed-text "hello world"))
 

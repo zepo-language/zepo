@@ -9,7 +9,8 @@
 ;
 ; zepo-546
 
-(import :libs (orch/rerank))
+(import :libs (orch/rerank (query-terms lexical-score rerank ; zepo-y1a4
+                            whole-id-score structural-rerank)))
 
 (define (assert-eq label want got)
   (cond

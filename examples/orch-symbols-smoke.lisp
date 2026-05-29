@@ -10,7 +10,7 @@
 ;
 ; zepo-6vo
 
-(import :libs (orch/symbols))
+(import :libs (orch/symbols (build-symbol-index find-def find-refs))) ; zepo-y1a4
 
 (define tree "/tmp/zepo-6vo-tree")
 (shell (string-append

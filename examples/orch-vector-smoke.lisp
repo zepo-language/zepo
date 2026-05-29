@@ -9,8 +9,9 @@
 ;
 ; zepo-rrh
 
-(import :libs (orch/embed))
-(import :libs (orch/vector_store))
+(import :libs (orch/embed        (embed-text) ; zepo-y1a4
+               orch/vector_store (make-store store-add! store-search
+                                  store-save store-load)))
 
 (define corpus
   (list

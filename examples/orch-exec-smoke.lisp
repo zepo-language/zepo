@@ -9,8 +9,8 @@
 ;
 ; zepo-ekd
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec     (run-plan plan-result step-result-of)))
 
 (reset-registry!)
 

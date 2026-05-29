@@ -9,9 +9,9 @@
 ;
 ; zepo-bh2
 
-(import :libs (orch/plan))
-(import :libs (orch/registry))
-(import :libs (orch/exec))
+(import :libs (orch/plan     (plan-from-json) ; zepo-y1a4
+               orch/registry (reset-registry! register-tool!)
+               orch/exec     (run-plan step-result-of plan-result)))
 
 (reset-registry!)
 (register-tool! 'echo (lambda (args) (cdr (assoc 'text args)))

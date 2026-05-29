@@ -10,8 +10,8 @@
 ;
 ; zepo-1j2
 
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
+(import :libs (orch/vector_store (store-size) ; zepo-y1a4
+               orch/corpus       (resolve-sources build-index-with)))
 
 (define tree  "/tmp/zepo-1j2-tree")
 (define cache "/tmp/zepo-1j2-cache.json")

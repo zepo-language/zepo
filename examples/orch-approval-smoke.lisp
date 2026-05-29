@@ -10,11 +10,11 @@
 ;
 ; zepo-dad
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/tools))
-(import :libs (orch/approval))
+(import :libs (orch/registry (reset-registry!) ; zepo-y1a4
+               orch/exec     (run-plan)
+               orch/agent    (run-agent)
+               orch/tools    (register-builtin-tools! set-tools-root!)
+               orch/approval (approved? describe-action)))
 
 (define (assert-eq label want got)
   (cond

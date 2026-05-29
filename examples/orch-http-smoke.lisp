@@ -9,7 +9,7 @@
 ;
 ; zepo-0p1
 
-(import :libs (orch/http))
+(import :libs (orch/http (http-post-json))) ; zepo-y1a4
 
 (define url "http://localhost:11434/v1/chat/completions")
 (define body

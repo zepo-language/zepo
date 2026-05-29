@@ -11,9 +11,10 @@
 ;
 ; zepo-k2n
 
-(import :libs (orch/registry))
-(import :libs (orch/tools))
-(import :libs (orch/plan))
+(import :libs (orch/registry (reset-registry! register-tool! ; zepo-y1a4
+                              lookup-tool call-tool tool-effect)
+               orch/tools    (register-builtin-tools! set-tools-root!)
+               orch/plan     (plan-from-json)))
 
 (define root "/tmp/zepo-k2n-root")
 (shell (string-append "rm -rf " root " && mkdir -p " root))

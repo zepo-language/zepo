@@ -9,12 +9,12 @@
 ;
 ; zepo-t40
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
-(import :libs (orch/research))
+(import :libs (orch/registry     (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec         (run-plan)
+               orch/agent        (run-agent)
+               orch/vector_store (store-size)
+               orch/corpus       (resolve-sources build-index-with)
+               orch/research     (grep-sources research-with)))
 
 (define tree  "/tmp/zepo-t40-tree")
 (define cache "/tmp/zepo-t40-cache.json")

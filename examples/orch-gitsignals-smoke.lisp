@@ -10,7 +10,8 @@
 ;
 ; zepo-4cr
 
-(import :libs (orch/gitsignals))
+(import :libs (orch/gitsignals (parse-commits churn-counts churn-of ; zepo-y1a4
+                                cochange-counts cochange-of hotspot-score)))
 
 (define (assert-eq label want got)
   (cond

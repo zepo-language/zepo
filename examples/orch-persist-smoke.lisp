@@ -9,9 +9,9 @@
 ;
 ; zepo-qjk
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/persist))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec     (run-plan plan-result step-result-of)
+               orch/persist  (save-ctx load-ctx)))
 
 (define test-path "/tmp/zepo-qjk-run.json")
 

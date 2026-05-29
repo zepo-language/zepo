@@ -8,7 +8,8 @@
 ;
 ; zepo-acn
 
-(import :libs (orch/registry))
+(import :libs (orch/registry (register-tool! lookup-tool unregister-tool! ; zepo-y1a4
+                              call-tool reset-registry!)))
 
 (reset-registry!)
 

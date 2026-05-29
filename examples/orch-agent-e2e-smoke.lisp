@@ -12,10 +12,11 @@
 ;
 ; zepo-fao
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/planner))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec     (run-plan)
+               orch/agent    (run-agent)
+               orch/planner  (plan-next-step-with default-planner-url
+                              default-retries)))
 
 (reset-registry!)
 (register-tool! 'echo

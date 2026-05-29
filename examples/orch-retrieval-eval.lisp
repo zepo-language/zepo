@@ -13,10 +13,10 @@
 ;
 ; zepo-546
 
-(import :libs (orch/embed))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
-(import :libs (orch/rerank))
+(import :libs (orch/embed        (embed-text) ; zepo-y1a4
+               orch/vector_store (store-size store-search)
+               orch/corpus       (resolve-sources build-index)
+               orch/rerank       (rerank)))
 
 ; (question file-substr answering-keyword) — the keyword must appear in the
 ; chunk that actually answers the question, so we measure CHUNK-level recall

@@ -9,8 +9,8 @@
 ;
 ; zepo-gp5
 
-(import :libs (orch/registry))
-(import :libs (orch/planner))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/planner  (plan)))
 
 (reset-registry!)
 (register-tool! 'retrieve_docs (lambda (args) "fake docs")

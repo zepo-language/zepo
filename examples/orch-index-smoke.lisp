@@ -12,9 +12,9 @@
 ;
 ; zepo-frz
 
-(import :libs (orch/registry))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
+(import :libs (orch/registry     (reset-registry!) ; zepo-y1a4
+               orch/vector_store (store-search store-save store-load store-size)
+               orch/corpus       (resolve-sources build-index-with)))
 
 (define cache "/tmp/orch-index-smoke-cache.json")
 (define store-path "/tmp/orch-index-smoke-store.json")

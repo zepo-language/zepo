@@ -11,8 +11,8 @@
 ;
 ; zepo-0rs
 
-(import :libs (orch/registry))
-(import :libs (orch/plan))
+(import :libs (orch/registry (reset-registry! register-tool!) ; zepo-y1a4
+               orch/plan     (plan-from-json plan-step-from-json)))
 
 (reset-registry!)
 ; Effect tags drive the rule; the fns are never called during validation.

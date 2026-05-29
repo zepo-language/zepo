@@ -11,12 +11,12 @@
 ;
 ; zepo-fzi
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
-(import :libs (orch/research))
+(import :libs (orch/registry     (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec         (run-plan)
+               orch/agent        (run-agent)
+               orch/vector_store (store-size)
+               orch/corpus       (resolve-sources build-index-with)
+               orch/research     (research-with)))
 
 (define tree  "/tmp/zepo-fzi-tree")
 (define cache "/tmp/zepo-fzi-cache.json")

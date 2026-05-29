@@ -17,11 +17,11 @@
 ;
 ; zepo-jus
 
-(import :libs (orch/registry))
-(import :libs (orch/exec))
-(import :libs (orch/agent))
-(import :libs (orch/vector_store))
-(import :libs (orch/corpus))
+(import :libs (orch/registry     (reset-registry! register-tool!) ; zepo-y1a4
+               orch/exec         (run-plan)
+               orch/agent        (run-agent)
+               orch/vector_store (store-size)
+               orch/corpus       (resolve-sources build-index-with)))
 
 (define cache "/tmp/zepo-jus-regress-cache.json")
 (shell (string-append "rm -f " cache))            ; cold cache => heap pressure each run
