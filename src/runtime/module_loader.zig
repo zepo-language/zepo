@@ -816,11 +816,30 @@ fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const
     };
     if (!target.initialized) return error.ImportBeforeInitialization;
     const active = ctx.currentEnv();
+    // zepo-zc0 / zepo-cnj4: same semantics as the regular (import M) path —
+    // only exports leak into unqualified scope, plus a namespace alias.
+    var ns_scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&ns_scope);
+    defer ctx.gc.roots.popHandleScope();
     for (target.env.entries.items) |entry| {
+        const nm = runtime_objects.symbolName(entry.sym_slot.*);
+        if (!target.isExported(nm)) continue;
         active.importEntry(entry) catch |e| switch (e) {
             error.ImportNameConflict => {},
             else => return e,
         };
+    }
+    const path_sym = try ctx.symbols.intern(mod_name);
+    if (active.findEntry(path_sym) == null) {
+        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+        const ns_slot = ns_scope.push(ns);
+        for (target.env.entries.items) |entry| {
+            const nm = runtime_objects.symbolName(entry.sym_slot.*);
+            const key_sym = try ctx.symbols.intern(nm);
+            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+                return error.OutOfMemory;
+        }
+        try active.define(path_sym, ns_slot.*);
     }
 }
 
