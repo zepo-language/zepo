@@ -365,3 +365,48 @@ test "import: mixed keyword form loads from multiple tiers" {
     try expectInt(va, 1);
     try expectInt(vb, 2);
 }
+
+// zepo-1rbq: keyword-form import accepts selective sublist
+test "import :libs selective sublist — only listed name leaks unqualified" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval("(lib mq (export a b) (define a 10) (define b 20))");
+    _ = try rig.eval("(import :libs (mq (a)))");
+    const va = try rig.eval("a");
+    try expectInt(va, 10);
+
+    // `b` should NOT be unqualified — looking it up should error.
+    const b_res = rig.eval("b");
+    try std.testing.expectError(error.UnboundVariable, b_res);
+}
+
+test "import :libs mixed — full module plus selective module" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval("(lib mq1 (export x y) (define x 1) (define y 2))");
+    _ = try rig.eval("(lib mq2 (export c d) (define c 30) (define d 40))");
+    _ = try rig.eval("(import :libs (mq1 mq2 (c)))");
+
+    const vx = try rig.eval("x");
+    const vy = try rig.eval("y");
+    const vc = try rig.eval("c");
+    try expectInt(vx, 1);
+    try expectInt(vy, 2);
+    try expectInt(vc, 30);
+
+    // mq2's `d` should not be unqualified.
+    try std.testing.expectError(error.UnboundVariable, rig.eval("d"));
+}
+
+test "import :libs selective sublist — namespace alias still bound" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval("(lib mq (export a b) (define a 100) (define b 200))");
+    _ = try rig.eval("(import :libs (mq (a)))");
+    // namespace alias `mq` should still resolve qualified access for `b`.
+    const vb = try rig.eval("mq.b");
+    try expectInt(vb, 200);
+}

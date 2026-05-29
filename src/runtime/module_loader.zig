@@ -843,6 +843,75 @@ fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const
     }
 }
 
+/// zepo-1rbq: Selective variant of importOneName — imports only the listed
+/// names from the module's exports, but still binds the full path namespace
+/// alias (matching the regular (import M (a b)) selective form's behavior).
+fn importOneNameSelective(
+    ctx: *EvalContext,
+    mod_name: []const u8,
+    paths: []const []const u8,
+    tier: []const u8,
+    names: Value, // list of symbols (the selective sublist)
+) !void {
+    if (ctx.registry.get(mod_name) == null) {
+        if (std.mem.eql(u8, tier, "libs")) {
+            try tryImportLib(ctx, mod_name, paths);
+        } else if (std.mem.eql(u8, tier, "packages")) {
+            try tryImportPackage(ctx, mod_name, paths);
+        } else {
+            try tryAutoLoadFromPaths(ctx, mod_name, paths);
+        }
+    }
+    const target = ctx.registry.get(mod_name) orelse {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "note: '{s}' not found in search paths\n", .{mod_name}) catch "";
+        _ = std.c.write(2, msg.ptr, msg.len);
+        return error.ModuleNotFound;
+    };
+    if (!target.initialized) return error.ImportBeforeInitialization;
+    const active = ctx.currentEnv();
+
+    var ns_scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&ns_scope);
+    defer ctx.gc.roots.popHandleScope();
+
+    // Walk the name list and import each.
+    const objects = runtime_objects;
+    var cur = names;
+    while (!value_mod.isNil(cur)) {
+        if (!objects.isPair(cur)) return error.InvalidSpecialForm;
+        const nm_v = objects.pairCar(cur).*;
+        if (!objects.isSymbol(nm_v)) return error.InvalidSpecialForm;
+        const nm = objects.symbolName(nm_v);
+        if (!target.isExported(nm)) return error.ImportNameNotExported;
+        const sym = try ctx.symbols.intern(nm);
+        const entry = target.env.findEntry(sym) orelse return error.ExportNotDefined;
+        active.importEntry(entry) catch |e| switch (e) {
+            error.ImportNameConflict => {
+                if (active.findEntry(entry.sym_slot.*)) |existing| {
+                    if (existing.val_slot.* == entry.val_slot.*) {} else return error.ImportNameConflict;
+                } else return error.ImportNameConflict;
+            },
+            else => return e,
+        };
+        cur = objects.pairCdr(cur).*;
+    }
+
+    // Bind namespace alias (same as full-import path in importOneName).
+    const path_sym = try ctx.symbols.intern(mod_name);
+    if (active.findEntry(path_sym) == null) {
+        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+        const ns_slot = ns_scope.push(ns);
+        for (target.env.entries.items) |entry| {
+            const nm = runtime_objects.symbolName(entry.sym_slot.*);
+            const key_sym = try ctx.symbols.intern(nm);
+            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+                return error.OutOfMemory;
+        }
+        try active.define(path_sym, ns_slot.*);
+    }
+}
+
 /// Handle `(import :modules (...) :libs (...) :packages (...))`.
 /// Parses keyword/list pairs and loads each name from the matching path tier.
 fn evalImportKeyword(ctx: *EvalContext, args: Value) !Value {
@@ -872,7 +941,10 @@ fn evalImportKeyword(ctx: *EvalContext, args: Value) !Value {
         else // "modules" or anything else falls back to module_path
             ctx.module_path;
 
-        // Walk the name list.
+        // Walk the name list. zepo-1rbq: each element is either a bare
+        // symbol (full import) or a symbol followed by a list of symbols
+        // (selective import). The list immediately after a symbol is
+        // consumed as that symbol's selective-name list.
         const name_slot = scope.push(list_v);
         while (!value_mod.isNil(name_slot.*)) {
             if (!objects.isPair(name_slot.*)) return error.InvalidSpecialForm;
@@ -880,6 +952,18 @@ fn evalImportKeyword(ctx: *EvalContext, args: Value) !Value {
             name_slot.* = objects.pairCdr(name_slot.*).*;
             if (!objects.isSymbol(nm_v)) return error.InvalidSpecialForm;
             const nm = objects.symbolName(nm_v);
+
+            // Peek ahead: if the next element is a list, it's the selective
+            // name list for this module.
+            if (!value_mod.isNil(name_slot.*) and objects.isPair(name_slot.*)) {
+                const peek = objects.pairCar(name_slot.*).*;
+                if (objects.isPair(peek)) {
+                    // Consume the selective list and do a selective import.
+                    name_slot.* = objects.pairCdr(name_slot.*).*;
+                    try importOneNameSelective(ctx, nm, paths, tier, peek);
+                    continue;
+                }
+            }
             try importOneName(ctx, nm, paths, tier);
         }
     }
