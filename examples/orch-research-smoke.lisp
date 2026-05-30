@@ -9,7 +9,7 @@
 ;
 ; zepo-t40
 
-(import :libs (orch/registry     (reset-registry! register-tool!) ; zepo-y1a4
+(import :libs (orch/registry     (reset-registry!) ; zepo-y1a4 / zepo-0um3 (register-tool! workaround removed)
                orch/exec         (run-plan)
                orch/agent        (run-agent)
                orch/vector_store (store-size)
