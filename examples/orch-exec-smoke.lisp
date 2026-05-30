@@ -55,22 +55,44 @@
   (assert-eq "parallel good" '(ok . "yes") (step-result-of "good" ctx))
   (assert-eq "parallel bad"   #t            (err? (step-result-of "bad" ctx))))
 
-; --- timing: parallel overlaps yielding tools ---
+; --- timing: parallel actually overlaps yielding tools ---
+;
+; zepo-mj0h: replaced the wall-clock-only check (< par-ms (/ seq-ms 2)),
+; which flaked under fiber scheduler load. We now verify overlap directly:
+; each `traced` tool records its start time into a shared list and the
+; parallel block asserts max(start_i) - min(start_i) < 50 ms. That proves
+; the tools actually launched concurrently regardless of how slow the
+; scheduler is. Wall-clock is still printed for visibility.
+(define starts '())
+(define (record-start!) (set! starts (cons (current-time-ms) starts)))
+(register-tool! 'traced (lambda (args) (record-start!) (sleep 0.2)
+                          (cdr (assoc 'tag args)))
+                :effect 'read-only)
+
 (define t0 (current-time-ms))
 (run-plan '(sequence (tool-call "a" slow ((tag . "a")))
                      (tool-call "b" slow ((tag . "b")))
                      (tool-call "c" slow ((tag . "c")))))
 (define seq-ms (- (current-time-ms) t0))
 
+(set! starts '())
 (define t1 (current-time-ms))
-(run-plan '(parallel  (tool-call "a" slow ((tag . "a")))
-                      (tool-call "b" slow ((tag . "b")))
-                      (tool-call "c" slow ((tag . "c")))))
+(run-plan '(parallel  (tool-call "a" traced ((tag . "a")))
+                      (tool-call "b" traced ((tag . "b")))
+                      (tool-call "c" traced ((tag . "c")))))
 (define par-ms (- (current-time-ms) t1))
 
 (display "seq 3x200ms = ") (display seq-ms) (display " ms") (newline)
 (display "par 3x200ms = ") (display par-ms) (display " ms") (newline)
-; Parallel should be roughly the cost of the slowest single step.
-(assert-eq "parallel overlaps" #t (< par-ms (/ seq-ms 2)))
+
+; Direct overlap check: the three tools started within 50 ms of each other,
+; which is only possible if the parallel scheduler launched them concurrently.
+(define (max-of xs) (let loop ((xs (cdr xs)) (m (car xs)))
+                      (if (null? xs) m (loop (cdr xs) (if (> (car xs) m) (car xs) m)))))
+(define (min-of xs) (let loop ((xs (cdr xs)) (m (car xs)))
+                      (if (null? xs) m (loop (cdr xs) (if (< (car xs) m) (car xs) m)))))
+(define start-spread (- (max-of starts) (min-of starts)))
+(display "parallel start spread = ") (display start-spread) (display " ms") (newline)
+(assert-eq "parallel overlaps" #t (< start-spread 50))
 
 (display "all checks passed.") (newline)
