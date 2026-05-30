@@ -231,6 +231,23 @@ test "module: two modules with same export name disambiguated via :as" {
     try std.testing.expect(!(lv == 0));
 }
 
+test "module: zepo-l7bk — name collision across imports errors as ImportNameConflict" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    _ = try rig.eval("(module ca (export x) (define x 1))");
+    _ = try rig.eval("(module cb (export x) (define x 2))");
+    _ = try rig.eval("(import ca (x))");
+    const r = rig.eval("(import cb (x))");
+    try std.testing.expectError(error.ImportNameConflict, r);
+    // The workaround (alias one side) succeeds and both bindings are reachable.
+    _ = try rig.eval("(import cb :as cbb)");
+    const ax = try rig.eval("x");
+    const bx = try rig.eval("cbb.x");
+    try expectInt(ax, 1);
+    try expectInt(bx, 2);
+}
+
 test "module: alias.missing-name errors as UnboundVariable" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();

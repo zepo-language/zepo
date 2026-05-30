@@ -677,6 +677,13 @@ pub fn doImportByName(
                     if (active.findEntry(entry.sym_slot.*)) |existing| {
                         if (existing.val_slot.* == entry.val_slot.*) continue;
                     }
+                    // zepo-l7bk: cross-module name collision diagnostic.
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf,
+                        "error: import-name conflict: '{s}' is already bound (cannot also import from '{s}')\n" ++
+                        "       hint: alias one of them with (import {s} :as <alias>) and reach the conflicting binding via <alias>.{s}\n",
+                        .{ nm, mod_name, mod_name, nm }) catch "";
+                    _ = std.c.write(2, msg.ptr, msg.len);
                     return error.ImportNameConflict;
                 },
                 else => return e,
@@ -889,7 +896,18 @@ fn importOneNameSelective(
         active.importEntry(entry) catch |e| switch (e) {
             error.ImportNameConflict => {
                 if (active.findEntry(entry.sym_slot.*)) |existing| {
-                    if (existing.val_slot.* == entry.val_slot.*) {} else return error.ImportNameConflict;
+                    if (existing.val_slot.* == entry.val_slot.*) {} else {
+                        // zepo-l7bk: same name imported from a different
+                        // module. Print a diagnostic naming the new source
+                        // module so the user can disambiguate via :as.
+                        var buf: [256]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf,
+                            "error: import-name conflict: '{s}' is already bound (cannot also import from '{s}')\n" ++
+                            "       hint: alias one of them with (import {s} :as <alias>) and reach the conflicting binding via <alias>.{s}\n",
+                            .{ nm, mod_name, mod_name, nm }) catch "";
+                        _ = std.c.write(2, msg.ptr, msg.len);
+                        return error.ImportNameConflict;
+                    }
                 } else return error.ImportNameConflict;
             },
             else => return e,
@@ -1117,7 +1135,16 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
         active.importEntry(entry) catch |e| switch (e) {
             error.ImportNameConflict => {
                 if (active.findEntry(entry.sym_slot.*)) |existing| {
-                    if (existing.val_slot.* == entry.val_slot.*) {} else return error.ImportNameConflict;
+                    if (existing.val_slot.* == entry.val_slot.*) {} else {
+                        // zepo-l7bk: cross-module name collision diagnostic.
+                        var buf: [256]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf,
+                            "error: import-name conflict: '{s}' is already bound (cannot also import from '{s}')\n" ++
+                            "       hint: alias one of them with (import {s} :as <alias>) and reach the conflicting binding via <alias>.{s}\n",
+                            .{ nm, mod_name, mod_name, nm }) catch "";
+                        _ = std.c.write(2, msg.ptr, msg.len);
+                        return error.ImportNameConflict;
+                    }
                 } else return error.ImportNameConflict;
             },
             else => return e,
