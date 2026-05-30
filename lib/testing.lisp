@@ -19,8 +19,13 @@
     describe it deftest
     ;; Placeholder assertion — full assertion suite lands in zepo-ss3f
     is
-    ;; Runner
-    run-tests clear-tests!)
+    ;; Runner — three variants
+    run-tests   ; pretty-print, return (passed . failed), no exit
+    run!        ; embeddable: returns a result record, no exit, no print
+    run!/exit   ; pretty-print THEN exit 1 on any failure (for top-of-file)
+    ;; Result accessors for the run! return value
+    result-passed result-failed result-total result-failures result-duration-ms
+    clear-tests!)
 
   ;; ── State ─────────────────────────────────────────────────────────────────
 
@@ -135,35 +140,114 @@
         groups-to-print)
       cur-groups))
 
-  (define (run-tests . args)
-    (let ((filter (if (null? args) #f (car args)))
-          (passed 0)
-          (failed 0)
-          (prev-groups '()))
+  ;; ── Result record ────────────────────────────────────────────────────────
+  ;;
+  ;; (run!) returns a hash-table with:
+  ;;   'passed       — count of tests that didn't throw
+  ;;   'failed       — count of tests that threw
+  ;;   'total        — passed + failed (= tests actually executed)
+  ;;   'duration-ms  — wall-clock time the whole run took
+  ;;   'failures     — list of (path . message) pairs for the failures
+  ;;
+  ;; The accessors below are just hash-get on that table — they exist so
+  ;; callers don't have to know the internal key names. zepo-s3zf will add
+  ;; a 'skipped count and zepo-nitj will add reporter integration.
+
+  (define (make-result passed failed failures duration-ms)
+    (let ((r (make-hash-table)))
+      (hash-set! r 'passed passed)
+      (hash-set! r 'failed failed)
+      (hash-set! r 'total (+ passed failed))
+      (hash-set! r 'duration-ms duration-ms)
+      (hash-set! r 'failures failures)
+      r))
+
+  (define (result-passed r)      (hash-get r 'passed 0))
+  (define (result-failed r)      (hash-get r 'failed 0))
+  (define (result-total r)       (hash-get r 'total 0))
+  (define (result-duration-ms r) (hash-get r 'duration-ms 0))
+  (define (result-failures r)    (hash-get r 'failures '()))
+
+  ;; ── Core runner ──────────────────────────────────────────────────────────
+  ;;
+  ;; (run! :silent #t/#f :filter NAME) is the embeddable variant. Returns
+  ;; the result record. Never calls exit. When :silent is true (default for
+  ;; programmatic callers), prints nothing — useful for tests-of-tests and
+  ;; for any caller that wants to format the result themselves.
+  ;;
+  ;; The legacy (run-tests . args) and the new (run!/exit . args) sit on
+  ;; top of run! with the appropriate side effects.
+
+  (define (parse-runner-args args)
+    ;; Accepts: (run! :silent #t :filter "foo") OR positional first-arg
+    ;; legacy form (run! "foo") meaning :filter "foo".
+    (let loop ((xs args) (silent #f) (filter #f))
+      (cond
+        ((null? xs) (cons silent filter))
+        ((and (symbol? (car xs)) (eq? (car xs) ':silent))
+         (loop (cddr xs) (cadr xs) filter))
+        ((and (symbol? (car xs)) (eq? (car xs) ':filter))
+         (loop (cddr xs) silent (cadr xs)))
+        ((string? (car xs))
+         (loop (cdr xs) silent (car xs)))
+        (#t (loop (cdr xs) silent filter)))))
+
+  (define (run! . args)
+    (let* ((opts   (parse-runner-args args))
+           (silent (car opts))
+           (filter (cdr opts))
+           (start  (current-time-ms))
+           (passed 0)
+           (failed 0)
+           (failures '())
+           (prev-groups '()))
       (for-each
         (lambda (entry)
           (let* ((path (car entry))
                  (thunk (cdr entry))
                  (leaf (car (reverse path))))
             (if (or (not filter) (equal? leaf filter))
-                (let ((cur-groups (print-context-transition prev-groups path)))
+                (let ((cur-groups
+                        (if silent prev-groups
+                            (print-context-transition prev-groups path))))
                   (set! prev-groups cur-groups)
-                  (print-indent (length cur-groups))
+                  (if (not silent) (print-indent (length cur-groups)))
                   (with-exception-handler
                     (lambda (e)
-                      (set! failed (+ failed 1))
-                      (display "FAIL ") (display leaf)
-                      (display ": ") (display (format-exception e))
-                      (newline))
+                      (let ((msg (format-exception e)))
+                        (set! failed (+ failed 1))
+                        (set! failures (append failures (list (cons path msg))))
+                        (if (not silent)
+                            (begin
+                              (display "FAIL ") (display leaf)
+                              (display ": ") (display msg) (newline)))))
                     (lambda ()
                       (thunk)
                       (set! passed (+ passed 1))
-                      (display "PASS ") (display leaf)
-                      (newline)))))))
+                      (if (not silent)
+                          (begin (display "PASS ") (display leaf) (newline)))))))))
         *tests*)
-      (newline)
-      (display "Summary: ") (display passed)
-      (display " passed, ") (display failed) (display " failed")
-      (newline)
-      (cons passed failed)))
+      (let ((duration (- (current-time-ms) start)))
+        (if (not silent)
+            (begin
+              (newline)
+              (display "Summary: ") (display passed)
+              (display " passed, ") (display failed) (display " failed")
+              (display " (") (display duration) (display " ms)")
+              (newline)))
+        (make-result passed failed failures duration))))
+
+  ;; Legacy printer that returns (passed . failed) — keeps the smoke tests
+  ;; written against zepo-mx0p working without modification.
+  (define (run-tests . args)
+    (let ((r (apply run! args)))
+      (cons (result-passed r) (result-failed r))))
+
+  ;; (run!/exit) — top-of-file convenience. Pretty-prints then exits 1 on
+  ;; any failure. This is what you want at the very bottom of a test file
+  ;; that's meant to be run as a script.
+  (define (run!/exit . args)
+    (let ((r (apply run! args)))
+      (if (> (result-failed r) 0) (exit 1))
+      r))
 )
