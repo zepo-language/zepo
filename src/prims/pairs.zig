@@ -299,6 +299,15 @@ pub fn primWithExceptionHandler(vm: *VM, args: []const Value) LispError!Value {
     // Record depth so we can unwind stale frames left by execFn on error.
     const depth_before = vm.call_stack.frames.items.len;
     const result = vm.callValue(thunk, &[_]Value{}) catch |err| {
+        // zepo-ewdc: FiberYielded is a scheduler control-flow signal, not a
+        // user error. Letting the handler catch it breaks the sleep/spawn/
+        // channel-recv protocol — the scheduler needs to see this so it can
+        // resume the fiber later. Re-raise without invoking the handler.
+        // (Earlier observation 23748 noted a previous attempt at this fix
+        // was reverted as a band-aid; this version keeps the depth-unwind
+        // logic ONLY for actual user errors, so the scheduler sees its
+        // own signal cleanly.)
+        if (err == error.FiberYielded) return err;
         // execFn leaves the failed frame on the call stack for diagnostics;
         // unwind back to the pre-thunk depth before invoking the handler so
         // that currentFrame() points at the correct outer frame.
