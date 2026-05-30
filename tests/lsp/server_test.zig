@@ -119,6 +119,36 @@ test "didOpen publishes diagnostics" {
     try t.expect(std.mem.indexOf(u8, out.items, "unbalanced parenthesis") != null);
 }
 
+test "reader diagnostics: unterminated string surfaces as diagnostic" {
+    // zepo-vwns: the byte-level paren-balance check can't see string-level
+    // errors. The reader pass does, and now publishes them.
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///s.lisp","languageId":"lisp","version":1,"text":"(define s \"unterminated"}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "publishDiagnostics") != null);
+    // The reader's diagnostic message for StringUnterminated mentions the
+    // string. Test for any of several plausible substrings the reader uses.
+    const has_string_msg = std.mem.indexOf(u8, out.items, "string") != null or
+        std.mem.indexOf(u8, out.items, "String") != null;
+    try t.expect(has_string_msg);
+}
+
 test "hover on imported alias reports module" {
     const t = std.testing;
     const alloc = t.allocator;

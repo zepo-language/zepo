@@ -15,6 +15,7 @@ pub const protocol = @import("protocol.zig");
 pub const documents = @import("documents.zig");
 pub const analysis = @import("analysis.zig");
 pub const resolver = @import("resolver.zig");
+pub const reader_check = @import("reader_check.zig");
 pub const server = @import("server.zig");
 
 pub const Server = server.Server;
@@ -25,5 +26,6 @@ test {
     _ = documents;
     _ = analysis;
     _ = resolver;
+    _ = reader_check;
     _ = server;
 }

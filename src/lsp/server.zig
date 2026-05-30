@@ -16,6 +16,7 @@ const proto = @import("protocol.zig");
 const docs_mod = @import("documents.zig");
 const analysis = @import("analysis.zig");
 const resolver_mod = @import("resolver.zig");
+const reader_check = @import("reader_check.zig");
 
 pub const Server = struct {
     alloc: std.mem.Allocator,
@@ -448,6 +449,28 @@ pub const Server = struct {
         }
 
         try checkParens(s.alloc, doc.text, &diags);
+
+        // zepo-vwns: reader-based diagnostics. Boots a Zepo reader + AST
+        // builder against the document and reports span-accurate parse and
+        // syntax errors with the same precision the CLI would. Ranges are
+        // emitted in byte coordinates; converted to the negotiated encoding
+        // below alongside the other diagnostics.
+        var reader_diags: std.ArrayListUnmanaged(reader_check.Diag) = .empty;
+        defer {
+            for (reader_diags.items) |d| if (d.owned) s.alloc.free(d.message);
+            reader_diags.deinit(s.alloc);
+        }
+        reader_check.check(s.alloc, uri, doc.text, &reader_diags) catch {};
+        for (reader_diags.items) |rd| {
+            // Don't free the source message yet — copy so we can transfer
+            // ownership semantics. Owned strings get duped; non-owned
+            // (parser's static msg) are referenced directly.
+            const msg_copy = if (rd.owned)
+                try s.alloc.dupe(u8, rd.message)
+            else
+                rd.message;
+            try diags.append(s.alloc, .{ .range = rd.range, .message = msg_copy, .owned = rd.owned });
+        }
 
         // Use analysis to find references to qualified symbols whose prefix
         // is not an imported alias — report as "unbound namespace".
