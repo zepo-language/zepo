@@ -31,6 +31,7 @@
     ;; Assertions
     is is-not
     =check =check~
+    =snapshot
     throws throws-of does-not-throw
     set-equal? matches
     ;; Runner — three variants
@@ -106,6 +107,108 @@
   ;; the expansion, and set! on qualified names isn't supported).
   (define (push-pending-tags! more)
     (set! *pending-tags* (append *pending-tags* more)))
+
+  ;; ── Snapshots (zepo-e6o9) ────────────────────────────────────────────────
+  ;;
+  ;; *current-test-path* is set by the runner just before invoking a test's
+  ;; thunk so that =snapshot can default its :name argument to a sanitized
+  ;; version of the test path. *update-snapshots?* is a per-run flag flipped
+  ;; on by (run! :update-snapshots #t) — when true, snapshot mismatches are
+  ;; overwritten and reported as PASS UPDATED instead of FAIL.
+
+  (define *current-test-path* '())
+  (define *update-snapshots?* #f)
+
+  (define (set-current-test-path! p) (set! *current-test-path* p))
+  (define (current-test-path) *current-test-path*)
+  (define (update-snapshots?) *update-snapshots?*)
+
+  ;; Sanitize a character: alnum and a few safe punctuation stay, everything
+  ;; else (slash, spaces, control chars, quotes, etc) becomes '-'.
+  (define (snap-char-safe? c)
+    (or (and (char>=? c #\a) (char<=? c #\z))
+        (and (char>=? c #\A) (char<=? c #\Z))
+        (and (char>=? c #\0) (char<=? c #\9))
+        (char=? c #\_)
+        (char=? c #\.)
+        (char=? c #\-)))
+
+  (define (slugify s)
+    (let ((n (string-length s)))
+      (let loop ((i 0) (acc ""))
+        (if (>= i n) acc
+            (let ((c (string-ref s i)))
+              (loop (+ i 1)
+                    (string-append acc
+                      (if (snap-char-safe? c) (char->string c) "-"))))))))
+
+  ;; Join path components with "--" and slugify each — produces a single
+  ;; filesystem-safe identifier for the test.
+  (define (path->snapshot-slug path)
+    (let loop ((xs path) (acc ""))
+      (cond
+        ((null? xs) (if (= (string-length acc) 0) "snapshot" acc))
+        ((= (string-length acc) 0)
+         (loop (cdr xs) (slugify (car xs))))
+        (#t (loop (cdr xs)
+                  (string-append acc "--" (slugify (car xs))))))))
+
+  ;; Default snapshot directory; resolved at call time so tests can override.
+  (define *snapshot-dir* ".zepo-snapshots")
+
+  ;; Ensure parent directory of `path` exists; uses make-directory which is
+  ;; mkdir -p semantics in Zepo.
+  (define (ensure-parent-dir! path)
+    (let loop ((i (- (string-length path) 1)))
+      (cond
+        ((< i 0) #t)
+        ((char=? (string-ref path i) #\/)
+         (let ((dir (substring path 0 i)))
+           (if (> (string-length dir) 0)
+               (make-directory dir))))
+        (#t (loop (- i 1))))))
+
+  (define (default-snapshot-path)
+    (string-append *snapshot-dir* "/"
+                   (path->snapshot-slug (current-test-path))
+                   ".snap"))
+
+  ;; Build a short diff describing how `expected` (stored) differs from
+  ;; `actual` (current run). Uses character-level diff via diff-line and
+  ;; falls back to side-by-side rendering.
+  (define (snapshot-diff expected actual)
+    (let ((d (diff-line expected actual)))
+      (if (> (string-length d) 0)
+          d
+          (string-append "  expected:\n    " expected
+                         "\n  actual:\n    " actual))))
+
+  (define (=snapshot-impl quoted-expr value path)
+    (let* ((serialized (write-to-string value))
+           (effective-path (if path path (default-snapshot-path))))
+      (cond
+        ;; First run — write and report a NEW SNAPSHOT pass.
+        ((not (file-exists? effective-path))
+         (ensure-parent-dir! effective-path)
+         (file-write-string effective-path serialized)
+         ;; A pass is signalled by returning normally. We still emit a
+         ;; one-line note to stderr/stdout so the user knows a new
+         ;; snapshot was created.
+         (display "  [NEW SNAPSHOT ") (display effective-path) (display "]") (newline)
+         #t)
+        (#t
+         (let ((stored (file-read-string effective-path)))
+           (cond
+             ((string=? stored serialized) #t)
+             ((update-snapshots?)
+              (file-write-string effective-path serialized)
+              (display "  [UPDATED SNAPSHOT ") (display effective-path) (display "]") (newline)
+              #t)
+             (#t
+              (error (string-append
+                       "snapshot mismatch for " (display-to-string quoted-expr)
+                       " at " effective-path "\n"
+                       (snapshot-diff stored serialized))))))))))
 
   ;; (tag 'slow 'integration ...) — attaches the given quoted tags to the
   ;; very next test registration. Note: tags are passed AS QUOTED SYMBOLS
@@ -371,6 +474,23 @@
   (defmacro =check~ (actual expected tol)
     `(=check~-impl ',actual ,expected ,actual ,tol))
 
+  ;; (=snapshot value)            — snapshot path defaults from current test
+  ;; (=snapshot value :name PATH) — explicit snapshot file
+  ;;
+  ;; First run writes the snapshot, subsequent runs compare. When the run is
+  ;; invoked with :update-snapshots #t, mismatches overwrite the file and
+  ;; pass with an UPDATED note.
+  (defmacro =snapshot args
+    (let ((value (car args))
+          (rest (cdr args)))
+      (let loop ((xs rest) (name #f))
+        (cond
+          ((null? xs)
+           `(=snapshot-impl ',value ,value ,name))
+          ((and (pair? xs) (symbol? (car xs)) (eq? (car xs) ':name))
+           (loop (cddr xs) (cadr xs)))
+          (#t (loop (cdr xs) name))))))
+
   (defmacro throws (expr)
     `(throws-impl ',expr (lambda () ,expr)))
 
@@ -483,6 +603,7 @@
       (hash-set! opts 'tags '())
       (hash-set! opts 'exclude-tags '())
       (hash-set! opts 'reporter #f)
+      (hash-set! opts 'update-snapshots #f)
       (let loop ((xs args))
         (cond
           ((null? xs) opts)
@@ -500,6 +621,9 @@
            (loop (cddr xs)))
           ((and (symbol? (car xs)) (eq? (car xs) ':reporter))
            (hash-set! opts 'reporter (cadr xs))
+           (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':update-snapshots))
+           (hash-set! opts 'update-snapshots (cadr xs))
            (loop (cddr xs)))
           ((string? (car xs))
            (hash-set! opts 'filter (car xs))
@@ -822,6 +946,7 @@
            (include-tags  (hash-get opts 'tags '()))
            (exclude-tags  (hash-get opts 'exclude-tags '()))
            (reporter      (resolve-reporter (hash-get opts 'reporter #f)))
+           (update-snaps  (hash-get opts 'update-snapshots #f))
            (start  (current-time-ms))
            (planned-count (length *tests*))
            (passed 0)
@@ -830,6 +955,7 @@
            (failures '())
            (prev-groups '())
            (prev-ancestors '()))
+      (set! *update-snapshots?* update-snaps)
       (if reporter (call-handler! reporter 'on-start planned-count))
       (for-each
         (lambda (entry)
@@ -881,6 +1007,7 @@
                                 (display "FAIL ") (display leaf)
                                 (display ": ") (display msg) (newline)))))
                          (lambda ()
+                           (set-current-test-path! path)
                            (thunk)
                            (set! passed (+ passed 1))
                            (let ((tdur (- (current-time-ms) tstart)))
