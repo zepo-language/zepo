@@ -24,7 +24,7 @@
   (export research research-with grep-sources)
 
   ;; zepo-y1a4: selective imports.
-  (import orch/registry     (register-tool! lookup-tool call-tool))   ; zepo-0um3
+  (import orch/registry     (register-tool! reset-registry! lookup-tool call-tool))   ; zepo-0um3 / zepo-s4xr
   (import orch/agent        (run-agent))
   (import orch/embed        (embed-text))
   (import orch/vector_store (store-search))
