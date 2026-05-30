@@ -17,8 +17,11 @@
   (export
     ;; Block forms
     describe it deftest
-    ;; Placeholder assertion — full assertion suite lands in zepo-ss3f
-    is
+    ;; Assertions
+    is is-not
+    =check =check~
+    throws throws-of does-not-throw
+    set-equal? matches
     ;; Runner — three variants
     run-tests   ; pretty-print, return (passed . failed), no exit
     run!        ; embeddable: returns a result record, no exit, no print
@@ -78,16 +81,171 @@
   (defmacro deftest (name . body)
     `(register-test! ,name (lambda () ,@body)))
 
-  ;; ── Placeholder assertion ────────────────────────────────────────────────
+  ;; ── Assertions ───────────────────────────────────────────────────────────
   ;;
-  ;; Real assertion suite (=check, =check~, throws, throws-of, doesn't-throw,
-  ;; set-equal?, matches, with structured diff output) lives in [[zepo-ss3f]].
-  ;; For now `is` errors on falsy.
+  ;; All assertion macros expand to a call into an -impl function that does
+  ;; the comparison and raises a structured error on failure. The macro
+  ;; captures the source expression (via quote) so the failure message can
+  ;; show what was actually written, not the post-evaluation value.
+
+  ;; Build a diff line for two values. Lists, hash-tables, and strings get
+  ;; first-difference detail; everything else just renders both sides.
+  (define (diff-line expected actual)
+    (cond
+      ((and (string? expected) (string? actual))
+       (let ((n (min (string-length expected) (string-length actual))))
+         (let loop ((i 0))
+           (cond
+             ((= i n)
+              (if (= (string-length expected) (string-length actual))
+                  ""
+                  (string-append
+                    "  length differs: expected " (number->string (string-length expected))
+                    " got " (number->string (string-length actual)))))
+             ((not (= (char->integer (string-ref expected i))
+                      (char->integer (string-ref actual i))))
+              (string-append
+                "  first differing char at index " (number->string i)
+                ": expected " (write-to-string (string-ref expected i))
+                " got " (write-to-string (string-ref actual i))))
+             (#t (loop (+ i 1)))))))
+      ((and (pair? expected) (pair? actual))
+       (let loop ((e expected) (a actual) (i 0))
+         (cond
+           ((and (null? e) (null? a)) "")
+           ((null? e)
+            (string-append "  expected ends at index " (number->string i)
+              "; got has more elements"))
+           ((null? a)
+            (string-append "  got ends at index " (number->string i)
+              "; expected has more elements"))
+           ((not (equal? (car e) (car a)))
+            (string-append "  first differing element at index " (number->string i)
+              ": expected " (write-to-string (car e))
+              " got " (write-to-string (car a))))
+           (#t (loop (cdr e) (cdr a) (+ i 1))))))
+      (#t "")))
+
+  (define (is-impl quoted-expr value)
+    (if value
+        #t
+        (error (string-append "expected truthy: " (display-to-string quoted-expr)))))
+
+  (define (is-not-impl quoted-expr value)
+    (if (not value)
+        #t
+        (error (string-append "expected falsy: " (display-to-string quoted-expr)))))
+
+  (define (=check-impl quoted-expr expected actual)
+    (if (equal? expected actual)
+        #t
+        (let ((diff (diff-line expected actual))
+              (base (string-append
+                      "expected " (write-to-string expected)
+                      " got "      (write-to-string actual)
+                      " in "       (display-to-string quoted-expr))))
+          (error (if (= (string-length diff) 0)
+                     base
+                     (string-append base "\n" diff))))))
+
+  (define (=check~-impl quoted-expr expected actual tol)
+    (if (and (number? expected) (number? actual)
+             (< (abs (- expected actual)) tol))
+        #t
+        (error (string-append
+                 "expected " (write-to-string expected)
+                 " ± "       (write-to-string tol)
+                 ", got "    (write-to-string actual)
+                 " in "      (display-to-string quoted-expr)))))
+
+  (define (throws-impl quoted-expr thunk)
+    (let ((raised? #f))
+      (with-exception-handler
+        (lambda (e) (set! raised? #t) '())
+        (lambda () (thunk)))
+      (if raised?
+          #t
+          (error (string-append
+                   "expected an error from " (display-to-string quoted-expr)
+                   " but none was raised")))))
+
+  (define (throws-of-impl quoted-expr predicate-name predicate thunk)
+    (let ((raised? #f)
+          (matched? #f))
+      (with-exception-handler
+        (lambda (e)
+          (set! raised? #t)
+          (if (predicate e) (set! matched? #t))
+          '())
+        (lambda () (thunk)))
+      (cond
+        ((not raised?)
+         (error (string-append
+                  "expected an error matching " predicate-name
+                  " from " (display-to-string quoted-expr)
+                  " but none was raised")))
+        ((not matched?)
+         (error (string-append
+                  "an error was raised but it did not match " predicate-name
+                  " in " (display-to-string quoted-expr))))
+        (#t #t))))
+
+  (define (does-not-throw-impl quoted-expr thunk)
+    (let ((caught #f))
+      (with-exception-handler
+        (lambda (e) (set! caught e) '())
+        (lambda () (thunk)))
+      (if caught
+          (error (string-append
+                   "expected no error from " (display-to-string quoted-expr)
+                   " but got " (format-exception caught)))
+          #t)))
+
+  ;; Set-equality for lists: ignores order, ignores duplicates.
+  (define (set-equal? a b)
+    (define (subset? xs ys)
+      (let loop ((xs xs))
+        (cond ((null? xs) #t)
+              ((member (car xs) ys) (loop (cdr xs)))
+              (#t #f))))
+    (and (subset? a b) (subset? b a)))
+
+  ;; Pattern match. Supports: literals (compared by equal?), the wildcard
+  ;; symbol _ (matches anything), and lists (recursive).
+  (define (matches value pattern)
+    (cond
+      ((eq? pattern '_) #t)
+      ((and (pair? pattern) (pair? value))
+       (and (matches (car value) (car pattern))
+            (matches (cdr value) (cdr pattern))))
+      ((and (null? pattern) (null? value)) #t)
+      (#t (equal? value pattern))))
+
+  ;; ── Assertion macros ─────────────────────────────────────────────────────
 
   (defmacro is (expr)
-    `(if (not ,expr)
-         (error "assertion failed" ',expr)
-         #t))
+    `(is-impl ',expr ,expr))
+
+  (defmacro is-not (expr)
+    `(is-not-impl ',expr ,expr))
+
+  (defmacro =check (actual expected)
+    `(=check-impl ',actual ,expected ,actual))
+
+  (defmacro =check~ (actual expected tol)
+    `(=check~-impl ',actual ,expected ,actual ,tol))
+
+  (defmacro throws (expr)
+    `(throws-impl ',expr (lambda () ,expr)))
+
+  ;; (throws-of expr pred) — succeeds if expr raises and pred returns truthy
+  ;; on the raised value. pred is typically error-object?, or a procedure
+  ;; that inspects (error-object-message) etc.
+  (defmacro throws-of (expr pred)
+    `(throws-of-impl ',expr ',pred ,pred (lambda () ,expr)))
+
+  (defmacro does-not-throw (expr)
+    `(does-not-throw-impl ',expr (lambda () ,expr)))
 
   ;; ── Runner ───────────────────────────────────────────────────────────────
   ;;
