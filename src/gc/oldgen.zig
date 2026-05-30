@@ -28,7 +28,7 @@ const CardTable = cards_mod.CardTable;
 const roots_mod = @import("roots.zig");
 const RootSet = roots_mod.RootSet;
 
-pub const OLD_GEN_SIZE: usize = 4 * 1024 * 1024; // 4 MiB default
+pub const OLD_GEN_SIZE: usize = 4 * 1024 * 1024; // 4 MiB default; zepo-nmqj: configurable at init
 pub const WORD: usize = 8;
 
 pub const SIZE_CLASSES = [_]usize{ 2, 3, 4, 6, 8, 12, 16, 32, 64 };
@@ -66,19 +66,25 @@ pub const OldGen = struct {
     card_starts: []?*ObjHeader,
 
     pub fn init(allocator: std.mem.Allocator) !OldGen {
-        const buf = try allocator.alignedAlloc(u8, .@"8", OLD_GEN_SIZE);
+        return initWithSize(allocator, OLD_GEN_SIZE);
+    }
+
+    /// zepo-nmqj: init with a user-supplied old-gen size in bytes.
+    pub fn initWithSize(allocator: std.mem.Allocator, heap_size: usize) !OldGen {
+        const aligned = std.mem.alignForward(usize, heap_size, 8);
+        const buf = try allocator.alignedAlloc(u8, .@"8", aligned);
         @memset(buf, 0);
         var lists: [SIZE_CLASSES.len]?*FreeNode = undefined;
         for (&lists) |*l| l.* = null;
-        const n_cards = (OLD_GEN_SIZE + cards_mod.CARD_SIZE - 1) / cards_mod.CARD_SIZE;
+        const n_cards = (aligned + cards_mod.CARD_SIZE - 1) / cards_mod.CARD_SIZE;
         const card_starts = try allocator.alloc(?*ObjHeader, n_cards);
         @memset(card_starts, null);
         return .{
             .allocator = allocator,
             .base = buf.ptr,
-            .end = buf.ptr + OLD_GEN_SIZE,
+            .end = buf.ptr + aligned,
             .bump = buf.ptr,
-            .size = OLD_GEN_SIZE,
+            .size = aligned,
             .free_lists = lists,
             .large_free_list = null,
             .card_starts = card_starts,

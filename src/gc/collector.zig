@@ -39,7 +39,10 @@ pub const NoCollectGuard = struct {
 };
 
 // zepo-8ou: incremental major GC trigger at 50% old-gen usage.
-const OLD_GEN_TRIGGER_BYTES: usize = oldgen_mod.OLD_GEN_SIZE / 2;
+// zepo-nmqj: computed from the actual old-gen size at runtime.
+inline fn oldGenTriggerBytes(gc: *const GC) usize {
+    return gc.old_gen.heapSize() / 2;
+}
 /// Budget (objects traced) per incremental marking step in the scheduler.
 const MARK_STEP_BUDGET: usize = 256;
 
@@ -66,9 +69,19 @@ pub const GC = struct {
     mark_phase: MarkPhase = .idle,
 
     pub fn init(allocator: std.mem.Allocator) !GC {
-        var nursery = try Nursery.init();
+        return initWithSize(allocator, nursery_mod.NURSERY_SIZE, oldgen_mod.OLD_GEN_SIZE);
+    }
+
+    /// zepo-nmqj: init the GC with explicit nursery and old-gen sizes (bytes).
+    /// Sizes are aligned up to page/word boundaries internally.
+    pub fn initWithSize(
+        allocator: std.mem.Allocator,
+        nursery_bytes: usize,
+        old_gen_bytes: usize,
+    ) !GC {
+        var nursery = try Nursery.initWithSize(nursery_bytes);
         errdefer nursery.deinit();
-        var old_gen = try OldGen.init(allocator);
+        var old_gen = try OldGen.initWithSize(allocator, old_gen_bytes);
         errdefer old_gen.deinit();
         const cards = try CardTable.init(allocator, old_gen.baseAddr(), old_gen.heapSize());
         return .{
@@ -189,8 +202,8 @@ pub const GC = struct {
                 .{
                     gc.minor_count,
                     used_before,
-                    nursery_mod.NURSERY_SIZE,
-                    used_before * 100 / nursery_mod.NURSERY_SIZE,
+                    gc.nursery.size(),
+                    used_before * 100 / gc.nursery.size(),
                     roots_n,
                 },
             );
@@ -395,6 +408,6 @@ pub const GC = struct {
     /// incremental mark cycle should be started by the scheduler.
     pub fn needsMajor(gc: *const GC) bool {
         return gc.mark_phase == .idle and
-            gc.old_gen.usedBytes() > OLD_GEN_TRIGGER_BYTES;
+            gc.old_gen.usedBytes() > oldGenTriggerBytes(gc);
     }
 };

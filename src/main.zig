@@ -25,7 +25,10 @@ const HELP =
     \\
     \\Options:
     \\  --repl             Start an interactive REPL
+    \\  -e <expr>          Evaluate <expr> and exit
     \\  --max-regs=N       Set VM register pool ceiling (default: 4194304, ~660K recursion levels)
+    \\  --max-heap=SIZE    Set GC heap cap for nursery AND old-gen (default: 4M).
+    \\                     SIZE accepts bytes or suffixes: 16M, 32MiB, 2G, 64K. Also via ZEPO_MAX_HEAP.
     \\  --help             Show this help message
     \\
     \\Commands:
@@ -70,6 +73,49 @@ fn workerMain(out: *anyerror!void) void {
     out.* = realMain();
 }
 
+// zepo-nmqj: parse a heap size with optional SI-ish suffix.
+// Accepted forms (case-insensitive suffix): "12345", "4K"/"4KB"/"4KiB",
+// "16M"/"16MB"/"16MiB", "2G"/"2GB"/"2GiB". Multiplier is always 2^N (1024).
+// Returns InvalidSize on garbage.
+fn parseHeapSize(s: []const u8) !usize {
+    if (s.len == 0) return error.InvalidSize;
+    // Find end of leading digits.
+    var i: usize = 0;
+    while (i < s.len and s[i] >= '0' and s[i] <= '9') : (i += 1) {}
+    if (i == 0) return error.InvalidSize;
+    const n = try std.fmt.parseInt(usize, s[0..i], 10);
+    var suffix = s[i..];
+    // Strip a trailing 'B' or 'iB' for KB/KiB style.
+    if (suffix.len == 0) return n;
+    // Lowercase the unit letter for comparison.
+    const unit = suffix[0];
+    const tail = suffix[1..];
+    const tail_ok = tail.len == 0 or
+        std.ascii.eqlIgnoreCase(tail, "b") or
+        std.ascii.eqlIgnoreCase(tail, "ib") or
+        std.ascii.eqlIgnoreCase(tail, "ib ") or // tolerate trailing space
+        std.ascii.eqlIgnoreCase(tail, "ibs");
+    if (!tail_ok) return error.InvalidSize;
+    const mult: usize = switch (unit) {
+        'k', 'K' => 1024,
+        'm', 'M' => 1024 * 1024,
+        'g', 'G' => 1024 * 1024 * 1024,
+        else => return error.InvalidSize,
+    };
+    return n * mult;
+}
+
+test "parseHeapSize" {
+    try std.testing.expectEqual(@as(usize, 1024), try parseHeapSize("1024"));
+    try std.testing.expectEqual(@as(usize, 16 * 1024 * 1024), try parseHeapSize("16M"));
+    try std.testing.expectEqual(@as(usize, 32 * 1024 * 1024), try parseHeapSize("32MiB"));
+    try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024 * 1024), try parseHeapSize("2G"));
+    try std.testing.expectEqual(@as(usize, 4 * 1024), try parseHeapSize("4KB"));
+    try std.testing.expectError(error.InvalidSize, parseHeapSize("hello"));
+    try std.testing.expectError(error.InvalidSize, parseHeapSize(""));
+    try std.testing.expectError(error.InvalidSize, parseHeapSize("16Z"));
+}
+
 fn collectArgs(alloc: std.mem.Allocator) ![]const []const u8 {
     var list = std.ArrayListUnmanaged([]const u8).empty;
     for (g_argv) |a| try list.append(alloc, std.mem.sliceTo(a, 0));
@@ -96,14 +142,37 @@ fn realMain() !void {
         return;
     }
 
-    const arg = args[1];
-
-    // zepo-cvh: parse --max-regs=N before the command/script
+    // zepo-cvh / zepo-nmqj: parse leading options (--max-regs, --max-heap)
+    // before the command/script. CLI wins over env.
     var user_max_regs: ?usize = null;
-    const cmd_start: usize = if (std.mem.startsWith(u8, arg, "--max-regs=")) blk: {
-        user_max_regs = std.fmt.parseInt(usize, arg["--max-regs=".len..], 10) catch null;
-        break :blk 2;
-    } else 1;
+    var user_max_heap: ?usize = null;
+    var cmd_start: usize = 1;
+    while (cmd_start < args.len) {
+        const a = args[cmd_start];
+        if (std.mem.startsWith(u8, a, "--max-regs=")) {
+            user_max_regs = std.fmt.parseInt(usize, a["--max-regs=".len..], 10) catch null;
+            cmd_start += 1;
+        } else if (std.mem.startsWith(u8, a, "--max-heap=")) {
+            user_max_heap = parseHeapSize(a["--max-heap=".len..]) catch {
+                _ = std.c.write(2, "error: --max-heap: invalid size\n", 32);
+                std.process.exit(1);
+            };
+            cmd_start += 1;
+        } else break;
+    }
+
+    // ZEPO_MAX_HEAP env var — CLI flag wins if both present.
+    if (user_max_heap == null) {
+        if (std.c.getenv("ZEPO_MAX_HEAP")) |raw| {
+            const env = std.mem.span(raw);
+            user_max_heap = parseHeapSize(env) catch {
+                _ = std.c.write(2, "error: ZEPO_MAX_HEAP: invalid size\n", 35);
+                std.process.exit(1);
+            };
+        }
+    }
+
+    const arg = if (cmd_start < args.len) args[cmd_start] else args[1];
 
     if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
         _ = std.c.write(1, HELP.ptr, HELP.len);
@@ -111,17 +180,17 @@ fn realMain() !void {
     }
 
     if (std.mem.eql(u8, arg, "fmt")) {
-        try fmt_cmd.runFmt(alloc, args[2..]);
+        try fmt_cmd.runFmt(alloc, args[cmd_start + 1 ..]);
         return;
     }
 
     if (std.mem.eql(u8, arg, "init")) {
-        try init_cmd.runInit(alloc, args[2..]);
+        try init_cmd.runInit(alloc, args[cmd_start + 1 ..]);
         return;
     }
 
     if (std.mem.eql(u8, arg, "lint")) {
-        try lint_cmd.runLint(alloc, args[2..]);
+        try lint_cmd.runLint(alloc, args[cmd_start + 1 ..]);
         return;
     }
 
@@ -135,21 +204,21 @@ fn realMain() !void {
     }
 
     if (std.mem.eql(u8, arg, "new")) {
-        try new_cmd.runNew(alloc, args[2..]);
+        try new_cmd.runNew(alloc, args[cmd_start + 1 ..]);
         return;
     }
 
     if (std.mem.eql(u8, arg, "install")) {
-        if (args.len < 3) {
+        if (args.len < cmd_start + 2) {
             _ = std.c.write(2, "error: install requires a path argument\n", 40);
             std.process.exit(1);
         }
-        try install_cmd.runInstall(alloc, args[2]);
+        try install_cmd.runInstall(alloc, args[cmd_start + 1]);
         return;
     }
 
     if (std.mem.eql(u8, arg, "build")) {
-        if (args.len < 3) {
+        if (args.len < cmd_start + 2) {
             // No file arg: look for project.lisp and use entry + project name.
             var cfg = project_config.ProjectConfig.loadOptional(alloc) orelse {
                 _ = std.c.write(2, "error: build requires a .lisp file (or run from a project directory with project.lisp)\n", 87);
@@ -160,13 +229,16 @@ fn realMain() !void {
             defer alloc.free(synthetic);
             try build_cmd.runBuild(alloc, synthetic);
         } else {
-            try build_cmd.runBuild(alloc, args[2..]);
+            try build_cmd.runBuild(alloc, args[cmd_start + 1 ..]);
         }
         return;
     }
 
-    // Build interpreter.
-    var gc = try zepo.GC.init(alloc);
+    // Build interpreter. zepo-nmqj: heap cap honored from CLI/env if provided.
+    var gc = if (user_max_heap) |hsz|
+        try zepo.GC.initWithSize(alloc, hsz, hsz)
+    else
+        try zepo.GC.init(alloc);
     defer gc.deinit();
     var syms = try zepo.runtime.SymbolTable.init(&gc, alloc);
     defer syms.deinit();
@@ -215,6 +287,21 @@ fn realMain() !void {
         std.process.exit(1);
     }
     const interp_arg = args[cmd_start];
+    // zepo-nmqj: -e <expr> evaluates an inline expression and exits.
+    if (std.mem.eql(u8, interp_arg, "-e")) {
+        if (cmd_start + 1 >= args.len) {
+            _ = std.c.write(2, "error: -e requires an expression argument\n", 42);
+            std.process.exit(1);
+        }
+        zepo.prims.io.program_argv = args[cmd_start + 2 ..];
+        setProgramMode(&syms, &globals);
+        const sw = StderrWriter{};
+        _ = ctx.evalString(args[cmd_start + 1], "<-e>") catch |e| {
+            ctx.printDiagnostic(&sw, e);
+            std.process.exit(1);
+        };
+        return;
+    }
     if (std.mem.eql(u8, interp_arg, "--repl")) {
         // argv for preloaded files: [file, extra-args...]  (no "zepo --repl" prefix)
         zepo.prims.io.program_argv = args[cmd_start + 1 ..];
