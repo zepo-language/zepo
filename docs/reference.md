@@ -32,7 +32,10 @@ Usage: zepo [options] [file]
 
 Options:
   --repl             Start an interactive REPL
+  -e <expr>          Evaluate <expr> and exit
   --max-regs=N       Set VM register pool ceiling (default: 4194304, ~660K recursion levels)
+  --max-heap=SIZE    Set GC heap cap for nursery AND old-gen (default: 4M).
+                     SIZE accepts bytes or suffixes: 16M, 32MiB, 2G, 64K. Also via ZEPO_MAX_HEAP.
   --help             Show this help message
 
 Commands:
@@ -286,6 +289,18 @@ zepo --max-regs=65536   shallow.lisp          # 64K slots, low-memory env
 ```
 
 Tail calls (`define`/`let` loops using TCO) do not consume register slots and are unaffected by this limit.
+
+### GC heap cap
+
+The GC nursery and old generation are each capped at **4 MiB** by default. Bump both with `--max-heap=SIZE` or the `ZEPO_MAX_HEAP` env var; CLI wins when both are set. Sizes accept bare bytes or SI-ish suffixes (`64K`, `16M`, `32MiB`, `2G`).
+
+```sh
+zepo --max-heap=16M big_sort.lisp
+ZEPO_MAX_HEAP=32M zepo run                    # honored unless CLI overrides
+zepo --max-heap=4M --max-heap=… not supported # one flag only
+```
+
+The same value is used for both generations; a finer-grained split may land later.
 
 ### Script convention
 

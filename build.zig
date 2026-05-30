@@ -162,6 +162,17 @@ pub fn build(b: *std.Build) void {
     const run_gc_fallback_tests = b.addRunArtifact(gc_fallback_tests);
     gc_test_step.dependOn(&run_gc_fallback_tests.step);
 
+    // zepo-nmqj: configurable heap caps.
+    const gc_heap_size_mod = b.createModule(.{
+        .root_source_file = b.path("tests/gc/heap_size_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zepo", .module = mod }},
+    });
+    const gc_heap_size_tests = b.addTest(.{ .root_module = gc_heap_size_mod });
+    const run_gc_heap_size_tests = b.addRunArtifact(gc_heap_size_tests);
+    gc_test_step.dependOn(&run_gc_heap_size_tests.step);
+
     // --- Runtime object tests ---
     const runtime_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/objects.zig"),

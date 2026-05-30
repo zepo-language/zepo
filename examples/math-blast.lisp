@@ -163,7 +163,9 @@
 
 ;; B5: stats summary, repeated. summary sorts (for quantiles) so it is the
 ;; O(n log n) heavy op. Post-zepo-sb7 stats has a vector-based bottom-up
-;; merge sort, so 100k fits in the default heap with room to spare.
+;; merge sort. The default 4 MiB heap caps this around ~50k elements; bump
+;; with `--max-heap=16M` (or ZEPO_MAX_HEAP=16M) to run 100k+ comfortably
+;; (zepo-nmqj).
 (let ((xs (gen-vec 50000 (let ((r (make-rng 4))) (lambda () (rng-float! r))))))
   (bench "stats summary (sort-bound)" (* scale 50000)
          (lambda () (repeat scale (lambda () (summary xs))))))

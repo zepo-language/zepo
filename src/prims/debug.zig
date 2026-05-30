@@ -76,7 +76,7 @@ pub fn primGcStats(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 0) return error.ArityMismatch;
     const gc = vm.gc;
     const nursery_used = gc.nursery.used();
-    const nursery_size = nursery_mod.NURSERY_SIZE;
+    const nursery_size = gc.nursery.size(); // zepo-nmqj: actual configured size
     const nursery_free = nursery_size - nursery_used;
     const old_used = gc.old_gen.usedBytes();
     const old_size = gc.old_gen.heapSize();

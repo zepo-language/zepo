@@ -22,7 +22,7 @@ const CardTable = cards_mod.CardTable;
 const roots_mod = @import("roots.zig");
 const RootSet = roots_mod.RootSet;
 
-pub const NURSERY_SIZE: usize = 4 * 1024 * 1024; // zepo-299
+pub const NURSERY_SIZE: usize = 4 * 1024 * 1024; // zepo-299; zepo-nmqj: now the default cap
 pub const PROMOTE_AGE: u4 = 3;
 pub const WORD: usize = 8;
 
@@ -32,23 +32,37 @@ pub const Nursery = struct {
     bump: [*]u8,
     to_start: [*]u8,
     to_end: [*]u8,
+    /// zepo-nmqj: capacity of each semispace in bytes (configurable at init).
+    capacity: usize,
 
     pub fn init() !Nursery {
-        const from = try mmapAnon(NURSERY_SIZE);
-        const to = try mmapAnon(NURSERY_SIZE);
+        return initWithSize(NURSERY_SIZE);
+    }
+
+    /// zepo-nmqj: init with a user-supplied semispace size.
+    pub fn initWithSize(bytes: usize) !Nursery {
+        const aligned = std.mem.alignForward(usize, bytes, std.heap.page_size_min);
+        const from = try mmapAnon(aligned);
+        const to = try mmapAnon(aligned);
         return .{
             .from_start = from,
-            .from_end = from + NURSERY_SIZE,
+            .from_end = from + aligned,
             .bump = from,
             .to_start = to,
-            .to_end = to + NURSERY_SIZE,
+            .to_end = to + aligned,
+            .capacity = aligned,
         };
     }
 
     pub fn deinit(n: *Nursery) void {
-        posix.munmap(@alignCast(n.from_start[0..NURSERY_SIZE]));
-        posix.munmap(@alignCast(n.to_start[0..NURSERY_SIZE]));
+        posix.munmap(@alignCast(n.from_start[0..n.capacity]));
+        posix.munmap(@alignCast(n.to_start[0..n.capacity]));
         n.* = undefined;
+    }
+
+    /// zepo-nmqj: actual configured semispace capacity in bytes.
+    pub fn size(n: *const Nursery) usize {
+        return n.capacity;
     }
 
     pub fn alloc(n: *Nursery, size_bytes: usize) ?*ObjHeader {
@@ -336,15 +350,24 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
     n.to_end = old_from_end;
 
     // zepo-299: only zero to-space in debug builds for dangling-pointer detection.
-    if (builtin.mode == .Debug) @memset(n.to_start[0..NURSERY_SIZE], 0);
+    if (builtin.mode == .Debug) @memset(n.to_start[0..n.capacity], 0);
 
 }
 
 test "nursery alloc/exhaust" {
     var n = try Nursery.init();
     defer n.deinit();
-    try std.testing.expectEqual(NURSERY_SIZE, n.free());
+    const cap = n.size();
+    try std.testing.expectEqual(cap, n.free());
     const p1 = n.alloc(24) orelse return error.TestUnexpected;
     _ = p1;
-    try std.testing.expectEqual(NURSERY_SIZE - 24, n.free());
+    try std.testing.expectEqual(cap - 24, n.free());
+}
+
+// zepo-nmqj
+test "nursery initWithSize honors custom capacity" {
+    var n = try Nursery.initWithSize(16 * 1024 * 1024);
+    defer n.deinit();
+    try std.testing.expect(n.size() >= 16 * 1024 * 1024);
+    try std.testing.expectEqual(n.size(), n.free());
 }
