@@ -24,6 +24,8 @@
     ;; Reporters (zepo-nitj)
     make-reporter
     reporter-pretty reporter-tap reporter-junit reporter-json
+    ;; Timeouts (zepo-sdxa)
+    with-timeout-ms
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -786,6 +788,32 @@
       ((eq? spec 'junit)  (reporter-junit))
       ((eq? spec 'json)   (reporter-json))
       (#t spec)))  ; assume it's already a reporter hash-table
+
+  ;; ── Timeouts (zepo-sdxa) ─────────────────────────────────────────────────
+  ;;
+  ;; (with-timeout-ms ms thunk) runs THUNK to completion and reports a
+  ;; failure if the elapsed wall-clock time exceeded `ms` milliseconds.
+  ;;
+  ;; This is a POST-HOC check, same model as JUnit's @Timeout: a hung test
+  ;; will not be killed, but a slow test is flagged when it finally returns.
+  ;; That's the only honest semantics on cooperative fibers — Zepo has no
+  ;; thread.interrupt() to bail out of a CPU-bound loop. A fiber-race
+  ;; design was prototyped but leaked the losing test fiber, which
+  ;; permanently stalled process shutdown waiting for the slow thunk to
+  ;; finish anyway. The post-hoc form runs as fast as the test does and
+  ;; reports a useful failure message naming both the deadline and the
+  ;; actual duration.
+
+  (define (with-timeout-ms ms thunk)
+    (let* ((start (current-time-ms))
+           (value (thunk))
+           (elapsed (- (current-time-ms) start)))
+      (if (> elapsed ms)
+          (error (string-append
+                   "test exceeded timeout of "
+                   (number->string ms) " ms (took "
+                   (number->string elapsed) " ms)"))
+          value)))
 
   (define (run! . args)
     (let* ((opts          (parse-runner-args args))
