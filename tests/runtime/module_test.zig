@@ -56,7 +56,7 @@ test "module: define and import single value" {
         \\(module m (export x) (define x 42))
     );
     const v = try rig.eval(
-        \\(import m) x
+        \\(import m) m.x
     );
     try expectInt(v, 42);
 }
@@ -82,7 +82,7 @@ test "module: exported function callable" {
         \\(module math (export square) (define (square x) (* x x)))
     );
     const v = try rig.eval(
-        \\(import math) (square 7)
+        \\(import math) (math.square 7)
     );
     try expectInt(v, 49);
 }
@@ -95,7 +95,7 @@ test "module: slot aliasing — set! in defining module visible to importer" {
         \\(module m (export x bump) (define x 10) (define (bump) (set! x (+ x 1))))
     );
     _ = try rig.eval(
-        \\(import m)
+        \\(import m (x bump))
     );
     _ = try rig.eval("(bump)");
     _ = try rig.eval("(bump)");
@@ -111,10 +111,10 @@ test "module: two modules cross-import" {
         \\(module math (export square) (define (square x) (* x x)))
     );
     _ = try rig.eval(
-        \\(module geom (export area-square) (import math) (define (area-square s) (square s)))
+        \\(module geom (export area-square) (import math (square)) (define (area-square s) (square s)))
     );
     const v = try rig.eval(
-        \\(import geom) (area-square 6)
+        \\(import geom) (geom.area-square 6)
     );
     try expectInt(v, 36);
 }
@@ -148,7 +148,7 @@ test "module: macro hygiene — defmacro body refs its module's internals via qu
         \\  (define (private-helper) (set! helper-counter (+ helper-counter 1)) helper-counter)
         \\  (defmacro mac () `(private-helper)))
     );
-    _ = try rig.eval("(import mhyg)");
+    _ = try rig.eval("(import mhyg (mac))");
     // helper-counter and private-helper are NOT exported, so they must not
     // be visible in the importer's unqualified scope:
     const leak1 = rig.eval("private-helper");
@@ -254,10 +254,10 @@ test "module: imports are non-transitive — N's exports do not leak through M" 
         \\(module inner (export secret) (define secret 99))
     );
     _ = try rig.eval(
-        \\(module outer (export pub) (import inner) (define pub (+ secret 1)))
+        \\(module outer (export pub) (import inner (secret)) (define pub (+ secret 1)))
     );
     // outer can use inner's `secret` internally
-    const pub_v = try rig.eval("(import outer) pub");
+    const pub_v = try rig.eval("(import outer) outer.pub");
     try expectInt(pub_v, 100);
     // but importing outer must NOT bring `secret` into the importer's scope
     const leaked = rig.eval("secret");
@@ -277,7 +277,7 @@ test "module: :keyword metadata is parsed and ignored at eval time" {
         \\  (define (square x) (* x x)))
     );
     _ = v;
-    const r = try rig.eval("(import math) (square 9)");
+    const r = try rig.eval("(import math) (math.square 9)");
     try expectInt(r, 81);
 }
 
@@ -292,7 +292,7 @@ test "lib: container registers in module registry and is importable" {
         \\  (export add1)
         \\  (define (add1 x) (+ x 1)))
     );
-    const v = try rig.eval("(import mylib) (add1 41)");
+    const v = try rig.eval("(import mylib) (mylib.add1 41)");
     try expectInt(v, 42);
 }
 
@@ -309,7 +309,7 @@ test "lib: :keyword metadata does not interfere with body" {
         \\  (export double)
         \\  (define (double x) (* x 2)))
     );
-    const v = try rig.eval("(import utils) (double 21)");
+    const v = try rig.eval("(import utils) (utils.double 21)");
     try expectInt(v, 42);
 }
 
@@ -337,7 +337,7 @@ test "package: body forms execute in package environment" {
         \\  (define pi 3))
     );
     _ = try rig.eval("(import tools)");
-    const v = try rig.eval("pi");
+    const v = try rig.eval("tools.pi");
     try expectInt(v, 3);
 }
 
@@ -349,7 +349,7 @@ test "import: :modules keyword form loads module by name" {
         \\(module math :version "1.0" (export square) (define (square x) (* x x)))
     );
     _ = try rig.eval("(import :modules (math))");
-    const v = try rig.eval("(square 6)");
+    const v = try rig.eval("(math.square 6)");
     try expectInt(v, 36);
 }
 
@@ -360,8 +360,8 @@ test "import: mixed keyword form loads from multiple tiers" {
     _ = try rig.eval("(module modA (export a) (define a 1))");
     _ = try rig.eval("(lib  libB  (export b) (define b 2))");
     _ = try rig.eval("(import :modules (modA) :libs (libB))");
-    const va = try rig.eval("a");
-    const vb = try rig.eval("b");
+    const va = try rig.eval("modA.a");
+    const vb = try rig.eval("libB.b");
     try expectInt(va, 1);
     try expectInt(vb, 2);
 }
@@ -389,9 +389,10 @@ test "import :libs mixed — full module plus selective module" {
     _ = try rig.eval("(lib mq2 (export c d) (define c 30) (define d 40))");
     _ = try rig.eval("(import :libs (mq1 mq2 (c)))");
 
-    const vx = try rig.eval("x");
-    const vy = try rig.eval("y");
-    const vc = try rig.eval("c");
+    // mq1: bare, only namespace alias bound (post-y1a4); access via mq1.x
+    const vx = try rig.eval("mq1.x");
+    const vy = try rig.eval("mq1.y");
+    const vc = try rig.eval("c"); // mq2: selective, c is unqualified
     try expectInt(vx, 1);
     try expectInt(vy, 2);
     try expectInt(vc, 30);

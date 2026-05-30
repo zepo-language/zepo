@@ -69,7 +69,7 @@ test "module: exported cons list survives major GC" {
         \\(module m (export lst)
         \\  (define lst (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 (quote ()))))))))
     );
-    _ = try rig.eval("(import m)");
+    _ = try rig.eval("(import m (lst))");
 
     try rig.gc.major();
 
@@ -89,7 +89,7 @@ test "module: mutation of exported binding visible through importer after GC" {
         \\  (define x 100)
         \\  (define (bump) (set! x (+ x 1))))
     );
-    _ = try rig.eval("(import m)");
+    _ = try rig.eval("(import m (x bump))");
     _ = try rig.eval("(bump)");
     try rig.gc.major();
     _ = try rig.eval("(bump)");

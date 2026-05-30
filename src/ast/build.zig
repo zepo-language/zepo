@@ -875,16 +875,19 @@ pub const Builder = struct {
                 const alias = try b.arena.dupString(objects.symbolName(alias_v));
                 selection = .{ .as_alias = alias };
             } else {
-                // (import name (only sym...))
+                // (import name (only sym...))   — explicit
+                // (import name (sym ...))         — zepo-ug3 sugar
                 if (!value_mod.isNil(after_selector)) return BuildError.InvalidSpecialForm;
-                // selector must be a pair whose car is the symbol `only`
                 if (!objects.isPair(selector)) return BuildError.InvalidSpecialForm;
-                const head = objects.pairCar(selector).*;
-                if (!objects.isSymbol(head)) return BuildError.InvalidSpecialForm;
-                if (!std.mem.eql(u8, objects.symbolName(head), "only")) return BuildError.InvalidSpecialForm;
+                var cur = blk: {
+                    const head = objects.pairCar(selector).*;
+                    if (objects.isSymbol(head) and std.mem.eql(u8, objects.symbolName(head), "only")) {
+                        break :blk objects.pairCdr(selector).*;
+                    }
+                    break :blk selector;
+                };
                 var names = std.ArrayListUnmanaged([]const u8).empty;
                 defer names.deinit(b.allocator);
-                var cur = objects.pairCdr(selector).*;
                 while (!value_mod.isNil(cur)) {
                     if (!objects.isPair(cur)) return BuildError.InvalidSpecialForm;
                     const nm_v = objects.pairCar(cur).*;

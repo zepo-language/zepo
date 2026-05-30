@@ -112,7 +112,7 @@ test "import inside lambda body compiles to IMPORT opcode and runs at call time"
         \\(module m (export x) (define x 1))
     );
     _ = try rig.eval(
-        \\(define (f) (import m) x)
+        \\(define (f) (import m (x)) x)
     );
     const result = try rig.eval("(f)");
     try std.testing.expect(result != 0);
@@ -127,6 +127,9 @@ test "ExportOutsideModule: export at top level" {
 }
 
 test "full import conflict: existing binding wins, second import silently skipped" {
+    // zepo-y1a4: post-flat-dump-removal, bare (import a) and (import b)
+    // don't conflict — neither defines `x` in unqualified scope. Each one
+    // binds its own namespace alias (a, b) and they're independent.
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
     _ = try rig.eval(
@@ -137,6 +140,9 @@ test "full import conflict: existing binding wins, second import silently skippe
     );
     _ = try rig.eval("(import a)");
     _ = try rig.eval("(import b)");
-    const result = try rig.eval("x");
-    try std.testing.expect(result != 0);
+    // Both modules' x are reachable via their own namespace alias.
+    const ax = try rig.eval("a.x");
+    const bx = try rig.eval("b.x");
+    try std.testing.expect(ax != 0);
+    try std.testing.expect(bx != 0);
 }

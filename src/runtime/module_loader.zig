@@ -684,16 +684,22 @@ pub fn doImportByName(
         }
         return;
     }
-    // zepo-zc0: import all — only the target module's DECLARED exports,
-    // never its transitively-imported names. Existing binding wins; silently
-    // skip conflicts.
-    for (target.env.entries.items) |entry| {
-        const nm = runtime_objects.symbolName(entry.sym_slot.*);
-        if (!target.isExported(nm)) continue;
-        active.importEntry(entry) catch |e| switch (e) {
-            error.ImportNameConflict => {},
-            else => return e,
-        };
+    // zepo-y1a4: bare `(import M)` no longer flat-dumps exports — bind only
+    // the namespace alias. Selective and aliased forms above are unchanged.
+    var ns_scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&ns_scope);
+    defer ctx.gc.roots.popHandleScope();
+    const path_sym = try ctx.symbols.intern(mod_name);
+    if (active.findEntry(path_sym) == null) {
+        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+        const ns_slot = ns_scope.push(ns);
+        for (target.env.entries.items) |entry| {
+            const nm = runtime_objects.symbolName(entry.sym_slot.*);
+            const key_sym = try ctx.symbols.intern(nm);
+            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+                return error.OutOfMemory;
+        }
+        try active.define(path_sym, ns_slot.*);
     }
 }
 
@@ -816,19 +822,13 @@ fn importOneName(ctx: *EvalContext, mod_name: []const u8, paths: []const []const
     };
     if (!target.initialized) return error.ImportBeforeInitialization;
     const active = ctx.currentEnv();
-    // zepo-zc0 / zepo-cnj4: same semantics as the regular (import M) path —
-    // only exports leak into unqualified scope, plus a namespace alias.
+    // zepo-y1a4: bare keyword-form `(import :libs (mq))` binds only the
+    // namespace alias, mirroring the regular `(import M)` path. Selective
+    // sublists routed through importOneNameSelective (zepo-1rbq) handle the
+    // unqualified-import case.
     var ns_scope = HandleScope{};
     ctx.gc.roots.pushHandleScope(&ns_scope);
     defer ctx.gc.roots.popHandleScope();
-    for (target.env.entries.items) |entry| {
-        const nm = runtime_objects.symbolName(entry.sym_slot.*);
-        if (!target.isExported(nm)) continue;
-        active.importEntry(entry) catch |e| switch (e) {
-            error.ImportNameConflict => {},
-            else => return e,
-        };
-    }
     const path_sym = try ctx.symbols.intern(mod_name);
     if (active.findEntry(path_sym) == null) {
         const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
@@ -1021,29 +1021,18 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     const active = ctx.currentEnv();
 
     if (value_mod.isNil(tail)) {
-        // zepo-zc0: Full import brings ONLY the module's declared exports into
-        // the active env. Non-exported names (including the module's own
-        // transitively-imported deps) stay private — closures defined inside
-        // the module still resolve them via LOAD_GLOBAL's closure home_env
-        // fallback (see vm/dispatch.zig). Name conflicts are silently skipped
-        // — existing binding wins.
-        for (target.env.entries.items) |entry| {
-            const nm = runtime_objects.symbolName(entry.sym_slot.*);
-            if (!target.isExported(nm)) continue;
-            active.importEntry(entry) catch |e| switch (e) {
-                error.ImportNameConflict => {},
-                else => return e,
-            };
-        }
-        // zepo-cnj4: ALSO bind the module's FULL path as a namespace alias,
-        // so callers get qualified access for free without an explicit :as
-        // clause. The full path (e.g. `math/tensor`) is used rather than the
-        // last segment so it never collides with an exported short name (the
-        // module that exports `tensor` as a constructor can still be aliased
-        // because `math/tensor` is a distinct symbol). The leading `(import
-        // math/tensor)` flat-dump still works for back compat; once
-        // [[zepo-cnj4-rm]] migrates call sites, the flat-dump goes away and
-        // qualified access becomes mandatory.
+        // zepo-y1a4: `(import M)` (bare, no selective list, no :as) NO LONGER
+        // flat-dumps exports into the importer's unqualified scope. It binds
+        // only the namespace alias keyed on M's full path. Callers wanting
+        // unqualified names must say so explicitly via
+        //   (import M (name1 name2 ...))   — selective unqualified
+        //   (import M :as A)                — namespace alias under a chosen name
+        // or reach for the auto-bound namespace alias `M.name` directly.
+        //
+        // The old flat-dump behavior is preserved on a privacy-conscious
+        // basis: only `(export ...)` names ever leaked, but the leak itself
+        // was the bug we eliminated. zepo-zc0 already fixed the transitive
+        // version. Now the local-import version follows.
         const path_sym = try ctx.symbols.intern(mod_name);
         if (active.findEntry(path_sym) == null) {
             const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;

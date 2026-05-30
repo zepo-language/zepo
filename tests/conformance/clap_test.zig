@@ -36,7 +36,13 @@ fn rigWithClap() !*Rig {
     const clap_src = try readFilePosix(alloc, "lib/clap.lisp", 1 << 20);
     defer alloc.free(clap_src);
     _ = try r.eval(clap_src);
-    _ = try r.eval("(import clap)");
+    _ = try r.eval(
+        \\(import clap (make-program make-command make-option make-positional
+        \\              opt-set cmd-add-option cmd-add-positional
+        \\              parse run parse-result? parse-error?
+        \\              render-help render-error render-markdown render-manpage
+        \\              result-option result-positional result-command))
+    );
     return r;
 }
 
