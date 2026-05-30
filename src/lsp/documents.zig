@@ -60,6 +60,33 @@ pub const Store = struct {
         try s.open(uri, text, version);
     }
 
+    /// zepo-ttk8: incremental edit. Splices `new_text` into the cached
+    /// document, replacing bytes [start_off, end_off). Caller is responsible
+    /// for converting the LSP Range to byte offsets via the negotiated
+    /// PositionEncoding before calling this.
+    pub fn applyEdit(
+        s: *Store,
+        uri: []const u8,
+        start_off: usize,
+        end_off: usize,
+        new_text: []const u8,
+        version: i64,
+    ) !void {
+        const doc = s.docs.getPtr(uri) orelse return error.UnknownDocument;
+        const old = doc.text;
+        if (start_off > old.len or end_off > old.len or start_off > end_off) {
+            return error.InvalidRange;
+        }
+        const new_len = old.len - (end_off - start_off) + new_text.len;
+        const buf = try s.alloc.alloc(u8, new_len);
+        @memcpy(buf[0..start_off], old[0..start_off]);
+        @memcpy(buf[start_off .. start_off + new_text.len], new_text);
+        @memcpy(buf[start_off + new_text.len ..], old[end_off..]);
+        s.alloc.free(old);
+        doc.text = buf;
+        doc.version = version;
+    }
+
     pub fn close(s: *Store, uri: []const u8) void {
         if (s.docs.fetchRemove(uri)) |kv| {
             var d = kv.value;

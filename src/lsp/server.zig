@@ -114,7 +114,10 @@ pub const Server = struct {
             defer out.deinit(s.alloc);
             try out.appendSlice(s.alloc, "{\"capabilities\":{\"positionEncoding\":\"");
             try out.appendSlice(s.alloc, enc_str);
-            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
+            // zepo-ttk8: textDocumentSync.change = 2 (Incremental). We still
+            // accept full-text changes (clients may send either based on
+            // their own preference).
+            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
             try s.sendResult(id, out.items);
             return false;
         }
@@ -188,16 +191,51 @@ pub const Server = struct {
             else => return false,
         };
         if (changes.items.len == 0) return false;
-        // We advertised TextDocumentSyncKind.Full (1), so take the last full text.
-        const last = changes.items[changes.items.len - 1];
-        const obj = switch (last) {
-            .object => |o| o,
-            else => return false,
-        };
-        const text = getString(obj, "text") orelse return false;
-        try s.store.replace(uri, text, version);
+
+        // zepo-ttk8: apply each contentChange in order. Each one is either:
+        //   { range: {start, end}, text }   — incremental edit
+        //   { text }                         — full replacement
+        // We advertise change kind 2 (Incremental) but accept either; some
+        // clients still send full-text for simplicity.
+        for (changes.items) |change| {
+            const obj = switch (change) {
+                .object => |o| o,
+                else => continue,
+            };
+            const text = getString(obj, "text") orelse continue;
+            if (getObject(obj, "range")) |range_obj| {
+                const doc = s.store.get(uri) orelse return false;
+                const start_pos = parseRangePos(range_obj, "start") orelse continue;
+                const end_pos = parseRangePos(range_obj, "end") orelse continue;
+                const start_off = analysis.posToOffsetEnc(doc.text, start_pos, s.encoding);
+                const end_off = analysis.posToOffsetEnc(doc.text, end_pos, s.encoding);
+                s.store.applyEdit(uri, start_off, end_off, text, version) catch {
+                    // On malformed range, fall through to full replacement so
+                    // we recover instead of leaving the document inconsistent.
+                    try s.store.replace(uri, text, version);
+                };
+            } else {
+                try s.store.replace(uri, text, version);
+            }
+        }
         try s.publishDiagnostics(uri);
         return false;
+    }
+
+    fn parseRangePos(range_obj: std.json.ObjectMap, key: []const u8) ?analysis.Pos {
+        const pos_obj = switch (range_obj.get(key) orelse return null) {
+            .object => |o| o,
+            else => return null,
+        };
+        const line = switch (pos_obj.get("line") orelse return null) {
+            .integer => |n| if (n < 0) return null else @as(u32, @intCast(n)),
+            else => return null,
+        };
+        const character = switch (pos_obj.get("character") orelse return null) {
+            .integer => |n| if (n < 0) return null else @as(u32, @intCast(n)),
+            else => return null,
+        };
+        return .{ .line = line, .character = character };
     }
 
     fn onDidClose(s: *Server, params: std.json.ObjectMap) !bool {
