@@ -21,6 +21,9 @@
     fdescribe fit xdescribe xit
     ;; Tags (zepo-nqfu)
     tag
+    ;; Reporters (zepo-nitj)
+    make-reporter
+    reporter-pretty reporter-tap reporter-junit reporter-json
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -477,6 +480,7 @@
       (hash-set! opts 'filter #f)
       (hash-set! opts 'tags '())
       (hash-set! opts 'exclude-tags '())
+      (hash-set! opts 'reporter #f)
       (let loop ((xs args))
         (cond
           ((null? xs) opts)
@@ -491,6 +495,9 @@
            (loop (cddr xs)))
           ((and (symbol? (car xs)) (eq? (car xs) ':exclude-tags))
            (hash-set! opts 'exclude-tags (cadr xs))
+           (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':reporter))
+           (hash-set! opts 'reporter (cadr xs))
            (loop (cddr xs)))
           ((string? (car xs))
            (hash-set! opts 'filter (car xs))
@@ -549,19 +556,253 @@
             (run-hook-list (hooks-for path 'before-all))))
       cur-ancestors))
 
+  ;; ── Reporters (zepo-nitj) ────────────────────────────────────────────────
+  ;;
+  ;; A reporter is a hash-table mapping event symbols to handler thunks:
+  ;;
+  ;;   'on-start         (lambda (total) ...)         — called once before any test
+  ;;   'on-test-pass     (lambda (path duration) ...) — test passed
+  ;;   'on-test-fail     (lambda (path msg) ...)      — test failed
+  ;;   'on-test-skip     (lambda (path reason) ...)   — test skipped
+  ;;   'on-end           (lambda (result) ...)        — called once with the result record
+  ;;
+  ;; (make-reporter alist) constructs a reporter from an a-list of
+  ;; event/handler pairs. Missing events are no-ops.
+  ;;
+  ;; The four built-ins (pretty, tap, junit, json) are functions that
+  ;; produce a reporter; (run! :reporter (reporter-tap)) plugs one in.
+  ;; A symbol shorthand (run! :reporter 'tap) is also accepted.
+
+  (define (make-reporter handlers-alist)
+    (let ((r (make-hash-table)))
+      (let loop ((xs handlers-alist))
+        (if (not (null? xs))
+            (begin (hash-set! r (car (car xs)) (cdr (car xs)))
+                   (loop (cdr xs)))))
+      r))
+
+  (define (call-handler! reporter event . args)
+    (let ((h (hash-get reporter event #f)))
+      (if h (apply h args))))
+
+  (define (path->joined path)
+    (let loop ((xs path) (acc ""))
+      (cond
+        ((null? xs) acc)
+        ((= (string-length acc) 0) (loop (cdr xs) (car xs)))
+        (#t (loop (cdr xs) (string-append acc " / " (car xs)))))))
+
+  ;; ── Pretty reporter ─────────────────────────────────────────────────────
+  ;; The original tree output, refactored into a reporter. Hooks into the
+  ;; runner's prev-groups state via a closure-local variable.
+
+  (define (reporter-pretty)
+    (let ((prev-groups '()))
+      (make-reporter
+        (list
+          (cons 'on-test-pass
+                (lambda (path duration)
+                  (let ((cur-groups (print-context-transition prev-groups path)))
+                    (set! prev-groups cur-groups)
+                    (print-indent (length cur-groups))
+                    (display "PASS ") (display (car (reverse path))) (newline))))
+          (cons 'on-test-fail
+                (lambda (path msg)
+                  (let ((cur-groups (print-context-transition prev-groups path)))
+                    (set! prev-groups cur-groups)
+                    (print-indent (length cur-groups))
+                    (display "FAIL ") (display (car (reverse path)))
+                    (display ": ") (display msg) (newline))))
+          (cons 'on-test-skip
+                (lambda (path reason)
+                  (let ((cur-groups (print-context-transition prev-groups path)))
+                    (set! prev-groups cur-groups)
+                    (print-indent (length cur-groups))
+                    (display "SKIP ") (display (car (reverse path))) (newline))))
+          (cons 'on-end
+                (lambda (result)
+                  (newline)
+                  (display "Summary: ") (display (result-passed result))
+                  (display " passed, ") (display (result-failed result)) (display " failed")
+                  (if (> (result-skipped result) 0)
+                      (begin (display ", ") (display (result-skipped result)) (display " skipped")))
+                  (display " (") (display (result-duration-ms result)) (display " ms)") (newline)))))))
+
+  ;; ── TAP version 14 reporter ─────────────────────────────────────────────
+
+  (define (reporter-tap)
+    (let ((n 0) (planned 0))
+      (make-reporter
+        (list
+          (cons 'on-start
+                (lambda (total)
+                  (set! planned total)
+                  (display "TAP version 14") (newline)
+                  (display "1..") (display total) (newline)))
+          (cons 'on-test-pass
+                (lambda (path duration)
+                  (set! n (+ n 1))
+                  (display "ok ") (display n) (display " - ")
+                  (display (path->joined path)) (newline)))
+          (cons 'on-test-fail
+                (lambda (path msg)
+                  (set! n (+ n 1))
+                  (display "not ok ") (display n) (display " - ")
+                  (display (path->joined path)) (newline)
+                  (display "  # ") (display msg) (newline)))
+          (cons 'on-test-skip
+                (lambda (path reason)
+                  (set! n (+ n 1))
+                  (display "ok ") (display n) (display " - ")
+                  (display (path->joined path)) (display " # SKIP") (newline)))))))
+
+  ;; ── JSON NDJSON reporter ────────────────────────────────────────────────
+  ;; One JSON object per line, no enclosing array. Tools can stream-parse.
+
+  (define (json-escape s)
+    (let loop ((i 0) (acc ""))
+      (if (>= i (string-length s)) acc
+          (let ((c (string-ref s i)))
+            (loop (+ i 1)
+                  (string-append acc
+                    (cond
+                      ((char=? c #\") "\\\"")
+                      ((char=? c #\\) "\\\\")
+                      ((char=? c #\newline) "\\n")
+                      ((char=? c #\tab) "\\t")
+                      (#t (char->string c)))))))))
+
+  (define (json-path-array path)
+    (let loop ((xs path) (acc "["))
+      (cond
+        ((null? xs) (string-append acc "]"))
+        ((string=? acc "[")
+         (loop (cdr xs) (string-append acc "\"" (json-escape (car xs)) "\"")))
+        (#t (loop (cdr xs) (string-append acc ",\"" (json-escape (car xs)) "\""))))))
+
+  (define (reporter-json)
+    (make-reporter
+      (list
+        (cons 'on-test-pass
+              (lambda (path duration)
+                (display "{\"event\":\"pass\",\"path\":")
+                (display (json-path-array path))
+                (display "}") (newline)))
+        (cons 'on-test-fail
+              (lambda (path msg)
+                (display "{\"event\":\"fail\",\"path\":")
+                (display (json-path-array path))
+                (display ",\"message\":\"") (display (json-escape msg))
+                (display "\"}") (newline)))
+        (cons 'on-test-skip
+              (lambda (path reason)
+                (display "{\"event\":\"skip\",\"path\":")
+                (display (json-path-array path))
+                (display "}") (newline)))
+        (cons 'on-end
+              (lambda (r)
+                (display "{\"event\":\"end\",\"passed\":") (display (result-passed r))
+                (display ",\"failed\":") (display (result-failed r))
+                (display ",\"skipped\":") (display (result-skipped r))
+                (display ",\"duration_ms\":") (display (result-duration-ms r))
+                (display "}") (newline))))))
+
+  ;; ── JUnit XML reporter ──────────────────────────────────────────────────
+  ;; Schema: <testsuites><testsuite name="..." tests="N" failures="F" skipped="S">
+  ;;           <testcase name="path / name" classname="path"/>
+  ;;           <testcase ...><failure message="..."/></testcase>
+  ;;           <testcase ...><skipped/></testcase>
+  ;;         </testsuite></testsuites>
+  ;; Single suite covers everything — most CI parsers handle a single
+  ;; <testsuites><testsuite> wrapper just fine.
+
+  (define (xml-escape s)
+    (let loop ((i 0) (acc ""))
+      (if (>= i (string-length s)) acc
+          (let ((c (string-ref s i)))
+            (loop (+ i 1)
+                  (string-append acc
+                    (cond
+                      ((char=? c #\&) "&amp;")
+                      ((char=? c #\<) "&lt;")
+                      ((char=? c #\>) "&gt;")
+                      ((char=? c #\") "&quot;")
+                      ((char=? c #\') "&apos;")
+                      (#t (char->string c)))))))))
+
+  (define (reporter-junit)
+    (let ((cases '()))
+      (define (record-case! kind path msg)
+        (set! cases (append cases (list (list kind path msg)))))
+      (make-reporter
+        (list
+          (cons 'on-test-pass (lambda (path duration) (record-case! 'pass path "")))
+          (cons 'on-test-fail (lambda (path msg)      (record-case! 'fail path msg)))
+          (cons 'on-test-skip (lambda (path reason)   (record-case! 'skip path "")))
+          (cons 'on-end
+                (lambda (r)
+                  (display "<?xml version=\"1.0\" encoding=\"UTF-8\"?>") (newline)
+                  (display "<testsuites>") (newline)
+                  (display "  <testsuite name=\"zepo\" tests=\"")
+                  (display (+ (result-passed r) (result-failed r) (result-skipped r)))
+                  (display "\" failures=\"") (display (result-failed r))
+                  (display "\" skipped=\"") (display (result-skipped r))
+                  (display "\">") (newline)
+                  (for-each
+                    (lambda (c)
+                      (let* ((kind (car c))
+                             (path (cadr c))
+                             (msg  (caddr c))
+                             (leaf (car (reverse path)))
+                             (cls  (path->joined (reverse (cdr (reverse path))))))
+                        (display "    <testcase classname=\"")
+                        (display (xml-escape cls))
+                        (display "\" name=\"")
+                        (display (xml-escape leaf))
+                        (display "\"")
+                        (cond
+                          ((eq? kind 'fail)
+                           (display ">") (newline)
+                           (display "      <failure message=\"")
+                           (display (xml-escape msg))
+                           (display "\"/>") (newline)
+                           (display "    </testcase>") (newline))
+                          ((eq? kind 'skip)
+                           (display ">") (newline)
+                           (display "      <skipped/>") (newline)
+                           (display "    </testcase>") (newline))
+                          (#t (display "/>") (newline)))))
+                    cases)
+                  (display "  </testsuite>") (newline)
+                  (display "</testsuites>") (newline)))))))
+
+  ;; Resolve a :reporter argument: a symbol picks one of the built-ins,
+  ;; a hash-table is treated as a ready reporter.
+  (define (resolve-reporter spec)
+    (cond
+      ((not spec) #f)
+      ((eq? spec 'pretty) (reporter-pretty))
+      ((eq? spec 'tap)    (reporter-tap))
+      ((eq? spec 'junit)  (reporter-junit))
+      ((eq? spec 'json)   (reporter-json))
+      (#t spec)))  ; assume it's already a reporter hash-table
+
   (define (run! . args)
     (let* ((opts          (parse-runner-args args))
            (silent        (hash-get opts 'silent #f))
            (filter        (hash-get opts 'filter #f))
            (include-tags  (hash-get opts 'tags '()))
            (exclude-tags  (hash-get opts 'exclude-tags '()))
+           (reporter      (resolve-reporter (hash-get opts 'reporter #f)))
            (start  (current-time-ms))
+           (planned-count (length *tests*))
            (passed 0)
            (failed 0)
            (skipped 0)
            (failures '())
            (prev-groups '())
            (prev-ancestors '()))
+      (if reporter (call-handler! reporter 'on-start planned-count))
       (for-each
         (lambda (entry)
           (let* ((path (car entry))
@@ -581,53 +822,63 @@
             (if (and passes-filter? passes-tags? (not excluded?))
                 (let* ((cur-ancestors (ancestor-paths path))
                        (cur-groups
-                         (if silent prev-groups
+                         (if (or silent reporter) prev-groups
                              (print-context-transition prev-groups path))))
                   (fire-after-all-for-left prev-ancestors cur-ancestors)
                   (fire-before-all-for-entered prev-ancestors cur-ancestors)
                   (set! prev-groups cur-groups)
                   (set! prev-ancestors cur-ancestors)
-                  (if (not silent) (print-indent (length cur-groups)))
+                  (if (and (not silent) (not reporter))
+                      (print-indent (length cur-groups)))
                   (cond
                     ((eq? action 'skip)
                      (set! skipped (+ skipped 1))
-                     (if (not silent)
-                         (begin (display "SKIP ") (display leaf) (newline))))
+                     (cond
+                       (reporter (call-handler! reporter 'on-test-skip path ""))
+                       ((not silent)
+                        (display "SKIP ") (display leaf) (newline))))
                     (#t
                      (for-each
                        (lambda (p) (run-hook-list (hooks-for p 'before-each)))
                        cur-ancestors)
-                     (with-exception-handler
-                       (lambda (e)
-                         (let ((msg (format-exception e)))
-                           (set! failed (+ failed 1))
-                           (set! failures (append failures (list (cons path msg))))
-                           (if (not silent)
-                               (begin
-                                 (display "FAIL ") (display leaf)
-                                 (display ": ") (display msg) (newline)))))
-                       (lambda ()
-                         (thunk)
-                         (set! passed (+ passed 1))
-                         (if (not silent)
-                             (begin (display "PASS ") (display leaf) (newline)))))
+                     (let ((tstart (current-time-ms)))
+                       (with-exception-handler
+                         (lambda (e)
+                           (let ((msg (format-exception e)))
+                             (set! failed (+ failed 1))
+                             (set! failures (append failures (list (cons path msg))))
+                             (cond
+                               (reporter (call-handler! reporter 'on-test-fail path msg))
+                               ((not silent)
+                                (display "FAIL ") (display leaf)
+                                (display ": ") (display msg) (newline)))))
+                         (lambda ()
+                           (thunk)
+                           (set! passed (+ passed 1))
+                           (let ((tdur (- (current-time-ms) tstart)))
+                             (cond
+                               (reporter (call-handler! reporter 'on-test-pass path tdur))
+                               ((not silent)
+                                (display "PASS ") (display leaf) (newline)))))))
                      (for-each
                        (lambda (p) (run-hook-list (hooks-for p 'after-each)))
                        (reverse cur-ancestors))))))))
         *tests*)
       ;; Final after-all sweep — fire for any still-active describes.
       (fire-after-all-for-left prev-ancestors '())
-      (let ((duration (- (current-time-ms) start)))
-        (if (not silent)
-            (begin
-              (newline)
-              (display "Summary: ") (display passed)
-              (display " passed, ") (display failed) (display " failed")
-              (if (> skipped 0)
-                  (begin (display ", ") (display skipped) (display " skipped")))
-              (display " (") (display duration) (display " ms)")
-              (newline)))
-        (make-result passed failed skipped failures duration))))
+      (let* ((duration (- (current-time-ms) start))
+             (result   (make-result passed failed skipped failures duration)))
+        (cond
+          (reporter (call-handler! reporter 'on-end result))
+          ((not silent)
+           (newline)
+           (display "Summary: ") (display passed)
+           (display " passed, ") (display failed) (display " failed")
+           (if (> skipped 0)
+               (begin (display ", ") (display skipped) (display " skipped")))
+           (display " (") (display duration) (display " ms)")
+           (newline)))
+        result)))
 
   ;; Legacy printer that returns (passed . failed) — keeps the smoke tests
   ;; written against zepo-mx0p working without modification.
