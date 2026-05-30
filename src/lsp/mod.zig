@@ -14,6 +14,7 @@
 pub const protocol = @import("protocol.zig");
 pub const documents = @import("documents.zig");
 pub const analysis = @import("analysis.zig");
+pub const resolver = @import("resolver.zig");
 pub const server = @import("server.zig");
 
 pub const Server = server.Server;
@@ -23,5 +24,6 @@ test {
     _ = protocol;
     _ = documents;
     _ = analysis;
+    _ = resolver;
     _ = server;
 }

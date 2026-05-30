@@ -15,18 +15,24 @@ const std = @import("std");
 const proto = @import("protocol.zig");
 const docs_mod = @import("documents.zig");
 const analysis = @import("analysis.zig");
+const resolver_mod = @import("resolver.zig");
 
 pub const Server = struct {
     alloc: std.mem.Allocator,
     store: docs_mod.Store,
+    resolver: resolver_mod.Resolver,
     reader: proto.Reader,
     writer: proto.Writer,
     shutdown_received: bool = false,
+    /// Negotiated PositionEncoding. Defaults to LSP spec default (utf-16).
+    /// Updated on `initialize` based on client capabilities.
+    encoding: analysis.PositionEncoding = .utf16,
 
     pub fn init(alloc: std.mem.Allocator, reader: proto.Reader, writer: proto.Writer) Server {
         return .{
             .alloc = alloc,
             .store = docs_mod.Store.init(alloc),
+            .resolver = resolver_mod.Resolver.init(alloc),
             .reader = reader,
             .writer = writer,
         };
@@ -34,6 +40,7 @@ pub const Server = struct {
 
     pub fn deinit(s: *Server) void {
         s.store.deinit();
+        s.resolver.deinit();
     }
 
     pub fn run(s: *Server) !void {
@@ -63,9 +70,51 @@ pub const Server = struct {
 
         if (std.mem.eql(u8, method, "initialize")) {
             const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            try s.sendResult(id,
-                \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"completionProvider":{"triggerCharacters":["."]}},"serverInfo":{"name":"zepo-lsp","version":"0.1.0"}}
-            );
+            // Negotiate positionEncoding per LSP 3.17 (zepo-pewz).
+            // Prefer utf-8 if the client lists it under
+            //   clientCapabilities.general.positionEncodings.
+            s.encoding = .utf16; // spec default
+            if (obj.get("params")) |pv| switch (pv) {
+                .object => |po| {
+                    if (po.get("capabilities")) |cv| switch (cv) {
+                        .object => |co| {
+                            if (co.get("general")) |gv| switch (gv) {
+                                .object => |go| {
+                                    if (go.get("positionEncodings")) |ev| switch (ev) {
+                                        .array => |arr| {
+                                            for (arr.items) |item| switch (item) {
+                                                .string => |sv| {
+                                                    if (std.mem.eql(u8, sv, "utf-8")) {
+                                                        s.encoding = .utf8;
+                                                        break;
+                                                    }
+                                                },
+                                                else => {},
+                                            };
+                                        },
+                                        else => {},
+                                    };
+                                },
+                                else => {},
+                            };
+                        },
+                        else => {},
+                    };
+                },
+                else => {},
+            };
+
+            const enc_str: []const u8 = switch (s.encoding) {
+                .utf8 => "utf-8",
+                .utf16 => "utf-16",
+                .utf32 => "utf-32",
+            };
+            var out: std.ArrayListUnmanaged(u8) = .empty;
+            defer out.deinit(s.alloc);
+            try out.appendSlice(s.alloc, "{\"capabilities\":{\"positionEncoding\":\"");
+            try out.appendSlice(s.alloc, enc_str);
+            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
+            try s.sendResult(id, out.items);
             return false;
         }
         if (std.mem.eql(u8, method, "initialized")) return false;
@@ -168,7 +217,7 @@ pub const Server = struct {
         var a = try analysis.analyze(s.alloc, doc.text);
         defer a.deinit();
 
-        const off = analysis.posToOffset(doc.text, pos);
+        const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
         const sym = a.symbolAtOffset(doc.text, off) orelse return s.sendNullResult(id);
 
         // Build a hover message describing the symbol.
@@ -227,7 +276,7 @@ pub const Server = struct {
         try out.appendSlice(s.alloc, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
         try proto.escapeJsonInto(&out, s.alloc, msg.items);
         try out.appendSlice(s.alloc, "\"},\"range\":");
-        try writeRange(&out, s.alloc, sym.range);
+        try writeRangeEnc(&out, s.alloc, doc.text, sym.range, s.encoding);
         try out.append(s.alloc, '}');
         try s.sendResult(id, out.items);
         return false;
@@ -244,35 +293,79 @@ pub const Server = struct {
         var a = try analysis.analyze(s.alloc, doc.text);
         defer a.deinit();
 
-        const off = analysis.posToOffset(doc.text, pos);
+        const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
         const sym = a.symbolAtOffset(doc.text, off) orelse return s.sendNullResult(id);
 
         const lookup_name: []const u8 = if (sym.dot_at) |dot| sym.text[dot + 1 ..] else sym.text;
-        const def = a.findDefinition(lookup_name) orelse {
-            // Try alias -> module name as a degenerate target (jump to import form).
-            if (a.findImportByAlias(sym.text)) |imp| {
-                var out: std.ArrayListUnmanaged(u8) = .empty;
-                defer out.deinit(s.alloc);
-                try out.appendSlice(s.alloc, "{\"uri\":\"");
-                try proto.escapeJsonInto(&out, s.alloc, uri);
-                try out.appendSlice(s.alloc, "\",\"range\":");
-                try writeRange(&out, s.alloc, imp.module_range);
-                try out.append(s.alloc, '}');
-                try s.sendResult(id, out.items);
-                return false;
-            }
-            return s.sendNullResult(id);
-        };
 
-        var out: std.ArrayListUnmanaged(u8) = .empty;
-        defer out.deinit(s.alloc);
-        try out.appendSlice(s.alloc, "{\"uri\":\"");
-        try proto.escapeJsonInto(&out, s.alloc, uri);
-        try out.appendSlice(s.alloc, "\",\"range\":");
-        try writeRange(&out, s.alloc, def.name_range);
-        try out.append(s.alloc, '}');
-        try s.sendResult(id, out.items);
-        return false;
+        // First: try local definition in the current document.
+        if (a.findDefinition(lookup_name)) |def| {
+            var out: std.ArrayListUnmanaged(u8) = .empty;
+            defer out.deinit(s.alloc);
+            try out.appendSlice(s.alloc, "{\"uri\":\"");
+            try proto.escapeJsonInto(&out, s.alloc, uri);
+            try out.appendSlice(s.alloc, "\",\"range\":");
+            try writeRangeEnc(&out, s.alloc, doc.text, def.name_range, s.encoding);
+            try out.append(s.alloc, '}');
+            try s.sendResult(id, out.items);
+            return false;
+        }
+
+        // Cross-file fallback (zepo-zoan): qualified symbol whose prefix is an
+        // import alias. Resolve the module file via the runtime search-path
+        // logic, scan it for `(define NAME ...)`, and return a remote Location.
+        if (sym.dot_at) |_| {
+            const prefix = sym.text[0..sym.dot_at.?];
+            if (a.findImportByAlias(prefix)) |imp| {
+                if (try s.crossFileDef(imp.module, lookup_name)) |loc| {
+                    defer s.alloc.free(loc.uri);
+                    defer s.alloc.free(loc.target_text);
+                    var out: std.ArrayListUnmanaged(u8) = .empty;
+                    defer out.deinit(s.alloc);
+                    try out.appendSlice(s.alloc, "{\"uri\":\"");
+                    try proto.escapeJsonInto(&out, s.alloc, loc.uri);
+                    try out.appendSlice(s.alloc, "\",\"range\":");
+                    try writeRangeEnc(&out, s.alloc, loc.target_text, loc.range, s.encoding);
+                    try out.append(s.alloc, '}');
+                    try s.sendResult(id, out.items);
+                    return false;
+                }
+            }
+        }
+
+        // Degenerate fallback: jump to the import form for an alias hit.
+        if (a.findImportByAlias(sym.text)) |imp| {
+            var out: std.ArrayListUnmanaged(u8) = .empty;
+            defer out.deinit(s.alloc);
+            try out.appendSlice(s.alloc, "{\"uri\":\"");
+            try proto.escapeJsonInto(&out, s.alloc, uri);
+            try out.appendSlice(s.alloc, "\",\"range\":");
+            try writeRangeEnc(&out, s.alloc, doc.text, imp.module_range, s.encoding);
+            try out.append(s.alloc, '}');
+            try s.sendResult(id, out.items);
+            return false;
+        }
+
+        return s.sendNullResult(id);
+    }
+
+    const CrossFileHit = struct {
+        uri: []u8,
+        range: analysis.Range,
+        target_text: []u8, // dup of cached text for encoding conversion
+    };
+
+    /// Resolve `module` to a file on disk and search for `name`'s top-level
+    /// (define ...) / (module ...) form. Returns owned uri/text; caller frees.
+    fn crossFileDef(s: *Server, module: []const u8, name: []const u8) !?CrossFileHit {
+        const path = (try s.resolver.resolveModule(module)) orelse return null;
+        defer s.alloc.free(path);
+        const result = (try s.resolver.getAnalysis(path)) orelse return null;
+        const def = result.an.findDefinition(name) orelse return null;
+        // Build file:// uri.
+        const uri = try std.fmt.allocPrint(s.alloc, "file://{s}", .{path});
+        const text_copy = try s.alloc.dupe(u8, result.text);
+        return .{ .uri = uri, .range = def.name_range, .target_text = text_copy };
     }
 
     // -- Completion ---------------------------------------------------------
@@ -287,7 +380,7 @@ pub const Server = struct {
         defer a.deinit();
 
         // Look backwards from the cursor for `<alias>.` qualifier.
-        const off = analysis.posToOffset(doc.text, pos);
+        const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
         var start: usize = off;
         while (start > 0) {
             const c = doc.text[start - 1];
@@ -372,10 +465,10 @@ pub const Server = struct {
             try diags.append(s.alloc, .{ .range = sym.range, .message = msg, .owned = true });
         }
 
-        try s.writeDiagnostics(uri, diags.items);
+        try s.writeDiagnostics(uri, doc.text, diags.items);
     }
 
-    fn writeDiagnostics(s: *Server, uri: []const u8, diags: []const Diag) !void {
+    fn writeDiagnostics(s: *Server, uri: []const u8, text: []const u8, diags: []const Diag) !void {
         var out: std.ArrayListUnmanaged(u8) = .empty;
         defer out.deinit(s.alloc);
         try out.appendSlice(s.alloc, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
@@ -384,7 +477,7 @@ pub const Server = struct {
         for (diags, 0..) |d, i| {
             if (i > 0) try out.append(s.alloc, ',');
             try out.appendSlice(s.alloc, "{\"range\":");
-            try writeRange(&out, s.alloc, d.range);
+            try writeRangeEnc(&out, s.alloc, text, d.range, s.encoding);
             try out.appendSlice(s.alloc, ",\"severity\":1,\"source\":\"zepo\",\"message\":\"");
             try proto.escapeJsonInto(&out, s.alloc, d.message);
             try out.appendSlice(s.alloc, "\"}");
@@ -476,6 +569,19 @@ fn writeRange(out: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator, r: ana
         "{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}",
         .{ r.start.line, r.start.character, r.end.line, r.end.character });
     try out.appendSlice(alloc, s);
+}
+
+/// Like writeRange but converts a byte-encoded internal range to the given
+/// encoding using `text` as the source.
+fn writeRangeEnc(
+    out: *std.ArrayListUnmanaged(u8),
+    alloc: std.mem.Allocator,
+    text: []const u8,
+    r: analysis.Range,
+    enc: analysis.PositionEncoding,
+) !void {
+    const wire = analysis.convertRangeFromBytes(text, r, enc);
+    try writeRange(out, alloc, wire);
 }
 
 fn getObject(obj: std.json.ObjectMap, key: []const u8) ?std.json.ObjectMap {

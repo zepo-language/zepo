@@ -234,6 +234,138 @@ test "completion after alias dot offers imported names" {
     try t.expect(std.mem.indexOf(u8, out.items, "gamma") != null);
 }
 
+test "initialize advertises positionEncoding and negotiates utf-8" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    // Client advertises utf-8 support under capabilities.general.positionEncodings.
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]}}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+    try t.expect(std.mem.indexOf(u8, out.items, "\"positionEncoding\":\"utf-8\"") != null);
+}
+
+test "hover position for non-ASCII identifier (utf-16 default)" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // λ is U+03BB, encoded as 2 bytes in UTF-8 (0xCE 0xBB), 1 unit in UTF-16.
+    // Source layout (line 0): "(define λ 1)"
+    //   byte cols:  0 1 2 3 4 5 6 7 8 9 10 11 12
+    //   chars:      ( d e f i n e _ λ . _  1  )   (note λ is 2 bytes)
+    //   utf-16 cols same as char cols since λ is BMP.
+    // After λ on line 0 there should be a reference; we'll use a second line.
+    const src =
+        \\(define λ 1)
+        \\(define use λ)
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///u.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // With utf-16 encoding negotiated (default), the `λ` at line 0 begins at
+    // character index 8 (same as bytes here) but its visible width is 1 utf-16
+    // unit. Hovering at line 0 char 8 should resolve to the symbol `λ`.
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///u.lisp"},"position":{"line":0,"character":8}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    // Hover response should contain λ (escaped as utf-8 bytes in JSON output)
+    // and indicate it is defined in this file.
+    try t.expect(std.mem.indexOf(u8, out.items, "defined in this file") != null);
+    // The returned range.end.character for `λ` should be 9 (one utf-16 unit
+    // wide), NOT 10 (which would be the raw-byte count). This proves we are
+    // emitting utf-16 columns when negotiated.
+    try t.expect(std.mem.indexOf(u8, out.items, "\"end\":{\"line\":0,\"character\":9}") != null);
+}
+
+test "cross-file goto-def resolves through ZEPO_PATH" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // Create a tmp dir, put a fake module file inside, point ZEPO_PATH at it.
+    const libc = struct {
+        extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    const dir_path = "/tmp/zepo-lsp-xfile-test";
+    _ = libc.mkdir(dir_path, 0o755);
+    _ = libc.mkdir("/tmp/zepo-lsp-xfile-test/math", 0o755);
+    const file_path = "/tmp/zepo-lsp-xfile-test/math/tensor.lisp";
+    {
+        const f = std.c.fopen(file_path, "wb") orelse return error.TestUnexpectedResult;
+        defer _ = std.c.fclose(f);
+        const body = "(define transpose (lambda (x) x))\n";
+        _ = std.c.fwrite(body.ptr, 1, body.len, f);
+    }
+
+    _ = libc.setenv("ZEPO_PATH", dir_path, 1);
+    defer _ = libc.unsetenv("ZEPO_PATH");
+
+    const src =
+        \\(import math/tensor :as mt)
+        \\(define use (mt.transpose 1))
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///x.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // Cursor inside "mt.transpose" on line 1.
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///x.lisp"},"position":{"line":1,"character":16}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    // Result must reference the remote file.
+    try t.expect(std.mem.indexOf(u8, out.items, "file://") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "math/tensor.lisp") != null);
+}
+
 test "shutdown then exit" {
     const t = std.testing;
     const alloc = t.allocator;

@@ -23,10 +23,15 @@
 
 const std = @import("std");
 
+/// LSP PositionEncodingKind. Per LSP 3.17, `utf-8` means a Position's
+/// `character` field counts UTF-8 code units (bytes); `utf-16` counts UTF-16
+/// code units. `utf-32` counts Unicode code points. We support utf-8 and
+/// utf-16 (zepo-pewz).
+pub const PositionEncoding = enum { utf8, utf16, utf32 };
+
 pub const Pos = struct {
     line: u32, // zero-based for LSP
-    character: u32, // zero-based UTF-16 code units (we approximate with bytes
-    //                  which is correct for ASCII; good enough for symbols).
+    character: u32, // zero-based, units depend on negotiated encoding.
 };
 
 pub const Range = struct {
@@ -39,35 +44,112 @@ pub const Range = struct {
             .end = offsetToPos(text, end_off),
         };
     }
+
+    pub fn fromOffsetsEnc(text: []const u8, start_off: usize, end_off: usize, enc: PositionEncoding) Range {
+        return .{
+            .start = offsetToPosEnc(text, start_off, enc),
+            .end = offsetToPosEnc(text, end_off, enc),
+        };
+    }
 };
 
+/// Decode a single UTF-8 sequence starting at `text[i]`. Returns
+/// `(code_point, byte_len)`. On invalid bytes treats the lead byte as a single
+/// 0xFFFD-equivalent unit (advance 1 byte, code point 0).
+fn utf8DecodeAt(text: []const u8, i: usize) struct { cp: u21, len: usize } {
+    const c = text[i];
+    if (c < 0x80) return .{ .cp = c, .len = 1 };
+    const seq_len: usize = if (c < 0xC0) 1 else if (c < 0xE0) 2 else if (c < 0xF0) 3 else 4;
+    if (seq_len == 1 or i + seq_len > text.len) return .{ .cp = 0, .len = 1 };
+    const slice = text[i .. i + seq_len];
+    const cp = std.unicode.utf8Decode(slice) catch return .{ .cp = 0, .len = 1 };
+    return .{ .cp = cp, .len = seq_len };
+}
+
+/// Number of UTF-16 code units a code point occupies (1 for BMP, 2 for
+/// supplementary planes).
+fn utf16Units(cp: u21) u32 {
+    return if (cp >= 0x10000) 2 else 1;
+}
+
+/// Backwards-compatible default: byte offsets (utf-8).
 pub fn offsetToPos(text: []const u8, offset: usize) Pos {
+    return offsetToPosEnc(text, offset, .utf8);
+}
+
+pub fn posToOffset(text: []const u8, p: Pos) usize {
+    return posToOffsetEnc(text, p, .utf8);
+}
+
+pub fn offsetToPosEnc(text: []const u8, offset: usize, enc: PositionEncoding) Pos {
     var line: u32 = 0;
     var col: u32 = 0;
     var i: usize = 0;
     const limit = @min(offset, text.len);
-    while (i < limit) : (i += 1) {
+    while (i < limit) {
         if (text[i] == '\n') {
             line += 1;
             col = 0;
-        } else {
-            col += 1;
+            i += 1;
+            continue;
+        }
+        switch (enc) {
+            .utf8 => {
+                col += 1;
+                i += 1;
+            },
+            .utf16 => {
+                const d = utf8DecodeAt(text, i);
+                col += utf16Units(d.cp);
+                i += d.len;
+            },
+            .utf32 => {
+                const d = utf8DecodeAt(text, i);
+                col += 1;
+                i += d.len;
+            },
         }
     }
     return .{ .line = line, .character = col };
 }
 
-pub fn posToOffset(text: []const u8, p: Pos) usize {
+/// Re-encode a byte-encoded Range to the given encoding, given the source text.
+pub fn convertRangeFromBytes(text: []const u8, r: Range, enc: PositionEncoding) Range {
+    const s_off = posToOffsetEnc(text, r.start, .utf8);
+    const e_off = posToOffsetEnc(text, r.end, .utf8);
+    return .{
+        .start = offsetToPosEnc(text, s_off, enc),
+        .end = offsetToPosEnc(text, e_off, enc),
+    };
+}
+
+pub fn posToOffsetEnc(text: []const u8, p: Pos, enc: PositionEncoding) usize {
     var line: u32 = 0;
     var col: u32 = 0;
     var i: usize = 0;
-    while (i < text.len) : (i += 1) {
+    while (i < text.len) {
         if (line == p.line and col == p.character) return i;
         if (text[i] == '\n') {
             line += 1;
             col = 0;
-        } else {
-            col += 1;
+            i += 1;
+            continue;
+        }
+        switch (enc) {
+            .utf8 => {
+                col += 1;
+                i += 1;
+            },
+            .utf16 => {
+                const d = utf8DecodeAt(text, i);
+                col += utf16Units(d.cp);
+                i += d.len;
+            },
+            .utf32 => {
+                const d = utf8DecodeAt(text, i);
+                col += 1;
+                i += d.len;
+            },
         }
     }
     return text.len;
@@ -124,11 +206,13 @@ pub const Analysis = struct {
         a.only_arena.deinit(a.alloc);
     }
 
-    /// Find the symbol hit covering byte offset `off`, or null.
+    /// Find the symbol hit covering byte offset `off`, or null. Ranges stored
+    /// in Analysis are always byte-encoded (utf-8), so we round-trip with the
+    /// utf-8 conversion to recover byte offsets.
     pub fn symbolAtOffset(a: *const Analysis, text: []const u8, off: usize) ?SymbolHit {
         for (a.symbols.items) |sym| {
-            const s_off = posToOffset(text, sym.range.start);
-            const e_off = posToOffset(text, sym.range.end);
+            const s_off = posToOffsetEnc(text, sym.range.start, .utf8);
+            const e_off = posToOffsetEnc(text, sym.range.end, .utf8);
             if (off >= s_off and off <= e_off) return sym;
         }
         return null;
