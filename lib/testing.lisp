@@ -17,6 +17,8 @@
   (export
     ;; Block forms
     describe it deftest
+    ;; Focus / skip (zepo-s3zf)
+    fdescribe fit xdescribe xit
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -29,7 +31,7 @@
     run!        ; embeddable: returns a result record, no exit, no print
     run!/exit   ; pretty-print THEN exit 1 on any failure (for top-of-file)
     ;; Result accessors for the run! return value
-    result-passed result-failed result-total result-failures result-duration-ms
+    result-passed result-failed result-skipped result-total result-failures result-duration-ms
     clear-tests!)
 
   ;; ── State ─────────────────────────────────────────────────────────────────
@@ -41,6 +43,10 @@
   ;; Every (it ...) and (deftest ...) appends to this list at registration
   ;; time. Each entry is (path . thunk) where path is a list of strings.
   (define *tests* '())
+
+  ;; zepo-s3zf focus / skip support.
+  (define *focus-active?* #f)
+  (define *describe-mode* 'normal)
 
   ;; zepo-mqf4: Hook registry. *describes* is a hash-table keyed by describe
   ;; path (e.g. ("stats" "mean")). Each value is another hash-table with
@@ -74,9 +80,11 @@
 
   ;; Register a test against the current context. Used by the it/deftest
   ;; macros after they've collected the name and built the thunk.
-  (define (register-test! name thunk)
-    (let ((path (append (reverse *context-stack*) (list name))))
-      (set! *tests* (append *tests* (list (cons path thunk))))))
+  (define (register-test! name thunk . maybe-mode)
+    (let* ((path (append (reverse *context-stack*) (list name)))
+           (mode (if (null? maybe-mode) *describe-mode* (car maybe-mode))))
+      (if (eq? mode 'focused) (set! *focus-active?* #t))
+      (set! *tests* (append *tests* (list (list path thunk mode))))))
 
   ;; ── Block forms ──────────────────────────────────────────────────────────
 
@@ -101,6 +109,31 @@
   ;; describe nesting would be overkill.
   (defmacro deftest (name . body)
     `(register-test! ,name (lambda () ,@body)))
+
+  ;; zepo-s3zf focus / skip macros.
+  (define (with-describe-mode! new-mode thunk)
+    (let ((old *describe-mode*))
+      (set! *describe-mode* new-mode)
+      (thunk)
+      (set! *describe-mode* old)))
+
+  (defmacro fdescribe (name . body)
+    `(begin
+       (push-context! ,name)
+       (with-describe-mode! 'focused (lambda () ,@body))
+       (pop-context!)))
+
+  (defmacro xdescribe (name . body)
+    `(begin
+       (push-context! ,name)
+       (with-describe-mode! 'skipped (lambda () ,@body))
+       (pop-context!)))
+
+  (defmacro fit (name . body)
+    `(register-test! ,name (lambda () ,@body) 'focused))
+
+  (defmacro xit (name . body)
+    `(register-test! ,name (lambda () ,@body) 'skipped))
 
   ;; ── Lifecycle hooks (zepo-mqf4) ──────────────────────────────────────────
   ;;
@@ -385,10 +418,11 @@
   ;; callers don't have to know the internal key names. zepo-s3zf will add
   ;; a 'skipped count and zepo-nitj will add reporter integration.
 
-  (define (make-result passed failed failures duration-ms)
+  (define (make-result passed failed skipped failures duration-ms)
     (let ((r (make-hash-table)))
       (hash-set! r 'passed passed)
       (hash-set! r 'failed failed)
+      (hash-set! r 'skipped skipped)
       (hash-set! r 'total (+ passed failed))
       (hash-set! r 'duration-ms duration-ms)
       (hash-set! r 'failures failures)
@@ -396,6 +430,7 @@
 
   (define (result-passed r)      (hash-get r 'passed 0))
   (define (result-failed r)      (hash-get r 'failed 0))
+  (define (result-skipped r)     (hash-get r 'skipped 0))
   (define (result-total r)       (hash-get r 'total 0))
   (define (result-duration-ms r) (hash-get r 'duration-ms 0))
   (define (result-failures r)    (hash-get r 'failures '()))
@@ -452,47 +487,56 @@
            (start  (current-time-ms))
            (passed 0)
            (failed 0)
+           (skipped 0)
            (failures '())
            (prev-groups '())
            (prev-ancestors '()))
       (for-each
         (lambda (entry)
           (let* ((path (car entry))
-                 (thunk (cdr entry))
-                 (leaf (car (reverse path))))
+                 (thunk (cadr entry))
+                 (mode (caddr entry))
+                 (leaf (car (reverse path)))
+                 (action (cond
+                           ((eq? mode 'skipped) 'skip)
+                           ((and *focus-active?* (not (eq? mode 'focused))) 'skip)
+                           (#t 'run))))
             (if (or (not filter) (equal? leaf filter))
                 (let* ((cur-ancestors (ancestor-paths path))
                        (cur-groups
                          (if silent prev-groups
                              (print-context-transition prev-groups path))))
-                  ;; Lifecycle: leaving describes -> after-all; entering -> before-all
                   (fire-after-all-for-left prev-ancestors cur-ancestors)
                   (fire-before-all-for-entered prev-ancestors cur-ancestors)
                   (set! prev-groups cur-groups)
                   (set! prev-ancestors cur-ancestors)
                   (if (not silent) (print-indent (length cur-groups)))
-                  ;; before-each: outer-to-inner
-                  (for-each
-                    (lambda (p) (run-hook-list (hooks-for p 'before-each)))
-                    cur-ancestors)
-                  (with-exception-handler
-                    (lambda (e)
-                      (let ((msg (format-exception e)))
-                        (set! failed (+ failed 1))
-                        (set! failures (append failures (list (cons path msg))))
-                        (if (not silent)
-                            (begin
-                              (display "FAIL ") (display leaf)
-                              (display ": ") (display msg) (newline)))))
-                    (lambda ()
-                      (thunk)
-                      (set! passed (+ passed 1))
-                      (if (not silent)
-                          (begin (display "PASS ") (display leaf) (newline)))))
-                  ;; after-each: inner-to-outer, runs even on failure
-                  (for-each
-                    (lambda (p) (run-hook-list (hooks-for p 'after-each)))
-                    (reverse cur-ancestors))))))
+                  (cond
+                    ((eq? action 'skip)
+                     (set! skipped (+ skipped 1))
+                     (if (not silent)
+                         (begin (display "SKIP ") (display leaf) (newline))))
+                    (#t
+                     (for-each
+                       (lambda (p) (run-hook-list (hooks-for p 'before-each)))
+                       cur-ancestors)
+                     (with-exception-handler
+                       (lambda (e)
+                         (let ((msg (format-exception e)))
+                           (set! failed (+ failed 1))
+                           (set! failures (append failures (list (cons path msg))))
+                           (if (not silent)
+                               (begin
+                                 (display "FAIL ") (display leaf)
+                                 (display ": ") (display msg) (newline)))))
+                       (lambda ()
+                         (thunk)
+                         (set! passed (+ passed 1))
+                         (if (not silent)
+                             (begin (display "PASS ") (display leaf) (newline)))))
+                     (for-each
+                       (lambda (p) (run-hook-list (hooks-for p 'after-each)))
+                       (reverse cur-ancestors))))))))
         *tests*)
       ;; Final after-all sweep — fire for any still-active describes.
       (fire-after-all-for-left prev-ancestors '())
@@ -502,9 +546,11 @@
               (newline)
               (display "Summary: ") (display passed)
               (display " passed, ") (display failed) (display " failed")
+              (if (> skipped 0)
+                  (begin (display ", ") (display skipped) (display " skipped")))
               (display " (") (display duration) (display " ms)")
               (newline)))
-        (make-result passed failed failures duration))))
+        (make-result passed failed skipped failures duration))))
 
   ;; Legacy printer that returns (passed . failed) — keeps the smoke tests
   ;; written against zepo-mx0p working without modification.
