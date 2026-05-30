@@ -17,6 +17,8 @@
   (export
     ;; Block forms
     describe it deftest
+    ;; Lifecycle hooks (zepo-mqf4)
+    before-each after-each before-all after-all
     ;; Assertions
     is is-not
     =check =check~
@@ -40,9 +42,28 @@
   ;; time. Each entry is (path . thunk) where path is a list of strings.
   (define *tests* '())
 
+  ;; zepo-mqf4: Hook registry. *describes* is a hash-table keyed by describe
+  ;; path (e.g. ("stats" "mean")). Each value is another hash-table with
+  ;; 'before-each, 'after-each, 'before-all, 'after-all — lists of thunks
+  ;; in registration order. before-all-ran? is a per-describe boolean
+  ;; tracked separately during a run.
+  (define *describes* (make-hash-table))
+
+  (define (describe-record-for path)
+    (let ((r (hash-get *describes* path #f)))
+      (if r r
+          (let ((new (make-hash-table)))
+            (hash-set! new 'before-each '())
+            (hash-set! new 'after-each '())
+            (hash-set! new 'before-all '())
+            (hash-set! new 'after-all '())
+            (hash-set! *describes* path new)
+            new))))
+
   (define (clear-tests!)
     (set! *tests* '())
-    (set! *context-stack* '()))
+    (set! *context-stack* '())
+    (set! *describes* (make-hash-table)))
 
   ;; Push/pop helpers — called by the describe macro's expansion.
   (define (push-context! label)
@@ -80,6 +101,59 @@
   ;; describe nesting would be overkill.
   (defmacro deftest (name . body)
     `(register-test! ,name (lambda () ,@body)))
+
+  ;; ── Lifecycle hooks (zepo-mqf4) ──────────────────────────────────────────
+  ;;
+  ;; Each hook registers a thunk against the CURRENT describe scope (i.e.
+  ;; the reverse of *context-stack*). At runtime the runner walks each
+  ;; test's ancestor describes and invokes the hooks in the right order:
+  ;;
+  ;;   before-each  outer-to-inner before every it
+  ;;   after-each   inner-to-outer after every it (even on failure)
+  ;;   before-all   outer-to-inner once before the first it in the describe
+  ;;   after-all    inner-to-outer once after the last it in the describe
+
+  (define (register-hook! kind thunk)
+    (let* ((path (reverse *context-stack*))
+           (rec (describe-record-for path))
+           (existing (hash-get rec kind '())))
+      (hash-set! rec kind (append existing (list thunk)))))
+
+  (defmacro before-each (thunk)
+    `(register-hook! 'before-each ,thunk))
+
+  (defmacro after-each (thunk)
+    `(register-hook! 'after-each ,thunk))
+
+  (defmacro before-all (thunk)
+    `(register-hook! 'before-all ,thunk))
+
+  (defmacro after-all (thunk)
+    `(register-hook! 'after-all ,thunk))
+
+  ;; Walk from "" (the implicit root) down to the test's enclosing describe
+  ;; and return a list of describe paths in outer-to-inner order. For a
+  ;; test at path ("stats" "mean" "of empty") this returns:
+  ;;   (() ("stats") ("stats" "mean"))
+  ;; — including the empty path so root-level hooks (none today, but reserved)
+  ;; could attach there.
+  (define (ancestor-paths test-path)
+    (let ((describe-path (let loop ((xs test-path) (acc '()))
+                           (if (or (null? xs) (null? (cdr xs)))
+                               (reverse acc)
+                               (loop (cdr xs) (cons (car xs) acc))))))
+      (let loop ((xs describe-path) (acc '()) (cur '()))
+        (if (null? xs)
+            (append (list '()) (reverse acc))
+            (let ((next (append cur (list (car xs)))))
+              (loop (cdr xs) (cons next acc) next))))))
+
+  (define (hooks-for path kind)
+    (let ((rec (hash-get *describes* path #f)))
+      (if rec (hash-get rec kind '()) '())))
+
+  (define (run-hook-list hooks)
+    (for-each (lambda (h) (h)) hooks))
 
   ;; ── Assertions ───────────────────────────────────────────────────────────
   ;;
@@ -350,6 +424,27 @@
          (loop (cdr xs) silent (car xs)))
         (#t (loop (cdr xs) silent filter)))))
 
+  ;; zepo-mqf4: helper — fire after-all for any describe in prev-ancestors
+  ;; that isn't in cur-ancestors (we've LEFT that describe). Walked in
+  ;; inner-to-outer order.
+  (define (fire-after-all-for-left prev-ancestors cur-ancestors)
+    (let loop ((xs (reverse prev-ancestors)))
+      (if (null? xs) '()
+          (let ((path (car xs)))
+            (if (member path cur-ancestors)
+                '()  ; once we hit a still-active ancestor, stop
+                (begin (run-hook-list (hooks-for path 'after-all))
+                       (loop (cdr xs))))))))
+
+  ;; Fire before-all for any describe in cur-ancestors that isn't in
+  ;; prev-ancestors (we've ENTERED that describe). Outer-to-inner.
+  (define (fire-before-all-for-entered prev-ancestors cur-ancestors)
+    (for-each
+      (lambda (path)
+        (if (not (member path prev-ancestors))
+            (run-hook-list (hooks-for path 'before-all))))
+      cur-ancestors))
+
   (define (run! . args)
     (let* ((opts   (parse-runner-args args))
            (silent (car opts))
@@ -358,18 +453,28 @@
            (passed 0)
            (failed 0)
            (failures '())
-           (prev-groups '()))
+           (prev-groups '())
+           (prev-ancestors '()))
       (for-each
         (lambda (entry)
           (let* ((path (car entry))
                  (thunk (cdr entry))
                  (leaf (car (reverse path))))
             (if (or (not filter) (equal? leaf filter))
-                (let ((cur-groups
-                        (if silent prev-groups
-                            (print-context-transition prev-groups path))))
+                (let* ((cur-ancestors (ancestor-paths path))
+                       (cur-groups
+                         (if silent prev-groups
+                             (print-context-transition prev-groups path))))
+                  ;; Lifecycle: leaving describes -> after-all; entering -> before-all
+                  (fire-after-all-for-left prev-ancestors cur-ancestors)
+                  (fire-before-all-for-entered prev-ancestors cur-ancestors)
                   (set! prev-groups cur-groups)
+                  (set! prev-ancestors cur-ancestors)
                   (if (not silent) (print-indent (length cur-groups)))
+                  ;; before-each: outer-to-inner
+                  (for-each
+                    (lambda (p) (run-hook-list (hooks-for p 'before-each)))
+                    cur-ancestors)
                   (with-exception-handler
                     (lambda (e)
                       (let ((msg (format-exception e)))
@@ -383,8 +488,14 @@
                       (thunk)
                       (set! passed (+ passed 1))
                       (if (not silent)
-                          (begin (display "PASS ") (display leaf) (newline)))))))))
+                          (begin (display "PASS ") (display leaf) (newline)))))
+                  ;; after-each: inner-to-outer, runs even on failure
+                  (for-each
+                    (lambda (p) (run-hook-list (hooks-for p 'after-each)))
+                    (reverse cur-ancestors))))))
         *tests*)
+      ;; Final after-all sweep — fire for any still-active describes.
+      (fire-after-all-for-left prev-ancestors '())
       (let ((duration (- (current-time-ms) start)))
         (if (not silent)
             (begin
