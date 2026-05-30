@@ -84,6 +84,7 @@ const TABLE: []const Entry = &.{
     make("not", 1, apply_mod.primNot),
     make("apply", -1, apply_mod.primApply),
     make("eval", 1, eval_prim.primEval), // zepo-ksw
+    make("read-from-string", 1, eval_prim.primReadFromString), // zepo-dheb
     make("values", -1, apply_mod.primValues),
     make("call-with-values", 2, apply_mod.primCallWithValues),
 

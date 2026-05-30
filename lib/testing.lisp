@@ -28,6 +28,8 @@
     with-timeout-ms
     ;; Property-based testing (zepo-qv9y)
     check-property
+    ;; Doctests (zepo-dheb)
+    load-doctests
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -1026,6 +1028,90 @@
 
   (define (make-rng-from-time)
     (make-rng (current-time-ms)))
+
+  ;; ── Doctest harvester (zepo-dheb) ────────────────────────────────────────
+  ;;
+  ;; (load-doctests path) scans the file at PATH for comments of the form:
+  ;;
+  ;;     ;; >>> EXPRESSION
+  ;;     ;; => EXPECTED-RESULT
+  ;;
+  ;; Each pair becomes a registered test under
+  ;;
+  ;;     (describe "<path> / doctest"
+  ;;       (it "EXPRESSION" (=check EXPRESSION EXPECTED-RESULT)))
+  ;;
+  ;; The file's normal code is NOT executed — only the comment lines are
+  ;; harvested. Returns the number of doctests registered.
+  ;;
+  ;; Multi-line expressions aren't supported in this MVP — keep both the
+  ;; EXPRESSION and EXPECTED-RESULT on single lines, each prefixed by
+  ;; `;; >>> ` or `;; => ` respectively.
+
+  (define (trim-line s)
+    ;; trims leading/trailing whitespace using the stdlib's string-trim-*
+    (string-trim-right (string-trim-left s)))
+
+  (define (starts-with? s prefix)
+    (let ((sl (string-length s)) (pl (string-length prefix)))
+      (if (< sl pl) #f
+          (string=? (substring s 0 pl) prefix))))
+
+  ;; Walk the source, collect (input . expected) pairs. A >>> line followed
+  ;; (possibly with whitespace-only lines between) by a => line forms a pair.
+  (define (extract-doctest-pairs text)
+    (let* ((lines (string-split text #\newline))
+           (pairs '())
+           (pending #f))
+      (for-each
+        (lambda (line)
+          (let ((trimmed (trim-line line)))
+            (cond
+              ((starts-with? trimmed ";; >>>")
+               (set! pending (trim-line (substring trimmed 6 (string-length trimmed)))))
+              ((and pending (starts-with? trimmed ";; =>"))
+               (let ((expected (trim-line (substring trimmed 5 (string-length trimmed)))))
+                 (set! pairs (append pairs (list (cons pending expected))))
+                 (set! pending #f)))
+              ((and pending (= (string-length trimmed) 0))
+               '())   ; blank line between >>> and => is fine — keep pending
+              (#t
+               ;; Anything else clears a stale >>> with no => follow-up.
+               (if pending (set! pending #f))))))
+        lines)
+      pairs))
+
+  ;; Register one harvested pair as a doctest. The expression and expected
+  ;; result are stored as STRINGS — the test thunk evals both via the host
+  ;; reader using (eval (read-from-string expr)) so the test runs against
+  ;; the importer's environment.
+  (define (register-doctest! file-label expr-str expected-str)
+    (push-context! (string-append file-label " / doctest"))
+    (register-test!
+      expr-str
+      (lambda ()
+        ;; actual: parse + evaluate the expression
+        ;; expected: parse-only — the result is a LITERAL VALUE, not code
+        (let ((actual   (eval (read-from-string expr-str)))
+              (expected (read-from-string expected-str)))
+          (if (not (equal? actual expected))
+              (error (string-append
+                       "doctest: expected "
+                       (write-to-string expected)
+                       " got "
+                       (write-to-string actual)
+                       " in: "
+                       expr-str))))))
+    (pop-context!))
+
+  (define (load-doctests path)
+    (let* ((text  (file-read-string path))
+           (pairs (extract-doctest-pairs text))
+           (label path))
+      (for-each
+        (lambda (p) (register-doctest! label (car p) (cdr p)))
+        pairs)
+      (length pairs)))
 
   (define (run! . args)
     (let* ((opts          (parse-runner-args args))
