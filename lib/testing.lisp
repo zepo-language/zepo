@@ -26,6 +26,8 @@
     reporter-pretty reporter-tap reporter-junit reporter-json
     ;; Timeouts (zepo-sdxa)
     with-timeout-ms
+    ;; Property-based testing (zepo-qv9y)
+    check-property
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -41,6 +43,10 @@
     ;; Result accessors for the run! return value
     result-passed result-failed result-skipped result-total result-failures result-duration-ms
     clear-tests!)
+
+  ;; zepo-qv9y: imported here so check-property can pull samples / shrinks.
+  (import math/dist (make-rng))
+  (import math/gen  (gen-sample gen-shrink))
 
   ;; ── State ─────────────────────────────────────────────────────────────────
 
@@ -938,6 +944,88 @@
                    (number->string ms) " ms (took "
                    (number->string elapsed) " ms)"))
           value)))
+
+  ;; ── Property-based testing (zepo-qv9y) ───────────────────────────────────
+  ;;
+  ;; (check-property prop-fn :gen GEN :iterations N :rng RNG)
+  ;;
+  ;; Repeatedly samples values from GEN and calls (prop-fn v). If prop-fn
+  ;; returns truthy, the iteration passes. If it returns #f OR raises,
+  ;; we've found a failing example — enter the shrink loop:
+  ;;
+  ;;   try each shrunk candidate; if any also fails, recurse from there
+  ;;   and keep the smallest failing one as the reported counter-example.
+  ;;
+  ;; The final assertion error names the SMALLEST failing value plus the
+  ;; iteration that surfaced the original failure.
+
+  (define (call-property prop-fn v)
+    (let ((ok? #f))
+      (with-exception-handler
+        (lambda (e) (set! ok? #f) '())
+        (lambda () (set! ok? (and (prop-fn v) #t))))
+      ok?))
+
+  ;; Shrink loop: returns the smallest failing value found from `start`.
+  ;; Limits shrink-step count to avoid pathological cases. The gen module
+  ;; is supplied to provide the per-iteration shrink function.
+  (define (shrink-failure gen prop-fn start max-steps)
+    (let loop ((cur start) (steps 0))
+      (if (>= steps max-steps)
+          cur
+          (let ((cands (gen-shrink gen cur)))
+            (let next ((xs cands))
+              (cond
+                ((null? xs) cur)  ; no candidate failed — done shrinking
+                ((not (call-property prop-fn (car xs)))
+                 (loop (car xs) (+ steps 1)))
+                (#t (next (cdr xs)))))))))
+
+  (define (parse-property-args args)
+    (let ((opts (make-hash-table)))
+      (hash-set! opts 'gen #f)
+      (hash-set! opts 'iterations 100)
+      (hash-set! opts 'rng #f)
+      (hash-set! opts 'max-shrink-steps 100)
+      (let loop ((xs args))
+        (cond
+          ((null? xs) opts)
+          ((and (symbol? (car xs)) (eq? (car xs) ':gen))
+           (hash-set! opts 'gen (cadr xs)) (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':iterations))
+           (hash-set! opts 'iterations (cadr xs)) (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':rng))
+           (hash-set! opts 'rng (cadr xs)) (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':max-shrink-steps))
+           (hash-set! opts 'max-shrink-steps (cadr xs)) (loop (cddr xs)))
+          (#t (loop (cdr xs)))))))
+
+  ;; check-property is a function (not a macro). It raises on failure with
+  ;; a message naming the shrunk counter-example, so it composes with
+  ;; everything from with-exception-handler to the regular run! loop.
+  (define (check-property prop-fn . opts)
+    (let* ((p          (parse-property-args opts))
+           (gen        (hash-get p 'gen #f))
+           (iterations (hash-get p 'iterations 100))
+           (rng        (or (hash-get p 'rng #f) (make-rng-from-time)))
+           (max-shrink (hash-get p 'max-shrink-steps 100)))
+      (if (not gen) (error "check-property: :gen is required"))
+      (let loop ((i 0))
+        (if (>= i iterations)
+            #t  ; all good
+            (let* ((v (gen-sample gen rng))
+                   (ok? (call-property prop-fn v)))
+              (if ok?
+                  (loop (+ i 1))
+                  (let ((smallest (shrink-failure gen prop-fn v max-shrink)))
+                    (error (string-append
+                             "property failed at iteration "
+                             (number->string (+ i 1))
+                             "; smallest failing input: "
+                             (write-to-string smallest))))))))))
+
+  (define (make-rng-from-time)
+    (make-rng (current-time-ms)))
 
   (define (run! . args)
     (let* ((opts          (parse-runner-args args))
