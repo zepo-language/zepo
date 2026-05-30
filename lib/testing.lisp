@@ -19,6 +19,8 @@
     describe it deftest
     ;; Focus / skip (zepo-s3zf)
     fdescribe fit xdescribe xit
+    ;; Tags (zepo-nqfu)
+    tag
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -82,9 +84,31 @@
   ;; macros after they've collected the name and built the thunk.
   (define (register-test! name thunk . maybe-mode)
     (let* ((path (append (reverse *context-stack*) (list name)))
-           (mode (if (null? maybe-mode) *describe-mode* (car maybe-mode))))
+           (mode (if (null? maybe-mode) *describe-mode* (car maybe-mode)))
+           (tags (append *describe-tags* *pending-tags*)))
+      (set! *pending-tags* '())  ; consumed
       (if (eq? mode 'focused) (set! *focus-active?* #t))
-      (set! *tests* (append *tests* (list (list path thunk mode))))))
+      (set! *tests* (append *tests* (list (list path thunk mode tags))))))
+
+  ;; zepo-nqfu: tags carried by the current describe scope plus any
+  ;; (tag :foo :bar) form that appeared since the last test was registered.
+  (define *describe-tags* '())
+  (define *pending-tags*  '())
+
+  ;; Push-helper used by the (tag ...) macro. Lives as a function so the
+  ;; macro expansion doesn't need to set! a qualified name (the we7e
+  ;; rewriter would turn *pending-tags* into testing.*pending-tags* in
+  ;; the expansion, and set! on qualified names isn't supported).
+  (define (push-pending-tags! more)
+    (set! *pending-tags* (append *pending-tags* more)))
+
+  ;; (tag 'slow 'integration ...) — attaches the given quoted tags to the
+  ;; very next test registration. Note: tags are passed AS QUOTED SYMBOLS
+  ;; ('slow not :slow) because Zepo's keyword syntax (`:foo`) parses as a
+  ;; standalone symbol with a `:` prefix; quoted symbols are simpler and
+  ;; play nicely with equal? comparison in the filter.
+  (defmacro tag tags
+    `(push-pending-tags! (list ,@tags)))
 
   ;; ── Block forms ──────────────────────────────────────────────────────────
 
@@ -445,19 +469,64 @@
   ;; The legacy (run-tests . args) and the new (run!/exit . args) sit on
   ;; top of run! with the appropriate side effects.
 
+  ;; Returns a hash-table of options. Legacy positional-string form
+  ;; (run! "foo") is still accepted and treated as :filter "foo".
   (define (parse-runner-args args)
-    ;; Accepts: (run! :silent #t :filter "foo") OR positional first-arg
-    ;; legacy form (run! "foo") meaning :filter "foo".
-    (let loop ((xs args) (silent #f) (filter #f))
-      (cond
-        ((null? xs) (cons silent filter))
-        ((and (symbol? (car xs)) (eq? (car xs) ':silent))
-         (loop (cddr xs) (cadr xs) filter))
-        ((and (symbol? (car xs)) (eq? (car xs) ':filter))
-         (loop (cddr xs) silent (cadr xs)))
-        ((string? (car xs))
-         (loop (cdr xs) silent (car xs)))
-        (#t (loop (cdr xs) silent filter)))))
+    (let ((opts (make-hash-table)))
+      (hash-set! opts 'silent #f)
+      (hash-set! opts 'filter #f)
+      (hash-set! opts 'tags '())
+      (hash-set! opts 'exclude-tags '())
+      (let loop ((xs args))
+        (cond
+          ((null? xs) opts)
+          ((and (symbol? (car xs)) (eq? (car xs) ':silent))
+           (hash-set! opts 'silent (cadr xs))
+           (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':filter))
+           (hash-set! opts 'filter (cadr xs))
+           (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':tags))
+           (hash-set! opts 'tags (cadr xs))
+           (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':exclude-tags))
+           (hash-set! opts 'exclude-tags (cadr xs))
+           (loop (cddr xs)))
+          ((string? (car xs))
+           (hash-set! opts 'filter (car xs))
+           (loop (cdr xs)))
+          (#t (loop (cdr xs)))))))
+
+  ;; Returns #t if `lst` and `other` share at least one equal? element.
+  (define (any-shared? lst other)
+    (let loop ((xs lst))
+      (cond ((null? xs) #f)
+            ((member (car xs) other) #t)
+            (#t (loop (cdr xs))))))
+
+  ;; Simple substring filter for now. A future pass could add fnmatch-style
+  ;; globbing.
+  (define (path-matches-filter? path pattern)
+    (or (not pattern)
+        (let ((full-name (let loop ((xs path) (acc ""))
+                           (cond
+                             ((null? xs) acc)
+                             ((= (string-length acc) 0) (loop (cdr xs) (car xs)))
+                             (#t (loop (cdr xs)
+                                       (string-append acc " / " (car xs))))))))
+          (>= (string-length full-name) 0)  ; always non-negative
+          (string-contains? full-name pattern))))
+
+  ;; substring search: returns #t if `needle` appears in `haystack`.
+  (define (string-contains? haystack needle)
+    (let ((hl (string-length haystack))
+          (nl (string-length needle)))
+      (if (> nl hl) #f
+          (let loop ((i 0))
+            (cond
+              ((> (+ i nl) hl) #f)
+              ((string=? (substring haystack i (+ i nl)) needle) #t)
+              (#t (loop (+ i 1))))))))
 
   ;; zepo-mqf4: helper — fire after-all for any describe in prev-ancestors
   ;; that isn't in cur-ancestors (we've LEFT that describe). Walked in
@@ -481,9 +550,11 @@
       cur-ancestors))
 
   (define (run! . args)
-    (let* ((opts   (parse-runner-args args))
-           (silent (car opts))
-           (filter (cdr opts))
+    (let* ((opts          (parse-runner-args args))
+           (silent        (hash-get opts 'silent #f))
+           (filter        (hash-get opts 'filter #f))
+           (include-tags  (hash-get opts 'tags '()))
+           (exclude-tags  (hash-get opts 'exclude-tags '()))
            (start  (current-time-ms))
            (passed 0)
            (failed 0)
@@ -496,12 +567,18 @@
           (let* ((path (car entry))
                  (thunk (cadr entry))
                  (mode (caddr entry))
+                 (tags (if (>= (length entry) 4) (cadddr entry) '()))
                  (leaf (car (reverse path)))
                  (action (cond
                            ((eq? mode 'skipped) 'skip)
                            ((and *focus-active?* (not (eq? mode 'focused))) 'skip)
-                           (#t 'run))))
-            (if (or (not filter) (equal? leaf filter))
+                           (#t 'run)))
+                 (passes-filter? (path-matches-filter? path filter))
+                 (passes-tags?   (or (null? include-tags)
+                                     (any-shared? tags include-tags)))
+                 (excluded?      (and (not (null? exclude-tags))
+                                      (any-shared? tags exclude-tags))))
+            (if (and passes-filter? passes-tags? (not excluded?))
                 (let* ((cur-ancestors (ancestor-paths path))
                        (cur-groups
                          (if silent prev-groups
