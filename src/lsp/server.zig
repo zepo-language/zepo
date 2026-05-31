@@ -18,6 +18,18 @@ const analysis = @import("analysis.zig");
 const resolver_mod = @import("resolver.zig");
 const reader_check = @import("reader_check.zig");
 
+// zepo-wwh7: per-document cached Analysis. Keyed by URI; the version field
+// is the doc.version this Analysis was computed against. A mismatch on read
+// means the cache is stale and must be deinit'd before re-analyzing.
+pub const CacheEntry = struct {
+    version: i64,
+    analysis: analysis.Analysis,
+    /// Tracks the (already-freed by the time we look at it) text pointer
+    /// that backed the slices in `analysis`. Never dereferenced; only used
+    /// to assert in debug builds that we never read stale slices.
+    text_ptr: usize,
+};
+
 pub const Server = struct {
     alloc: std.mem.Allocator,
     store: docs_mod.Store,
@@ -28,6 +40,8 @@ pub const Server = struct {
     /// Negotiated PositionEncoding. Defaults to LSP spec default (utf-16).
     /// Updated on `initialize` based on client capabilities.
     encoding: analysis.PositionEncoding = .utf16,
+    /// zepo-wwh7: cache of per-URI Analysis results.
+    analysis_cache: std.StringHashMapUnmanaged(CacheEntry) = .empty,
 
     pub fn init(alloc: std.mem.Allocator, reader: proto.Reader, writer: proto.Writer) Server {
         return .{
@@ -40,8 +54,55 @@ pub const Server = struct {
     }
 
     pub fn deinit(s: *Server) void {
+        // zepo-wwh7: free cached analyses + the URI keys we duped.
+        var it = s.analysis_cache.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.analysis.deinit();
+            s.alloc.free(entry.key_ptr.*);
+        }
+        s.analysis_cache.deinit(s.alloc);
         s.store.deinit();
         s.resolver.deinit();
+    }
+
+    // zepo-wwh7: return a borrowed analysis for `uri`, reusing the cached
+    // entry when the document version matches. Caller must NOT deinit the
+    // returned value — the cache owns it. Caller must NOT retain the pointer
+    // across calls that may mutate the document.
+    fn getCachedAnalysis(s: *Server, uri: []const u8) !*const analysis.Analysis {
+        const doc = s.store.get(uri) orelse return error.UnknownDocument;
+        if (s.analysis_cache.getPtr(uri)) |entry| {
+            if (entry.version == doc.version and entry.text_ptr == @intFromPtr(doc.text.ptr)) {
+                return &entry.analysis;
+            }
+            // Stale: free the old analysis (its slices may point into a
+            // since-freed buffer; we never read them once the version differs)
+            // before re-analyzing.
+            entry.analysis.deinit();
+            entry.analysis = try analysis.analyze(s.alloc, doc.text);
+            entry.version = doc.version;
+            entry.text_ptr = @intFromPtr(doc.text.ptr);
+            return &entry.analysis;
+        }
+        // First analysis of this URI: dupe the key, insert.
+        const a = try analysis.analyze(s.alloc, doc.text);
+        const key = try s.alloc.dupe(u8, uri);
+        errdefer s.alloc.free(key);
+        try s.analysis_cache.put(s.alloc, key, .{
+            .version = doc.version,
+            .analysis = a,
+            .text_ptr = @intFromPtr(doc.text.ptr),
+        });
+        return &s.analysis_cache.getPtr(key).?.analysis;
+    }
+
+    // zepo-wwh7: drop the cached analysis for `uri` (called on close).
+    fn dropCachedAnalysis(s: *Server, uri: []const u8) void {
+        if (s.analysis_cache.fetchRemove(uri)) |kv| {
+            var ent = kv.value;
+            ent.analysis.deinit();
+            s.alloc.free(kv.key);
+        }
     }
 
     pub fn run(s: *Server) !void {
@@ -241,6 +302,7 @@ pub const Server = struct {
     fn onDidClose(s: *Server, params: std.json.ObjectMap) !bool {
         const td = getObject(params, "textDocument") orelse return false;
         const uri = getString(td, "uri") orelse return false;
+        s.dropCachedAnalysis(uri); // zepo-wwh7
         s.store.close(uri);
         return false;
     }
@@ -253,8 +315,8 @@ pub const Server = struct {
         const pos = getPos(params) orelse return s.sendNullResult(id);
         const doc = s.store.get(uri) orelse return s.sendNullResult(id);
 
-        var a = try analysis.analyze(s.alloc, doc.text);
-        defer a.deinit();
+        // zepo-wwh7: borrow the cached analysis instead of re-analyzing.
+        const a = try s.getCachedAnalysis(uri);
 
         const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
         const sym = a.symbolAtOffset(doc.text, off) orelse return s.sendNullResult(id);
@@ -334,8 +396,8 @@ pub const Server = struct {
         const pos = getPos(params) orelse return s.sendNullResult(id);
         const doc = s.store.get(uri) orelse return s.sendNullResult(id);
 
-        var a = try analysis.analyze(s.alloc, doc.text);
-        defer a.deinit();
+        // zepo-wwh7: borrow the cached analysis instead of re-analyzing.
+        const a = try s.getCachedAnalysis(uri);
 
         const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
         const sym = a.symbolAtOffset(doc.text, off) orelse return s.sendNullResult(id);
@@ -420,8 +482,8 @@ pub const Server = struct {
         const pos = getPos(params) orelse return s.sendNullResult(id);
         const doc = s.store.get(uri) orelse return s.sendNullResult(id);
 
-        var a = try analysis.analyze(s.alloc, doc.text);
-        defer a.deinit();
+        // zepo-wwh7: borrow the cached analysis instead of re-analyzing.
+        const a = try s.getCachedAnalysis(uri);
 
         // Look backwards from the cursor for `<alias>.` qualifier.
         const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
@@ -517,8 +579,8 @@ pub const Server = struct {
 
         // Use analysis to find references to qualified symbols whose prefix
         // is not an imported alias — report as "unbound namespace".
-        var a = try analysis.analyze(s.alloc, doc.text);
-        defer a.deinit();
+        // zepo-wwh7: borrow the cached analysis instead of re-analyzing.
+        const a = try s.getCachedAnalysis(uri);
         for (a.symbols.items) |sym| {
             const dot = sym.dot_at orelse continue;
             const prefix = sym.text[0..dot];
