@@ -1324,3 +1324,81 @@ test "linter reports shadowing" {
 
     try t.expect(std.mem.indexOf(u8, out.items, "'x' shadows a binding") != null);
 }
+
+// zepo-g44i
+test "formatting returns full-document TextEdit when text differs" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // Ugly source — the formatter should normalize whitespace.
+    const src = "(define   foo    1)";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fm.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///fm.lisp"},"options":{"tabSize":2,"insertSpaces":true}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const chunk = out.items[idx..];
+    // Response must contain a TextEdit array with a newText replacement.
+    try t.expect(std.mem.indexOf(u8, chunk, "\"newText\":\"(define foo 1)") != null);
+}
+
+// zepo-g44i
+test "formatting returns empty array when text already formatted" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // The formatter normalizes to a trailing newline, so include one in
+    // the source to keep the round-trip identical.
+    const src = "(define foo 1)\n";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fm2.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///fm2.lisp"},"options":{"tabSize":2,"insertSpaces":true}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const chunk = out.items[idx..];
+    try t.expect(std.mem.indexOf(u8, chunk, "\"result\":[]") != null);
+}

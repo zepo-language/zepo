@@ -180,7 +180,7 @@ pub const Server = struct {
             // their own preference).
             // zepo-70qf + zepo-41a2 + zepo-rzjw: advertise documentSymbol +
             // workspaceSymbol, references, rename, semanticTokens, formatting.
-            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"referencesProvider\":true,\"renameProvider\":{\"prepareProvider\":true},\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"macro\",\"variable\",\"parameter\",\"namespace\"],\"tokenModifiers\":[\"defaultLibrary\",\"definition\"]},\"full\":true},\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
+            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"referencesProvider\":true,\"renameProvider\":{\"prepareProvider\":true},\"documentFormattingProvider\":true,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"macro\",\"variable\",\"parameter\",\"namespace\"],\"tokenModifiers\":[\"defaultLibrary\",\"definition\"]},\"full\":true},\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
             try s.sendResult(id, out.items);
             return false;
         }
@@ -245,6 +245,11 @@ pub const Server = struct {
         if (std.mem.eql(u8, method, "textDocument/semanticTokens/full")) {
             const id = obj.get("id") orelse std.json.Value{ .null = {} };
             return try s.onSemanticTokens(id, params);
+        }
+        // zepo-g44i
+        if (std.mem.eql(u8, method, "textDocument/formatting")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onFormatting(id, params);
         }
 
         // Respond to unknown requests so clients don't hang.
@@ -1086,6 +1091,50 @@ pub const Server = struct {
             prev_char = tok.char;
         }
         try out.appendSlice(s.alloc, "]}");
+        try s.sendResult(id, out.items);
+        return false;
+    }
+
+    // -- Formatting (zepo-g44i) ---------------------------------------------
+
+    fn onFormatting(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const td = getObject(params, "textDocument") orelse return s.sendNullResult(id);
+        const uri = getString(td, "uri") orelse return s.sendNullResult(id);
+        const doc = s.store.get(uri) orelse return s.sendNullResult(id);
+
+        // Reach format via the relative path within the same module — the
+        // zepo library module already owns this file via root.zig.
+        const fmt_mod = @import("../format/mod.zig");
+        const formatted = fmt_mod.formatSource(s.alloc, doc.text) catch return s.sendNullResult(id);
+        defer s.alloc.free(formatted);
+
+        // If formatter produced identical text, return empty edit list.
+        if (std.mem.eql(u8, formatted, doc.text)) {
+            try s.sendResult(id, "[]");
+            return false;
+        }
+
+        // Single full-document replacement TextEdit. Range covers [0,0)..[end_line, end_char).
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        var end_line: u32 = 0;
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i < doc.text.len) : (i += 1) {
+            if (doc.text[i] == '\n') {
+                end_line += 1;
+                line_start = i + 1;
+            }
+        }
+        const end_char: u32 = @intCast(doc.text.len - line_start);
+        var lb: [16]u8 = undefined;
+        try out.appendSlice(s.alloc, "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":");
+        try out.appendSlice(s.alloc, try std.fmt.bufPrint(&lb, "{d}", .{end_line}));
+        try out.appendSlice(s.alloc, ",\"character\":");
+        try out.appendSlice(s.alloc, try std.fmt.bufPrint(&lb, "{d}", .{end_char}));
+        try out.appendSlice(s.alloc, "}},\"newText\":\"");
+        try proto.escapeJsonInto(&out, s.alloc, formatted);
+        try out.appendSlice(s.alloc, "\"}]");
         try s.sendResult(id, out.items);
         return false;
     }

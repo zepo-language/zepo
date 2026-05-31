@@ -15,6 +15,7 @@ pub const vm = @import("vm/mod.zig");
 pub const prims = @import("prims/mod.zig");
 pub const ffi = @import("ffi/zig_ffi.zig");
 pub const lsp = @import("lsp/mod.zig");
+pub const format = @import("format/mod.zig"); // zepo-g44i
 
 pub const Value = abi.Value;
 pub const ObjHeader = abi.ObjHeader;
@@ -36,4 +37,5 @@ test {
     _ = prims;
     _ = ffi;
     _ = lsp;
+    _ = format;
 }
