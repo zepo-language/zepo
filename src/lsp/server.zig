@@ -1216,8 +1216,6 @@ pub const Server = struct {
                 }) catch {};
             }
         }
-        _ = text;
-
         // Rule 3: unused-import. For (import M (a b c)) — flag any element
         // of the selection that's never referenced. For (import M :as A) —
         // flag if `A` never appears as a prefix. Plain (import M) is harder
@@ -1248,6 +1246,63 @@ pub const Server = struct {
                     }
                 },
                 .all => {}, // can't lint without knowing the module's exports
+            }
+        }
+
+        // zepo-j3oe Rule 4: dead-export — name appears in (export ...) but
+        // has no matching (define ...) in the same file.
+        for (a.exports.items) |ename| {
+            if (a.findDefinition(ename) != null) continue;
+            // Locate the export name's range in text: scan symbols for a
+            // matching SymbolHit. (Better than nothing — the first match is
+            // typically the (export ...) form's listing.)
+            var range: ?analysis.Range = null;
+            for (a.symbols.items) |sym| {
+                if (sym.dot_at != null) continue;
+                if (std.mem.eql(u8, sym.text, ename)) {
+                    range = sym.range;
+                    break;
+                }
+            }
+            const r = range orelse continue;
+            const msg = std.fmt.allocPrint(s.alloc, "exported '{s}' has no definition in this file", .{ename}) catch continue;
+            diags.append(s.alloc, .{
+                .range = r,
+                .message = msg,
+                .owned = true,
+                .severity = SEV_WARNING,
+            }) catch {};
+        }
+
+        // zepo-j3oe Rule 5: shadowing. A local name in an inner scope that's
+        // also bound in an enclosing scope. Walk ScopeRanges; for each scope
+        // and each of its locals, check every prior scope whose body fully
+        // contains the inner scope — if any of them binds the same name,
+        // emit a Hint at the inner scope's start.
+        if (a.real) |*ra| {
+            for (ra.scopes.items, 0..) |inner, i| {
+                var lit = inner.locals.iterator();
+                while (lit.next()) |le| {
+                    const name = le.key_ptr.*;
+                    var found_outer: bool = false;
+                    for (ra.scopes.items[0..i]) |outer| {
+                        if (outer.body_start > inner.body_start) continue;
+                        if (outer.body_end < inner.body_end) continue;
+                        if (outer.locals.contains(name)) {
+                            found_outer = true;
+                            break;
+                        }
+                    }
+                    if (!found_outer) continue;
+                    const msg = std.fmt.allocPrint(s.alloc, "'{s}' shadows a binding in an enclosing scope", .{name}) catch continue;
+                    const range = analysis.Range.fromOffsets(text, inner.body_start, @min(inner.body_start + 1, @as(u32, @intCast(text.len))));
+                    diags.append(s.alloc, .{
+                        .range = range,
+                        .message = msg,
+                        .owned = true,
+                        .severity = SEV_HINT,
+                    }) catch {};
+                }
             }
         }
     }

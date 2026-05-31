@@ -204,6 +204,10 @@ pub const Analysis = struct {
     /// null if any stage failed. Hybrid model per ADR 0003 — features that
     /// need binding-kind awareness route through this when present.
     real: ?@import("real_analysis.zig").RealAnalysis = null,
+    /// zepo-j3oe: names listed in `(export ...)` forms inside `(module ...)`.
+    /// Each entry is a slice into the document text. The linter uses these
+    /// to detect dead exports (named but never defined).
+    exports: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn deinit(a: *Analysis) void {
         a.defines.deinit(a.alloc);
@@ -211,6 +215,7 @@ pub const Analysis = struct {
         a.symbols.deinit(a.alloc);
         for (a.only_arena.items) |slc| a.alloc.free(slc);
         a.only_arena.deinit(a.alloc);
+        a.exports.deinit(a.alloc); // zepo-j3oe: slices borrow text, no per-entry free
         if (a.real) |*r| r.deinit();
     }
 
@@ -418,6 +423,11 @@ fn handleList(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *Anal
             try handleImport(alloc, sc, text, a, lparen_start);
             return;
         }
+        // zepo-j3oe
+        if (std.mem.eql(u8, head_text, "export")) {
+            try handleExport(alloc, sc, text, a);
+            return;
+        }
     }
 
     // Generic nested traversal — recurse into nested lists so we still
@@ -532,6 +542,26 @@ fn handleModule(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
             .form_range = Range.fromOffsets(text, lparen_start, form_end),
             .docstring = docstring,
         });
+    }
+}
+
+// zepo-j3oe: record names listed in (export A B C ...). Names are stored
+// as slices into `text` so the Analysis must outlive the document text only
+// to the extent the wwh7 cache already enforces (invalidated on text change).
+fn handleExport(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *Analysis) AnalyzeError!void {
+    while (true) {
+        const t = sc.next();
+        if (t.kind == .eof) return;
+        if (t.kind == .rparen) return;
+        if (t.kind == .symbol) {
+            const name = text[t.start..t.end];
+            try a.exports.append(alloc, name);
+        }
+        // Skip any nested forms (defensive — `(export ...)` should be a flat
+        // list of symbols, but degrade gracefully on weird inputs).
+        if (t.kind == .lparen) {
+            _ = try skipUntilCloseAndReturnEnd(sc, text);
+        }
     }
 }
 
