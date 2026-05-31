@@ -30,6 +30,7 @@
     check-property
     ;; Doctests (zepo-dheb)
     load-doctests
+    ;; Parallel execution (zepo-n6qc) — :parallel #t on run!
     ;; Lifecycle hooks (zepo-mqf4)
     before-each after-each before-all after-all
     ;; Assertions
@@ -612,6 +613,7 @@
       (hash-set! opts 'exclude-tags '())
       (hash-set! opts 'reporter #f)
       (hash-set! opts 'update-snapshots #f)
+      (hash-set! opts 'parallel #f)
       (let loop ((xs args))
         (cond
           ((null? xs) opts)
@@ -632,6 +634,9 @@
            (loop (cddr xs)))
           ((and (symbol? (car xs)) (eq? (car xs) ':update-snapshots))
            (hash-set! opts 'update-snapshots (cadr xs))
+           (loop (cddr xs)))
+          ((and (symbol? (car xs)) (eq? (car xs) ':parallel))
+           (hash-set! opts 'parallel (cadr xs))
            (loop (cddr xs)))
           ((string? (car xs))
            (hash-set! opts 'filter (car xs))
@@ -1113,6 +1118,27 @@
         pairs)
       (length pairs)))
 
+  ;; zepo-n6qc: run one test thunk and return a result record. Factored out
+  ;; so the runner can call it either synchronously (default) or inside a
+  ;; spawned fiber for :parallel mode. The record's shape:
+  ;;   'kind        ∈ {'pass 'fail}
+  ;;   'message     non-empty only for 'fail
+  ;;   'duration-ms milliseconds
+  (define (run-one-thunk thunk)
+    (let ((rec (make-hash-table))
+          (tstart (current-time-ms)))
+      (with-exception-handler
+        (lambda (e)
+          (hash-set! rec 'kind 'fail)
+          (hash-set! rec 'message (format-exception e))
+          (hash-set! rec 'duration-ms (- (current-time-ms) tstart)))
+        (lambda ()
+          (thunk)
+          (hash-set! rec 'kind 'pass)
+          (hash-set! rec 'message "")
+          (hash-set! rec 'duration-ms (- (current-time-ms) tstart))))
+      rec))
+
   (define (run! . args)
     (let* ((opts          (parse-runner-args args))
            (silent        (hash-get opts 'silent #f))
@@ -1121,6 +1147,7 @@
            (exclude-tags  (hash-get opts 'exclude-tags '()))
            (reporter      (resolve-reporter (hash-get opts 'reporter #f)))
            (update-snaps  (hash-get opts 'update-snapshots #f))
+           (parallel?     (hash-get opts 'parallel #f))
            (start  (current-time-ms))
            (planned-count (length *tests*))
            (passed 0)
@@ -1128,7 +1155,10 @@
            (skipped 0)
            (failures '())
            (prev-groups '())
-           (prev-ancestors '()))
+           (prev-ancestors '())
+           ;; zepo-n6qc: in parallel mode, each spawned test's channel +
+           ;; metadata gets queued here; we drain it after the spawn pass.
+           (pending '()))
       (set! *update-snapshots?* update-snaps)
       (if reporter (call-handler! reporter 'on-start planned-count))
       (for-each
@@ -1169,30 +1199,76 @@
                      (for-each
                        (lambda (p) (run-hook-list (hooks-for p 'before-each)))
                        cur-ancestors)
-                     (let ((tstart (current-time-ms)))
-                       (with-exception-handler
-                         (lambda (e)
-                           (let ((msg (format-exception e)))
-                             (set! failed (+ failed 1))
-                             (set! failures (append failures (list (cons path msg))))
-                             (cond
-                               (reporter (call-handler! reporter 'on-test-fail path msg))
-                               ((not silent)
-                                (display "FAIL ") (display leaf)
-                                (display ": ") (display msg) (newline)))))
-                         (lambda ()
-                           (set-current-test-path! path)
-                           (thunk)
-                           (set! passed (+ passed 1))
-                           (let ((tdur (- (current-time-ms) tstart)))
-                             (cond
-                               (reporter (call-handler! reporter 'on-test-pass path tdur))
-                               ((not silent)
-                                (display "PASS ") (display leaf) (newline)))))))
-                     (for-each
-                       (lambda (p) (run-hook-list (hooks-for p 'after-each)))
-                       (reverse cur-ancestors))))))))
+                     (set-current-test-path! path)
+                     (cond
+                       (parallel?
+                        ;; Spawn the test on its own fiber and queue the
+                        ;; (channel, path, leaf, after-each-paths) tuple
+                        ;; for collection later. Don't fire after-each
+                        ;; here — defer until the result is collected so
+                        ;; failure-on-thunk still triggers after-each in
+                        ;; the right order.
+                        (let ((ch (make-channel 1)))
+                          (spawn (lambda ()
+                                   (channel-send! ch (run-one-thunk thunk))))
+                          (set! pending
+                                (append pending
+                                        (list (list ch path leaf
+                                                    (reverse cur-ancestors)))))))
+                       (#t
+                        (let ((rec (run-one-thunk thunk)))
+                          (if (eq? (hash-get rec 'kind 'pass) 'pass)
+                              (begin
+                                (set! passed (+ passed 1))
+                                (cond
+                                  (reporter
+                                   (call-handler! reporter 'on-test-pass path
+                                     (hash-get rec 'duration-ms 0)))
+                                  ((not silent)
+                                   (display "PASS ") (display leaf) (newline))))
+                              (let ((msg (hash-get rec 'message "")))
+                                (set! failed (+ failed 1))
+                                (set! failures (append failures (list (cons path msg))))
+                                (cond
+                                  (reporter (call-handler! reporter 'on-test-fail path msg))
+                                  ((not silent)
+                                   (display "FAIL ") (display leaf)
+                                   (display ": ") (display msg) (newline))))))
+                        (for-each
+                          (lambda (p) (run-hook-list (hooks-for p 'after-each)))
+                          (reverse cur-ancestors))))))))))
         *tests*)
+      ;; zepo-n6qc: drain any parallel-mode pending fibers. Each entry is
+      ;; (channel path leaf after-each-ancestors). We channel-recv each in
+      ;; spawn order — that's the order the user's tests were declared in,
+      ;; which gives stable reporting even though the fibers ran in parallel.
+      (for-each
+        (lambda (p)
+          (let* ((ch     (car   p))
+                 (tpath  (cadr  p))
+                 (leaf   (caddr p))
+                 (aapaths (cadddr p))
+                 (rec    (channel-recv! ch)))
+            (if (eq? (hash-get rec 'kind 'pass) 'pass)
+                (begin
+                  (set! passed (+ passed 1))
+                  (cond
+                    (reporter (call-handler! reporter 'on-test-pass tpath
+                                (hash-get rec 'duration-ms 0)))
+                    ((not silent)
+                     (display "PASS ") (display leaf) (newline))))
+                (let ((msg (hash-get rec 'message "")))
+                  (set! failed (+ failed 1))
+                  (set! failures (append failures (list (cons tpath msg))))
+                  (cond
+                    (reporter (call-handler! reporter 'on-test-fail tpath msg))
+                    ((not silent)
+                     (display "FAIL ") (display leaf)
+                     (display ": ") (display msg) (newline)))))
+            (for-each
+              (lambda (ap) (run-hook-list (hooks-for ap 'after-each)))
+              aapaths)))
+        pending)
       ;; Final after-all sweep — fire for any still-active describes.
       (fire-after-all-for-left prev-ancestors '())
       (let* ((duration (- (current-time-ms) start))
