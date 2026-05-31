@@ -718,3 +718,128 @@ test "hover degrades gracefully on parse-broken text" {
     try t.expect(std.mem.indexOf(u8, out.items, "(primitive)") == null);
     try t.expect(std.mem.indexOf(u8, out.items, "(procedure)") == null);
 }
+
+// zepo-70qf
+test "documentSymbol returns the per-file define outline" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src =
+        \\(define foo 1)
+        \\(define bar (lambda (x) x))
+        \\(define baz 3)
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///ds.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///ds.lisp"}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "\"foo\"") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "\"bar\"") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "\"baz\"") != null);
+    // bar is a procedure — kind=12 (Function). foo/baz are values — kind=13.
+    try t.expect(std.mem.indexOf(u8, out.items, "\"kind\":12") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "\"kind\":13") != null);
+}
+
+// zepo-70qf
+test "workspace/symbol searches across open documents" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src_a = "(define alpha-thing 1)";
+    const src_b = "(define beta-thing 2)";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+
+    var open_a: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_a.deinit(alloc);
+    try open_a.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///ws_a.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_a, alloc, src_a);
+    try open_a.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_a.items);
+
+    var open_b: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_b.deinit(alloc);
+    try open_b.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///ws_b.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_b, alloc, src_b);
+    try open_b.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_b.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"thing"}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "alpha-thing") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "beta-thing") != null);
+}
+
+// zepo-70qf
+test "workspace/symbol with empty query returns everything" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///wq.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, "(define just-here 1)");
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":""}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "just-here") != null);
+}

@@ -90,7 +90,7 @@ pub const Resolver = struct {
         r.cache.deinit(r.alloc);
     }
 
-    fn ensurePaths(r: *Resolver) !void {
+    pub fn ensurePaths(r: *Resolver) !void {
         if (r.paths_built) return;
         r.paths_built = true;
 

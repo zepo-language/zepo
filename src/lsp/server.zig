@@ -178,7 +178,8 @@ pub const Server = struct {
             // zepo-ttk8: textDocumentSync.change = 2 (Incremental). We still
             // accept full-text changes (clients may send either based on
             // their own preference).
-            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
+            // zepo-70qf: advertise documentSymbol + workspaceSymbol.
+            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
             try s.sendResult(id, out.items);
             return false;
         }
@@ -216,6 +217,15 @@ pub const Server = struct {
         if (std.mem.eql(u8, method, "textDocument/completion")) {
             const id = obj.get("id") orelse std.json.Value{ .null = {} };
             return try s.onCompletion(id, params);
+        }
+        // zepo-70qf
+        if (std.mem.eql(u8, method, "textDocument/documentSymbol")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onDocumentSymbol(id, params);
+        }
+        if (std.mem.eql(u8, method, "workspace/symbol")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onWorkspaceSymbol(id, params);
         }
 
         // Respond to unknown requests so clients don't hang.
@@ -558,6 +568,147 @@ pub const Server = struct {
         try s.sendResult(id, out.items);
     }
 
+    // -- Document Symbols (zepo-70qf) ---------------------------------------
+
+    fn onDocumentSymbol(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const td = getObject(params, "textDocument") orelse return s.sendNullResult(id);
+        const uri = getString(td, "uri") orelse return s.sendNullResult(id);
+        const doc = s.store.get(uri) orelse return s.sendNullResult(id);
+        const a = try s.getCachedAnalysis(uri);
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        try out.append(s.alloc, '[');
+        var first: bool = true;
+        for (a.defines.items) |d| {
+            if (!first) try out.append(s.alloc, ',');
+            first = false;
+            // LSP SymbolKind: Module=2, Function=12, Variable=13.
+            const kind: u32 = switch (d.kind) {
+                .module => 2,
+                .define => blk: {
+                    // If the real analyzer knows this is a procedure, mark
+                    // it as Function; otherwise Variable.
+                    if (a.real) |*ra| {
+                        if (ra.kindOf(d.name)) |k| switch (k) {
+                            .global_proc, .primitive, .local_macro, .macro => break :blk 12,
+                            else => {},
+                        };
+                    }
+                    break :blk 13;
+                },
+            };
+            try out.appendSlice(s.alloc, "{\"name\":\"");
+            try proto.escapeJsonInto(&out, s.alloc, d.name);
+            try out.appendSlice(s.alloc, "\",\"kind\":");
+            var kbuf: [16]u8 = undefined;
+            try out.appendSlice(s.alloc, try std.fmt.bufPrint(&kbuf, "{d}", .{kind}));
+            try out.appendSlice(s.alloc, ",\"range\":");
+            try writeRangeEnc(&out, s.alloc, doc.text, d.form_range, s.encoding);
+            try out.appendSlice(s.alloc, ",\"selectionRange\":");
+            try writeRangeEnc(&out, s.alloc, doc.text, d.name_range, s.encoding);
+            try out.append(s.alloc, '}');
+        }
+        try out.append(s.alloc, ']');
+        try s.sendResult(id, out.items);
+        return false;
+    }
+
+    // -- Workspace Symbol (zepo-70qf) ---------------------------------------
+
+    fn onWorkspaceSymbol(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const query: []const u8 = getString(params, "query") orelse "";
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        try out.append(s.alloc, '[');
+        var first: bool = true;
+
+        // Search all open documents first (cheap — already analyzed).
+        var doc_it = s.store.docs.iterator();
+        while (doc_it.next()) |entry| {
+            const uri = entry.key_ptr.*;
+            const doc = entry.value_ptr;
+            const a = s.getCachedAnalysis(uri) catch continue;
+            for (a.defines.items) |d| {
+                if (!matchesQuery(d.name, query)) continue;
+                if (!first) try out.append(s.alloc, ',');
+                first = false;
+                try writeWorkspaceSymbol(s, &out, doc.text, uri, d);
+            }
+        }
+
+        // Also walk resolver paths for .lisp files we haven't opened. Best-
+        // effort: silently skip any file that fails to analyze.
+        try s.resolver.ensurePaths();
+        for (s.resolver.paths.items) |dir| {
+            try s.searchWorkspaceDir(dir, query, &out, &first);
+        }
+
+        try out.append(s.alloc, ']');
+        try s.sendResult(id, out.items);
+        return false;
+    }
+
+    fn searchWorkspaceDir(
+        s: *Server,
+        dir_path: []const u8,
+        query: []const u8,
+        out: *std.ArrayListUnmanaged(u8),
+        first: *bool,
+    ) !void {
+        // zepo-70qf: Zig 0.16 std.Io.Dir API is unwieldy here; use POSIX
+        // opendir/readdir directly (same pattern as src/prims/sys.zig).
+        var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (dir_path.len >= pbuf.len) return;
+        @memcpy(pbuf[0..dir_path.len], dir_path);
+        pbuf[dir_path.len] = 0;
+        const path_c: [*:0]const u8 = @ptrCast(&pbuf);
+        const dp = std.c.opendir(path_c) orelse return;
+        defer _ = std.c.closedir(dp);
+
+        while (std.c.readdir(dp)) |entry| {
+            const name = std.mem.sliceTo(&entry.name, 0);
+            if (name.len < 6 or !std.mem.endsWith(u8, name, ".lisp")) continue;
+            const abs = std.fs.path.join(s.alloc, &.{ dir_path, name }) catch continue;
+            defer s.alloc.free(abs);
+            const got_opt = s.resolver.getAnalysis(abs) catch continue;
+            const got = got_opt orelse continue;
+            const uri = std.fmt.allocPrint(s.alloc, "file://{s}", .{abs}) catch continue;
+            defer s.alloc.free(uri);
+            if (s.store.docs.contains(uri)) continue;
+            for (got.an.defines.items) |d| {
+                if (!matchesQuery(d.name, query)) continue;
+                if (!first.*) try out.append(s.alloc, ',');
+                first.* = false;
+                try writeWorkspaceSymbol(s, out, got.text, uri, d);
+            }
+        }
+    }
+
+    fn writeWorkspaceSymbol(
+        s: *Server,
+        out: *std.ArrayListUnmanaged(u8),
+        text: []const u8,
+        uri: []const u8,
+        d: analysis.Definition,
+    ) !void {
+        const kind: u32 = switch (d.kind) {
+            .module => 2,
+            .define => 13,
+        };
+        try out.appendSlice(s.alloc, "{\"name\":\"");
+        try proto.escapeJsonInto(out, s.alloc, d.name);
+        try out.appendSlice(s.alloc, "\",\"kind\":");
+        var kbuf2: [16]u8 = undefined;
+        try out.appendSlice(s.alloc, try std.fmt.bufPrint(&kbuf2, "{d}", .{kind}));
+        try out.appendSlice(s.alloc, ",\"location\":{\"uri\":\"");
+        try proto.escapeJsonInto(out, s.alloc, uri);
+        try out.appendSlice(s.alloc, "\",\"range\":");
+        try writeRangeEnc(out, s.alloc, text, d.name_range, s.encoding);
+        try out.appendSlice(s.alloc, "}}");
+    }
+
     // -- Diagnostics --------------------------------------------------------
 
     /// Publish lightweight diagnostics. We compute paren-balance and report
@@ -707,6 +858,24 @@ fn checkParens(alloc: std.mem.Allocator, text: []const u8, diags: *std.ArrayList
             .owned = true,
         });
     }
+}
+
+// zepo-70qf: LSP workspace/symbol uses a fuzzy substring match by spec.
+// Empty query matches everything. Case-insensitive substring.
+fn matchesQuery(name: []const u8, query: []const u8) bool {
+    if (query.len == 0) return true;
+    if (query.len > name.len) return false;
+    var i: usize = 0;
+    while (i + query.len <= name.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < query.len) : (j += 1) {
+            const nc = std.ascii.toLower(name[i + j]);
+            const qc = std.ascii.toLower(query[j]);
+            if (nc != qc) break;
+        }
+        if (j == query.len) return true;
+    }
+    return false;
 }
 
 fn writeRange(out: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator, r: analysis.Range) !void {
