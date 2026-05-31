@@ -91,7 +91,9 @@ fn parseContainerKeywords(alloc: std.mem.Allocator, objects: anytype, list: Valu
         const val = objects.pairCar(rest).*;
         cur = objects.pairCdr(rest).*;
 
-        if (std.mem.eql(u8, kw, "docstring")) {
+        // zepo-uney: accept :documentation as alias of :docstring so the
+        // user-facing keyword is consistent across define / lambda / module.
+        if (std.mem.eql(u8, kw, "docstring") or std.mem.eql(u8, kw, "documentation")) {
             if (objects.isString(val)) {
                 if (meta.docstring) |s| alloc.free(s);
                 meta.docstring = try alloc.dupe(u8, objects.stringBytes(val));
