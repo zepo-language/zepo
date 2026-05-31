@@ -59,8 +59,16 @@ pub const Node = union(enum) {
         // filled by semantic analysis
         free_vars: []const []const u8 = &.{},
         mutated_vars: []const []const u8 = &.{},
+        // zepo-uney: docstring from :documentation keyword, if any
+        docstring: ?[]const u8 = null,
     },
-    define: struct { name: []const u8, value: NodeId, span: Span },
+    define: struct {
+        name: []const u8,
+        value: NodeId,
+        span: Span,
+        // zepo-uney: docstring from :documentation keyword, if any
+        docstring: ?[]const u8 = null,
+    },
     set_bang: struct { name: []const u8, value: NodeId, span: Span },
     if_expr: struct { cond: NodeId, then_: NodeId, else_: ?NodeId, span: Span },
     cond_expr: struct { clauses: []const CondClause, span: Span },

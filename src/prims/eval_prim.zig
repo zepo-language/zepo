@@ -30,6 +30,25 @@ pub fn primEval(vm: *VM, args: []const Value) LispError!Value {
 // zepo-dheb: (read-from-string STR) — parses ONE s-expr out of STR and
 // returns the resulting Value. Used by load-doctests to lift harvested
 // EXPRESSION/EXPECTED strings into evaluable forms.
+// zepo-uney: (%set-binding-doc! SYMBOL STRING) — attach a docstring to a
+// top-level binding in the current env. Implements the storage side of the
+// :documentation keyword on define / define-syntax / define-module. The
+// parser desugars
+//
+//   (define foo :documentation "..." VAL)
+//   =>
+//   (begin (define foo VAL) (%set-binding-doc! 'foo "..."))
+//
+// so this primitive runs after the define has placed the binding.
+pub fn primSetBindingDoc(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    if (!objects.isString(args[1])) return error.TypeError;
+    const doc = objects.stringBytes(args[1]);
+    vm.globals.setDocstring(args[0], doc) catch return error.OutOfMemory;
+    return abi.value.NIL;
+}
+
 pub fn primReadFromString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;

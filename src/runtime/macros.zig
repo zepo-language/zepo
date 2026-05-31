@@ -140,8 +140,24 @@ pub fn evalDefineSyntax(ctx: *EvalContext, form: Value) !Value {
     const name_v = objs.pairCar(rest).*;
     if (!objs.isSymbol(name_v)) return error.InvalidSpecialForm;
     const name = objs.symbolName(name_v);
-    const sr_rest = objs.pairCdr(rest).*;
+    var sr_rest = objs.pairCdr(rest).*;
     if (!objs.isPair(sr_rest)) return error.InvalidSpecialForm;
+    // zepo-uney: peel optional :documentation "..." between name and rules
+    var doc_opt: ?[]const u8 = null;
+    {
+        const maybe_kw = objs.pairCar(sr_rest).*;
+        if (objs.isSymbol(maybe_kw) and
+            std.mem.eql(u8, objs.symbolName(maybe_kw), ":documentation"))
+        {
+            const after_kw = objs.pairCdr(sr_rest).*;
+            if (!objs.isPair(after_kw)) return error.InvalidSpecialForm;
+            const doc_v = objs.pairCar(after_kw).*;
+            if (!objs.isString(doc_v)) return error.InvalidSpecialForm;
+            doc_opt = objs.stringBytes(doc_v);
+            sr_rest = objs.pairCdr(after_kw).*;
+            if (!objs.isPair(sr_rest)) return error.InvalidSpecialForm;
+        }
+    }
     const sr_form = objs.pairCar(sr_rest).*;
     // Validate: must be (syntax-rules ...).
     if (!objs.isPair(sr_form)) return error.InvalidSpecialForm;
@@ -156,6 +172,8 @@ pub fn evalDefineSyntax(ctx: *EvalContext, form: Value) !Value {
     const sr_slot = scope.push(sr_form);
     const sym = try ctx.symbols.intern(name);
     try ctx.currentEnv().define(sym, sr_slot.*);
+    // zepo-uney: attach docstring to the binding's meta if one was provided
+    if (doc_opt) |d| try ctx.currentEnv().setDocstring(sym, d);
 
     // Mark as a macro.
     const name_copy = try ctx.allocator.dupe(u8, name);

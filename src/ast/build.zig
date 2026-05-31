@@ -31,6 +31,26 @@ pub const BuildError = error{
     OutOfMemory,
 };
 
+// zepo-uney: Peel a leading `:documentation "STR"` clause from a list form.
+// Returns the duped docstring (or null if absent) and the remaining list
+// with the keyword pair removed.
+fn peelDocumentation(
+    arena: *NodeArena,
+    form: Value,
+) BuildError!struct { doc: ?[]const u8, rest: Value } {
+    if (!objects.isPair(form)) return .{ .doc = null, .rest = form };
+    const head = objects.pairCar(form).*;
+    if (!objects.isSymbol(head)) return .{ .doc = null, .rest = form };
+    const name = objects.symbolName(head);
+    if (!std.mem.eql(u8, name, ":documentation")) return .{ .doc = null, .rest = form };
+    const after = objects.pairCdr(form).*;
+    if (!objects.isPair(after)) return BuildError.InvalidSpecialForm;
+    const str = objects.pairCar(after).*;
+    if (!objects.isString(str)) return BuildError.InvalidSpecialForm;
+    const doc_owned = try arena.dupString(objects.stringBytes(str));
+    return .{ .doc = doc_owned, .rest = objects.pairCdr(after).* };
+}
+
 fn parseKwDefault(v: Value) ?node_mod.KwDefault {
     if (value_mod.isNil(v)) return .{ .nil = {} };
     if (v == value_mod.TRUE) return .{ .boolean = true };
@@ -600,9 +620,12 @@ pub const Builder = struct {
             return BuildError.InvalidSpecialForm;
         }
 
+        // zepo-uney: peel optional :documentation "..." before body collection
+        const peeled = try peelDocumentation(b.arena, body_form);
+
         var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
-        try b.collectBody(body_form, &body_ids);
+        try b.collectBody(peeled.rest, &body_ids);
 
         const params_owned = try b.arena.dupNames(params.items);
         const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -614,6 +637,7 @@ pub const Builder = struct {
             .keyword_params = kw_owned,
             .body = body_owned,
             .span = b.current_span,
+            .docstring = peeled.doc,
         } });
     }
 
@@ -629,6 +653,37 @@ pub const Builder = struct {
         }
     }
 
+    // zepo-uney: If `doc` is non-null, wrap `define_id` in a sequence that
+    // calls `(%set-binding-doc! 'name "doc")` after the define so the
+    // docstring lands in the binding's EntryMeta.
+    fn wrapWithDocCall(b: *Builder, define_id: NodeId, name_sym: Value, doc: ?[]const u8) BuildError!NodeId {
+        const doc_str = doc orelse return define_id;
+        const func_ref = try b.arena.add(.{ .sym_ref = .{
+            .name = "%set-binding-doc!",
+            .span = b.current_span,
+        } });
+        const sym_quote = try b.arena.add(.{ .quote = .{
+            .datum = name_sym,
+            .span = b.current_span,
+        } });
+        const doc_owned = try b.arena.dupString(doc_str);
+        const doc_lit = try b.arena.add(.{ .literal = .{
+            .val = .{ .string = doc_owned },
+            .span = b.current_span,
+        } });
+        const args_owned = try b.arena.dupNodeIds(&[_]NodeId{ sym_quote, doc_lit });
+        const call_id = try b.arena.add(.{ .application = .{
+            .func = func_ref,
+            .args = args_owned,
+            .span = b.current_span,
+        } });
+        const seq_owned = try b.arena.dupNodeIds(&[_]NodeId{ define_id, call_id });
+        return b.arena.add(.{ .sequence = .{
+            .exprs = seq_owned,
+            .span = b.current_span,
+        } });
+    }
+
     fn buildDefine(b: *Builder, pair: Value) BuildError!NodeId {
         const rest = objects.pairCdr(pair).*;
         if (!objects.isPair(rest)) return BuildError.InvalidSpecialForm;
@@ -636,14 +691,23 @@ pub const Builder = struct {
         const tail = objects.pairCdr(rest).*;
 
         if (objects.isSymbol(target)) {
-            // (define name expr)
-            if (!objects.isPair(tail)) return BuildError.InvalidSpecialForm;
-            const expr = objects.pairCar(tail).*;
-            const after = objects.pairCdr(tail).*;
+            // (define name [:documentation "..."] expr)
+            // zepo-uney: peel docstring before reading the value form
+            const peeled = try peelDocumentation(b.arena, tail);
+            const tail2 = peeled.rest;
+            if (!objects.isPair(tail2)) return BuildError.InvalidSpecialForm;
+            const expr = objects.pairCar(tail2).*;
+            const after = objects.pairCdr(tail2).*;
             if (!value_mod.isNil(after)) return BuildError.InvalidSpecialForm;
             const name = try b.arena.dupString(objects.symbolName(target));
             const value_id = try b.buildExpr(expr);
-            return b.arena.add(.{ .define = .{ .name = name, .value = value_id, .span = b.current_span } });
+            const define_id = try b.arena.add(.{ .define = .{
+                .name = name,
+                .value = value_id,
+                .span = b.current_span,
+                .docstring = peeled.doc,
+            } });
+            return b.wrapWithDocCall(define_id, target, peeled.doc);
         }
 
         if (objects.isPair(target)) {
@@ -693,9 +757,13 @@ pub const Builder = struct {
                 return BuildError.InvalidSpecialForm;
             }
 
+            // zepo-uney: shorthand define-with-params: peel docstring from
+            // body before collecting body forms.
+            const peeled = try peelDocumentation(b.arena, tail);
+
             var body_ids = std.ArrayListUnmanaged(NodeId).empty;
             defer body_ids.deinit(b.allocator);
-            try b.collectBody(tail, &body_ids);
+            try b.collectBody(peeled.rest, &body_ids);
 
             const params_owned = try b.arena.dupNames(params.items);
             const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -707,9 +775,16 @@ pub const Builder = struct {
                 .keyword_params = kw_owned,
                 .body = body_owned,
                 .span = b.current_span,
+                .docstring = peeled.doc,
             } });
 
-            return b.arena.add(.{ .define = .{ .name = name, .value = lambda_id, .span = b.current_span } });
+            const define_id = try b.arena.add(.{ .define = .{
+                .name = name,
+                .value = lambda_id,
+                .span = b.current_span,
+                .docstring = peeled.doc,
+            } });
+            return b.wrapWithDocCall(define_id, name_val, peeled.doc);
         }
 
         return BuildError.InvalidSpecialForm;
