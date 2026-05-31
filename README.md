@@ -458,6 +458,24 @@ Directives: `~a` (display), `~s` (write/quoted), `~%` (newline), `~~` (literal t
 
 ---
 
+`lib/introspect.lisp` — runtime introspection helpers. Exports
+`(describe sym)` which prints the docstring attached to a binding via
+`:documentation`:
+
+```lisp
+(import introspect (describe))
+
+(define foo :documentation "adds one to x" (lambda (x) (+ x 1)))
+(describe 'foo)
+; foo
+;   adds one to x
+```
+
+The underlying primitive `(documentation sym)` is registered globally and
+returns the docstring string (or `#f`) without needing the import.
+
+---
+
 `lib/clap.lisp` — a full command-line argument parser with flags, options,
 positionals, subcommands, type coercion, and typo suggestions.
 
@@ -506,7 +524,28 @@ Start the language server:
 zepo lsp
 ```
 
-Communicates over stdin/stdout using JSON-RPC 2.0 with Content-Length framing (standard LSP protocol). Supports `textDocument/didOpen` and `textDocument/didChange`, publishing syntax diagnostics back via `textDocument/publishDiagnostics`. Currently supports diagnostics only; goto-definition and hover are not yet implemented.
+Communicates over stdin/stdout using JSON-RPC 2.0 with Content-Length framing (standard LSP protocol). Supported methods:
+
+| Capability | Method | Notes |
+|---|---|---|
+| Diagnostics | `textDocument/publishDiagnostics` | Reader/parser errors + linter rules (see below) |
+| Hover | `textDocument/hover` | Shows binding kind (primitive/macro/local/captured/global) + `:documentation` docstring |
+| Goto-def | `textDocument/definition` | Same-file + cross-file via module resolver |
+| Completion | `textDocument/completion` | Triggered after `.` for qualified-name completion |
+| Find-references | `textDocument/references` | Scope-aware — locals limited to enclosing lambda, globals scan the workspace |
+| Rename | `textDocument/rename` + `prepareRename` | Refuses primitives; produces WorkspaceEdit across all matching sites |
+| Document symbols | `textDocument/documentSymbol` | Per-file outline |
+| Workspace symbols | `workspace/symbol` | Substring search across workspace `.lisp` files |
+| Semantic tokens | `textDocument/semanticTokens/full` | function/macro/variable/parameter/namespace |
+| Formatting | `textDocument/formatting` | Format-on-save using the same engine as `zepo fmt` |
+
+Linter rules (warnings/hints in diagnostics output):
+
+- `redefinition` — same top-level name defined twice in a file.
+- `unused-define` — top-level define that's never referenced in the same file.
+- `unused-import` — selective import name (or `:as` alias) that's never referenced.
+- `dead-export` — name in `(export ...)` with no matching `(define ...)`.
+- `shadowing` — inner local that re-binds a name from an enclosing scope.
 
 Configure in VS Code (with a generic LSP client extension):
 

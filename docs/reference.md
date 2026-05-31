@@ -91,7 +91,7 @@ registry so they can be imported.
 | Keyword | Type | Meaning |
 |---------|------|---------|
 | `:version` | string | Semantic version, e.g. `"1.0.0"` |
-| `:docstring` | string | Human-readable description |
+| `:docstring` | string | Human-readable description (alias: `:documentation`) |
 | `:author` | string | Author name |
 | `:license` | string | License identifier, e.g. `"MIT"` |
 | `:depends` | list | Dependency names: `(foo bar)` |
@@ -415,6 +415,33 @@ Bind a name in the current environment, or define a function.
   (fold-left + 0 args))
 (sum 1 2 3)  ; => 6
 ```
+
+#### Docstrings
+
+`define`, `lambda`, `define-syntax`, and `module` all accept an optional
+`:documentation "..."` keyword. The docstring is stored on the binding's
+metadata and is readable via `(documentation 'name)` and from LSP hover.
+
+```scheme
+(define foo
+  :documentation "adds one to x"
+  (lambda (x) (+ x 1)))
+
+(define (bar x)
+  :documentation "doubles x"
+  (* 2 x))
+
+(define-syntax my-when
+  :documentation "evaluates body when cond is true"
+  (syntax-rules ()
+    ((_ c b ...) (if c (begin b ...) '()))))
+
+(documentation 'foo)   ; => "adds one to x"
+(documentation 'bar)   ; => "doubles x"
+```
+
+The `introspect` module exports `(describe sym)` which prints the name and
+docstring (or "(no documentation)") in REPL-friendly form.
 
 ### `lambda`
 
