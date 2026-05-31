@@ -1,16 +1,11 @@
 ;; zepo-sdxa: with-timeout-ms wraps a thunk and raises if it overruns.
-;;
-;; Note: we use a CPU-bound recursive loop ("busy") rather than (sleep ...)
-;; to burn time. Sleep yields the current fiber, and combining
-;; fiber-yielding with a test-thunk closure that captures macro-hygiene
-;; rewrites surfaces a runtime quirk worth filing separately. The post-hoc
-;; deadline check itself works the same whether the thunk slept or spun.
+;; The over-deadline test originally used a CPU-bound loop because of
+;; the zepo-ewdc bug — that was fixed in zepo-mi9x, so we now use the
+;; natural (sleep ...) to burn time. Either pattern is fine; sleep
+;; communicates intent better.
 
 (import testing (describe it is with-timeout-ms
                  run! result-passed result-failed))
-
-(define (busy n)
-  (if (<= n 0) 'done (busy (- n 1))))
 
 (describe "with-timeout-ms"
   (it "passes a thunk that finishes well under the deadline"
@@ -21,9 +16,7 @@
       (with-exception-handler
         (lambda (e) (set! tripped? #t) '())
         (lambda ()
-          ;; 100k recursive calls overruns a 1ms deadline by a comfortable
-          ;; margin on every machine we'd want to ship on.
-          (with-timeout-ms 1 (lambda () (busy 100000)))))
+          (with-timeout-ms 10 (lambda () (sleep 0.1) 'too-late))))
       (is tripped?)))
 
   (it "propagates the thunk's own errors unchanged"
