@@ -178,9 +178,9 @@ pub const Server = struct {
             // zepo-ttk8: textDocumentSync.change = 2 (Incremental). We still
             // accept full-text changes (clients may send either based on
             // their own preference).
-            // zepo-70qf + zepo-41a2: advertise documentSymbol +
-            // workspaceSymbol, references, and rename (with prepareProvider).
-            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"referencesProvider\":true,\"renameProvider\":{\"prepareProvider\":true},\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
+            // zepo-70qf + zepo-41a2 + zepo-rzjw: advertise documentSymbol +
+            // workspaceSymbol, references, rename, semanticTokens, formatting.
+            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"referencesProvider\":true,\"renameProvider\":{\"prepareProvider\":true},\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"macro\",\"variable\",\"parameter\",\"namespace\"],\"tokenModifiers\":[\"defaultLibrary\",\"definition\"]},\"full\":true},\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
             try s.sendResult(id, out.items);
             return false;
         }
@@ -240,6 +240,11 @@ pub const Server = struct {
         if (std.mem.eql(u8, method, "textDocument/rename")) {
             const id = obj.get("id") orelse std.json.Value{ .null = {} };
             return try s.onRename(id, params);
+        }
+        // zepo-rzjw
+        if (std.mem.eql(u8, method, "textDocument/semanticTokens/full")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onSemanticTokens(id, params);
         }
 
         // Respond to unknown requests so clients don't hang.
@@ -990,6 +995,101 @@ pub const Server = struct {
         return false;
     }
 
+    // -- Semantic Tokens (zepo-rzjw) ----------------------------------------
+
+    // Token type indices (must match the legend in initialize result).
+    const TT_FUNCTION: u32 = 0;
+    const TT_MACRO: u32 = 1;
+    const TT_VARIABLE: u32 = 2;
+    const TT_PARAMETER: u32 = 3;
+    const TT_NAMESPACE: u32 = 4;
+    const TM_DEFAULT_LIBRARY: u32 = 1; // bit 0
+    const TM_DEFINITION: u32 = 2; // bit 1
+
+    fn onSemanticTokens(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const td = getObject(params, "textDocument") orelse return s.sendNullResult(id);
+        const uri = getString(td, "uri") orelse return s.sendNullResult(id);
+        const doc = s.store.get(uri) orelse return s.sendNullResult(id);
+        const a = try s.getCachedAnalysis(uri);
+
+        // Build a list of (line, char, length, type, modifiers) for each
+        // symbol we can classify, sorted by source position. The LSP
+        // semantic-tokens payload is a flat array of 5-tuples encoded
+        // delta-style.
+        const Tok = struct { line: u32, char: u32, len: u32, ttype: u32, mods: u32 };
+        var toks: std.ArrayListUnmanaged(Tok) = .empty;
+        defer toks.deinit(s.alloc);
+
+        for (a.symbols.items) |sym| {
+            if (sym.dot_at) |dot| {
+                // Namespace prefix gets the namespace type.
+                const prefix = sym.text[0..dot];
+                try toks.append(s.alloc, .{
+                    .line = sym.range.start.line,
+                    .char = sym.range.start.character,
+                    .len = @intCast(prefix.len),
+                    .ttype = TT_NAMESPACE,
+                    .mods = 0,
+                });
+                continue;
+            }
+            // Unqualified — consult classifyAt for kind.
+            var ttype: u32 = TT_VARIABLE;
+            var mods: u32 = 0;
+            if (a.real) |*ra| {
+                const sym_off: u32 = @intCast(analysis.posToOffsetEnc(doc.text, sym.range.start, s.encoding));
+                if (ra.classifyAt(sym.text, sym_off)) |k| {
+                    switch (k) {
+                        .primitive => {
+                            ttype = TT_FUNCTION;
+                            mods = TM_DEFAULT_LIBRARY;
+                        },
+                        .macro, .local_macro => ttype = TT_MACRO,
+                        .global_proc => ttype = TT_FUNCTION,
+                        .global_value, .global => ttype = TT_VARIABLE,
+                        .module => ttype = TT_NAMESPACE,
+                        .local, .captured => ttype = TT_PARAMETER,
+                    }
+                }
+            }
+            const text_slice = sym.text;
+            try toks.append(s.alloc, .{
+                .line = sym.range.start.line,
+                .char = sym.range.start.character,
+                .len = @intCast(text_slice.len),
+                .ttype = ttype,
+                .mods = mods,
+            });
+        }
+
+        // Sort tokens by (line, char) — symbols.items is already in source
+        // order, so this is a stable identity for the regular file path.
+        // The non-qualified vs qualified prefix entries above keep order.
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        try out.appendSlice(s.alloc, "{\"data\":[");
+        var prev_line: u32 = 0;
+        var prev_char: u32 = 0;
+        var first: bool = true;
+        var nbuf: [16]u8 = undefined;
+        for (toks.items) |tok| {
+            const d_line: u32 = tok.line - prev_line;
+            const d_char: u32 = if (d_line == 0) tok.char - prev_char else tok.char;
+            const five: [5]u32 = .{ d_line, d_char, tok.len, tok.ttype, tok.mods };
+            for (five) |n| {
+                if (!first) try out.append(s.alloc, ',');
+                first = false;
+                try out.appendSlice(s.alloc, try std.fmt.bufPrint(&nbuf, "{d}", .{n}));
+            }
+            prev_line = tok.line;
+            prev_char = tok.char;
+        }
+        try out.appendSlice(s.alloc, "]}");
+        try s.sendResult(id, out.items);
+        return false;
+    }
+
     // -- Diagnostics --------------------------------------------------------
 
     /// Publish lightweight diagnostics. We compute paren-balance and report
@@ -1043,7 +1143,113 @@ pub const Server = struct {
             try diags.append(s.alloc, .{ .range = sym.range, .message = msg, .owned = true });
         }
 
+        // zepo-rzjw: linter pass — unused-define, unused-import, redefinition.
+        // Each rule emits at severity Warning (severity=2) so it surfaces in
+        // the editor without blocking save.
+        try s.runLinter(doc.text, a, &diags);
+
         try s.writeDiagnostics(uri, doc.text, diags.items);
+    }
+
+    // zepo-rzjw: linter rules. Each rule is best-effort and silent on
+    // allocation failure (the file is half-edited anyway).
+    fn runLinter(
+        s: *Server,
+        text: []const u8,
+        a: *const analysis.Analysis,
+        diags: *std.ArrayListUnmanaged(Diag),
+    ) !void {
+        // Rule 1: redefinition. Same name appearing twice in defines.
+        for (a.defines.items, 0..) |d1, i| {
+            if (d1.kind != .define) continue;
+            for (a.defines.items[0..i]) |d2| {
+                if (d2.kind != .define) continue;
+                if (std.mem.eql(u8, d1.name, d2.name)) {
+                    const msg = std.fmt.allocPrint(s.alloc, "redefinition of '{s}' — previous define earlier in this file", .{d1.name}) catch continue;
+                    diags.append(s.alloc, .{
+                        .range = d1.name_range,
+                        .message = msg,
+                        .owned = true,
+                        .severity = SEV_WARNING,
+                    }) catch {};
+                    break;
+                }
+            }
+        }
+
+        // Build a set of names actually USED (referenced) anywhere in the
+        // file, by looking at all SymbolHits that aren't the define-site itself.
+        var used: std.StringHashMapUnmanaged(void) = .empty;
+        defer used.deinit(s.alloc);
+        for (a.symbols.items) |sym| {
+            const head = if (sym.dot_at) |dot| sym.text[0..dot] else sym.text;
+            used.put(s.alloc, head, {}) catch {};
+            if (sym.dot_at != null) {
+                // The bare suffix is also a "use" of the imported name.
+                const suffix = sym.text[sym.dot_at.? + 1 ..];
+                used.put(s.alloc, suffix, {}) catch {};
+            }
+        }
+
+        // Rule 2: unused-define. Heuristic — a top-level (define NAME ...)
+        // whose name appears nowhere else in the document AND isn't a
+        // top-level helper-pattern (leading underscore is excluded by
+        // convention). Module symbols and the module's own name are
+        // excluded.
+        for (a.defines.items) |d| {
+            if (d.kind != .define) continue;
+            if (d.name.len > 0 and d.name[0] == '_') continue;
+            // Count uses of this name in `used`. If the only "use" is the
+            // define site itself (one occurrence in symbols), it's unused.
+            var occurrence_count: usize = 0;
+            for (a.symbols.items) |sym| {
+                if (sym.dot_at != null) continue;
+                if (std.mem.eql(u8, sym.text, d.name)) occurrence_count += 1;
+            }
+            if (occurrence_count <= 1) {
+                const msg = std.fmt.allocPrint(s.alloc, "'{s}' is defined but never used in this file", .{d.name}) catch continue;
+                diags.append(s.alloc, .{
+                    .range = d.name_range,
+                    .message = msg,
+                    .owned = true,
+                    .severity = SEV_HINT,
+                }) catch {};
+            }
+        }
+        _ = text;
+
+        // Rule 3: unused-import. For (import M (a b c)) — flag any element
+        // of the selection that's never referenced. For (import M :as A) —
+        // flag if `A` never appears as a prefix. Plain (import M) is harder
+        // to lint (any of M's exports may be in use); skip it.
+        for (a.imports.items) |imp| {
+            switch (imp.selection) {
+                .only => |names| {
+                    for (names) |n| {
+                        if (used.contains(n)) continue;
+                        const msg = std.fmt.allocPrint(s.alloc, "imported '{s}' from '{s}' but never used", .{ n, imp.module }) catch continue;
+                        diags.append(s.alloc, .{
+                            .range = imp.form_range,
+                            .message = msg,
+                            .owned = true,
+                            .severity = SEV_HINT,
+                        }) catch {};
+                    }
+                },
+                .as_alias => |al| {
+                    if (!used.contains(al)) {
+                        const msg = std.fmt.allocPrint(s.alloc, "import alias '{s}' for module '{s}' is never used", .{ al, imp.module }) catch continue;
+                        diags.append(s.alloc, .{
+                            .range = imp.form_range,
+                            .message = msg,
+                            .owned = true,
+                            .severity = SEV_HINT,
+                        }) catch {};
+                    }
+                },
+                .all => {}, // can't lint without knowing the module's exports
+            }
+        }
     }
 
     fn writeDiagnostics(s: *Server, uri: []const u8, text: []const u8, diags: []const Diag) !void {
@@ -1056,7 +1262,10 @@ pub const Server = struct {
             if (i > 0) try out.append(s.alloc, ',');
             try out.appendSlice(s.alloc, "{\"range\":");
             try writeRangeEnc(&out, s.alloc, text, d.range, s.encoding);
-            try out.appendSlice(s.alloc, ",\"severity\":1,\"source\":\"zepo\",\"message\":\"");
+            try out.appendSlice(s.alloc, ",\"severity\":");
+            var sevbuf: [4]u8 = undefined;
+            try out.appendSlice(s.alloc, try std.fmt.bufPrint(&sevbuf, "{d}", .{d.severity}));
+            try out.appendSlice(s.alloc, ",\"source\":\"zepo\",\"message\":\"");
             try proto.escapeJsonInto(&out, s.alloc, d.message);
             try out.appendSlice(s.alloc, "\"}");
         }
@@ -1083,10 +1292,17 @@ pub const Server = struct {
     }
 };
 
+// zepo-rzjw: LSP DiagnosticSeverity values.
+const SEV_ERROR: u8 = 1;
+const SEV_WARNING: u8 = 2;
+const SEV_INFO: u8 = 3;
+const SEV_HINT: u8 = 4;
+
 const Diag = struct {
     range: analysis.Range,
     message: []const u8,
     owned: bool,
+    severity: u8 = SEV_ERROR, // zepo-rzjw
 };
 
 fn checkParens(alloc: std.mem.Allocator, text: []const u8, diags: *std.ArrayListUnmanaged(Diag)) !void {
