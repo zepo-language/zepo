@@ -328,6 +328,24 @@ pub const Server = struct {
         try msg.appendSlice(s.alloc, sym.text);
         try msg.appendSlice(s.alloc, "**");
 
+        // zepo-wh3e: when the real-pipeline analysis is available, surface the
+        // binding kind under the name. Falls through silently when null.
+        if (sym.dot_at == null) {
+            if (a.real) |*ra| {
+                if (ra.kindOf(sym.text)) |kind| {
+                    const kind_str: []const u8 = switch (kind) {
+                        .primitive => " *(primitive)*",
+                        .macro => " *(macro)*",
+                        .module => " *(module)*",
+                        .global_proc => " *(procedure)*",
+                        .global_value => " *(value)*",
+                        .local_macro => " *(macro)*",
+                    };
+                    try msg.appendSlice(s.alloc, kind_str);
+                }
+            }
+        }
+
         if (sym.dot_at) |dot| {
             const prefix = sym.text[0..dot];
             const suffix = sym.text[dot + 1 ..];

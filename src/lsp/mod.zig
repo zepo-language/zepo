@@ -14,6 +14,7 @@
 pub const protocol = @import("protocol.zig");
 pub const documents = @import("documents.zig");
 pub const analysis = @import("analysis.zig");
+pub const real_analysis = @import("real_analysis.zig"); // zepo-wh3e
 pub const resolver = @import("resolver.zig");
 pub const reader_check = @import("reader_check.zig");
 pub const server = @import("server.zig");
@@ -25,6 +26,7 @@ test {
     _ = protocol;
     _ = documents;
     _ = analysis;
+    _ = real_analysis; // zepo-wh3e
     _ = resolver;
     _ = reader_check;
     _ = server;
