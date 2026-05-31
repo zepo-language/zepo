@@ -164,6 +164,9 @@ pub const Definition = struct {
     name_range: Range,
     /// Range of the whole form.
     form_range: Range,
+    /// zepo-ab3s: docstring extracted from `:documentation "..."` if present.
+    /// Slice into the document text, with the surrounding quotes stripped.
+    docstring: ?[]const u8 = null,
 };
 
 pub const ImportSelection = union(enum) {
@@ -432,6 +435,26 @@ fn drainList(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *Analy
     }
 }
 
+// zepo-ab3s: Peek for an optional `:documentation "STR"` keyword pair at the
+// scanner's current position. On match, consume both tokens and return the
+// inner string (quotes stripped). On miss, rewind the scanner and return null.
+fn peelDocstring(sc: *Scanner, text: []const u8) ?[]const u8 {
+    const save = sc.pos;
+    const t1 = sc.next();
+    if (t1.kind == .symbol and std.mem.eql(u8, text[t1.start..t1.end], ":documentation")) {
+        const t2 = sc.next();
+        if (t2.kind == .string) {
+            const raw = text[t2.start..t2.end];
+            if (raw.len >= 2 and raw[0] == '"' and raw[raw.len - 1] == '"') {
+                return raw[1 .. raw.len - 1];
+            }
+            return raw;
+        }
+    }
+    sc.pos = save;
+    return null;
+}
+
 fn handleDefine(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *Analysis, lparen_start: usize) AnalyzeError!void {
     // After "(define" the next interesting thing is either NAME or (NAME args).
     const second = sc.next();
@@ -450,6 +473,9 @@ fn handleDefine(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
             if (t.kind == .rparen) d -= 1;
         }
     }
+    // zepo-ab3s: optional :documentation "..." sits between the name (or
+    // close-paren of the param list) and the body / value expression.
+    const docstring = peelDocstring(sc, text);
     const form_end = try skipUntilCloseAndReturnEnd(sc, text);
     if (name_tok) |nt| {
         try a.defines.append(alloc, .{
@@ -457,6 +483,7 @@ fn handleDefine(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
             .kind = .define,
             .name_range = Range.fromOffsets(text, nt.start, nt.end),
             .form_range = Range.fromOffsets(text, lparen_start, form_end),
+            .docstring = docstring,
         });
     }
 }
@@ -465,6 +492,9 @@ fn handleModule(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
     const name = sc.next();
     var name_tok: ?Tok = null;
     if (name.kind == .symbol) name_tok = name;
+
+    // zepo-ab3s: optional :documentation "..." just after the module name.
+    const docstring = peelDocstring(sc, text);
 
     // Walk module body, still picking up nested defines.
     var depth: usize = 1;
@@ -490,6 +520,7 @@ fn handleModule(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
             .kind = .module,
             .name_range = Range.fromOffsets(text, nt.start, nt.end),
             .form_range = Range.fromOffsets(text, lparen_start, form_end),
+            .docstring = docstring,
         });
     }
 }

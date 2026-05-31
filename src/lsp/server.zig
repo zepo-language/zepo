@@ -282,7 +282,12 @@ pub const Server = struct {
             }
         } else if (a.findDefinition(sym.text)) |d| {
             try msg.appendSlice(s.alloc, "\\n\\ndefined in this file");
-            _ = d;
+            // zepo-ab3s: surface :documentation docstring (if any) below
+            // the definition note, separated by an hr for readability.
+            if (d.docstring) |def_doc| {
+                try msg.appendSlice(s.alloc, "\\n\\n---\\n\\n");
+                try msg.appendSlice(s.alloc, def_doc);
+            }
         } else {
             // Maybe it's an import name.
             for (a.imports.items) |imp| {

@@ -483,3 +483,45 @@ test "shutdown then exit" {
     // shutdown response should produce a null result keyed to id 2.
     try t.expect(std.mem.indexOf(u8, out.items, "\"id\":2") != null);
 }
+
+// zepo-ab3s
+test "hover surfaces :documentation docstring" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src =
+        \\(define greeting :documentation "say hello" "hi")
+        \\(define use greeting)
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///doc.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // Hover on `greeting` at the use site (line 1, character ~12).
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///doc.lisp"},"position":{"line":1,"character":12}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "say hello") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "defined in this file") != null);
+}
