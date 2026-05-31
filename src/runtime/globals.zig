@@ -10,12 +10,27 @@ const abi = @import("../abi/mod.zig");
 const Value = abi.Value;
 const value_mod = abi.value;
 
+// zepo-33x2
+/// Per-binding metadata. Heap-allocated and shared across import aliases
+/// via the pointer (imported entries set owned=false and inherit this ptr).
+/// Strings are owned []u8 in the allocator that allocated the EntryMeta.
+pub const EntryMeta = struct {
+    docstring: ?[]u8 = null,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *EntryMeta) void {
+        if (self.docstring) |s| self.allocator.free(s);
+    }
+};
+
 pub const Entry = struct {
     sym_slot: *Value,
     val_slot: *Value,
     /// false for aliased (imported) entries — their slots are owned by the
     /// source module env and must not be freed by this env on deinit.
     owned: bool = true,
+    // zepo-33x2: nullable per-binding metadata; shared with import aliases.
+    meta: ?*EntryMeta = null,
 };
 
 /// Allocate a new (sym, val) slot pair, initialise it, and register the slots
@@ -42,6 +57,11 @@ pub fn freeEntry(allocator: std.mem.Allocator, entry: Entry) void {
     if (!entry.owned) return;
     allocator.destroy(entry.sym_slot);
     allocator.destroy(entry.val_slot);
+    // zepo-33x2
+    if (entry.meta) |m| {
+        m.deinit();
+        allocator.destroy(m);
+    }
 }
 
 pub const GlobalEnv = struct {
@@ -101,6 +121,8 @@ pub const GlobalEnv = struct {
             .sym_slot = entry.sym_slot,
             .val_slot = entry.val_slot,
             .owned = false,
+            // zepo-33x2: share meta ptr so imported aliases see source docs.
+            .meta = entry.meta,
         });
     }
 
@@ -113,4 +135,92 @@ pub const GlobalEnv = struct {
         const idx = env.find(sym) orelse return error.Unbound;
         env.entries.items[idx].val_slot.* = val;
     }
+
+    // zepo-33x2
+    /// Get or lazily allocate the EntryMeta for a binding. Imported aliases
+    /// share the meta with the source module since both Entries refer to it
+    /// by pointer; mutating through one is visible through the other.
+    pub fn ensureMeta(env: *GlobalEnv, sym: Value) !*EntryMeta {
+        const idx = env.find(sym) orelse return error.Unbound;
+        var e = &env.entries.items[idx];
+        if (e.meta) |m| return m;
+        const m = try env.allocator.create(EntryMeta);
+        m.* = .{ .allocator = env.allocator };
+        e.meta = m;
+        return m;
+    }
+
+    /// Read the EntryMeta for a binding, or null if none was attached.
+    pub fn getMeta(env: *GlobalEnv, sym: Value) ?*EntryMeta {
+        const idx = env.find(sym) orelse return null;
+        return env.entries.items[idx].meta;
+    }
+
+    /// Convenience: attach (or replace) the docstring on a binding.
+    /// Takes ownership of an internally duped copy.
+    pub fn setDocstring(env: *GlobalEnv, sym: Value, doc: []const u8) !void {
+        const m = try env.ensureMeta(sym);
+        if (m.docstring) |old| m.allocator.free(old);
+        m.docstring = try m.allocator.dupe(u8, doc);
+    }
+
+    /// Convenience: read the docstring, or null.
+    pub fn getDocstring(env: *GlobalEnv, sym: Value) ?[]const u8 {
+        const m = env.getMeta(sym) orelse return null;
+        return m.docstring;
+    }
 };
+
+// zepo-33x2
+test "EntryMeta: docstring round-trip + import alias shares + set! preserves" {
+    const SymbolTable = @import("symbols.zig").SymbolTable;
+    var gc = try GC.init(std.testing.allocator);
+    defer gc.deinit();
+    var st = try SymbolTable.init(&gc, std.testing.allocator);
+    defer st.deinit();
+
+    var src_env = try GlobalEnv.init(&gc, std.testing.allocator);
+    defer src_env.deinit();
+    var dst_env = try GlobalEnv.init(&gc, std.testing.allocator);
+    defer dst_env.deinit();
+
+    const sym = try st.intern("doc-me");
+    const v1 = value_mod.NIL;
+    const v2 = value_mod.TRUE;
+
+    try src_env.define(sym, v1);
+    try src_env.setDocstring(sym, "adds one to its argument");
+
+    // Round-trip
+    try std.testing.expectEqualStrings(
+        "adds one to its argument",
+        src_env.getDocstring(sym).?,
+    );
+
+    // Import alias shares meta
+    const e = src_env.findEntry(sym).?;
+    try dst_env.importEntry(e);
+    try std.testing.expectEqualStrings(
+        "adds one to its argument",
+        dst_env.getDocstring(sym).?,
+    );
+
+    // set! on the value preserves the docstring
+    try src_env.set(sym, v2);
+    try std.testing.expectEqual(v2, src_env.lookup(sym).?);
+    try std.testing.expectEqualStrings(
+        "adds one to its argument",
+        src_env.getDocstring(sym).?,
+    );
+
+    // Replacing the docstring frees the old one (no leak under testing allocator)
+    try src_env.setDocstring(sym, "replaced");
+    try std.testing.expectEqualStrings("replaced", src_env.getDocstring(sym).?);
+    // Alias sees the replacement (shared ptr).
+    try std.testing.expectEqualStrings("replaced", dst_env.getDocstring(sym).?);
+
+    // Undocumented binding returns null
+    const sym2 = try st.intern("undocumented");
+    try src_env.define(sym2, v1);
+    try std.testing.expect(src_env.getDocstring(sym2) == null);
+}
