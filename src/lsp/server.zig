@@ -21,6 +21,49 @@ const reader_check = @import("reader_check.zig");
 // zepo-wwh7: per-document cached Analysis. Keyed by URI; the version field
 // is the doc.version this Analysis was computed against. A mismatch on read
 // means the cache is stale and must be deinit'd before re-analyzing.
+// zepo-7xwx: unified handler signature for the method dispatch table.
+// Notification methods take `id` and ignore it (LSP notifications have no
+// id; we pass null in that case for symmetry with request handlers).
+const MethodHandler = *const fn (*Server, std.json.Value, std.json.ObjectMap) anyerror!bool;
+
+const MethodEntry = struct {
+    method: []const u8,
+    handler: MethodHandler,
+};
+
+// Notification shims — discard the id argument so notification handlers
+// can keep their existing (params)-only shape.
+fn dispatchDidOpen(s: *Server, id: std.json.Value, params: std.json.ObjectMap) anyerror!bool {
+    _ = id;
+    return s.onDidOpen(params);
+}
+fn dispatchDidChange(s: *Server, id: std.json.Value, params: std.json.ObjectMap) anyerror!bool {
+    _ = id;
+    return s.onDidChange(params);
+}
+fn dispatchDidClose(s: *Server, id: std.json.Value, params: std.json.ObjectMap) anyerror!bool {
+    _ = id;
+    return s.onDidClose(params);
+}
+
+const METHOD_TABLE: []const MethodEntry = &.{
+    // Notifications.
+    .{ .method = "textDocument/didOpen", .handler = dispatchDidOpen },
+    .{ .method = "textDocument/didChange", .handler = dispatchDidChange },
+    .{ .method = "textDocument/didClose", .handler = dispatchDidClose },
+    // Requests.
+    .{ .method = "textDocument/hover", .handler = &Server.onHover },
+    .{ .method = "textDocument/definition", .handler = &Server.onDefinition },
+    .{ .method = "textDocument/completion", .handler = &Server.onCompletion },
+    .{ .method = "textDocument/documentSymbol", .handler = &Server.onDocumentSymbol },
+    .{ .method = "workspace/symbol", .handler = &Server.onWorkspaceSymbol },
+    .{ .method = "textDocument/references", .handler = &Server.onReferences },
+    .{ .method = "textDocument/prepareRename", .handler = &Server.onPrepareRename },
+    .{ .method = "textDocument/rename", .handler = &Server.onRename },
+    .{ .method = "textDocument/semanticTokens/full", .handler = &Server.onSemanticTokens },
+    .{ .method = "textDocument/formatting", .handler = &Server.onFormatting },
+};
+
 pub const CacheEntry = struct {
     version: i64,
     analysis: analysis.Analysis,
@@ -198,58 +241,14 @@ pub const Server = struct {
             else => return false,
         };
 
-        if (std.mem.eql(u8, method, "textDocument/didOpen")) {
-            return try s.onDidOpen(params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/didChange")) {
-            return try s.onDidChange(params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/didClose")) {
-            return try s.onDidClose(params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/hover")) {
+        // zepo-7xwx: table-driven dispatch for the request + notification
+        // methods. The if/else chain we had grew with every new method and
+        // each entry duplicated the same boilerplate; the table is a flat
+        // catalog new methods get appended to.
+        for (METHOD_TABLE) |entry| {
+            if (!std.mem.eql(u8, entry.method, method)) continue;
             const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onHover(id, params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/definition")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onDefinition(id, params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/completion")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onCompletion(id, params);
-        }
-        // zepo-70qf
-        if (std.mem.eql(u8, method, "textDocument/documentSymbol")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onDocumentSymbol(id, params);
-        }
-        if (std.mem.eql(u8, method, "workspace/symbol")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onWorkspaceSymbol(id, params);
-        }
-        // zepo-41a2
-        if (std.mem.eql(u8, method, "textDocument/references")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onReferences(id, params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/prepareRename")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onPrepareRename(id, params);
-        }
-        if (std.mem.eql(u8, method, "textDocument/rename")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onRename(id, params);
-        }
-        // zepo-rzjw
-        if (std.mem.eql(u8, method, "textDocument/semanticTokens/full")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onSemanticTokens(id, params);
-        }
-        // zepo-g44i
-        if (std.mem.eql(u8, method, "textDocument/formatting")) {
-            const id = obj.get("id") orelse std.json.Value{ .null = {} };
-            return try s.onFormatting(id, params);
+            return try entry.handler(s, id, params);
         }
 
         // Respond to unknown requests so clients don't hang.
