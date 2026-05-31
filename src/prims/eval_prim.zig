@@ -49,6 +49,26 @@ pub fn primSetBindingDoc(vm: *VM, args: []const Value) LispError!Value {
     return abi.value.NIL;
 }
 
+// zepo-acu0: (documentation SYMBOL) — return the docstring attached to a
+// top-level binding via :documentation, or #f if none is attached.
+//
+// Looks the symbol up in the current module env first (where vm.globals
+// points), then in fallback_globals (the top-level env) if the binding
+// lives outside the current module.
+pub fn primDocumentation(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    if (vm.globals.getDocstring(args[0])) |doc| {
+        return objects.makeString(vm.gc, doc) catch return error.OutOfMemory;
+    }
+    if (vm.fallback_globals) |fb| {
+        if (fb.getDocstring(args[0])) |doc| {
+            return objects.makeString(vm.gc, doc) catch return error.OutOfMemory;
+        }
+    }
+    return abi.value.FALSE;
+}
+
 pub fn primReadFromString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;
