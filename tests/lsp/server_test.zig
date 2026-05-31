@@ -917,3 +917,234 @@ test "hover reports captured for a closure-captured variable" {
 
     try t.expect(std.mem.indexOf(u8, out.items, "(captured)") != null);
 }
+
+// zepo-41a2
+test "references finds all uses of a top-level define in one file" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src =
+        \\(define foo 1)
+        \\(define use1 foo)
+        \\(define use2 (cons foo 2))
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///r1.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // references at `foo`'s definition (line 0, character 8)
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/references","params":{"textDocument":{"uri":"file:///r1.lisp"},"position":{"line":0,"character":8},"context":{"includeDeclaration":true}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    // Find the references result line (id:2) and count "uri" occurrences in it.
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const result_chunk = out.items[idx..];
+    var count: usize = 0;
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, result_chunk, search_start, "\"uri\":")) |found| {
+        count += 1;
+        search_start = found + 1;
+        if (search_start >= result_chunk.len) break;
+    }
+    try t.expect(count == 3); // definition + two uses
+}
+
+// zepo-41a2
+test "references on a local stays scoped to the enclosing lambda" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // Two separate `x`s: one bound in foo's lambda, one in bar's lambda.
+    // References on the inner-foo `x` should only find foo's two uses,
+    // not bar's.
+    const src =
+        \\(define foo (lambda (x) (+ x x)))
+        \\(define bar (lambda (x) (* x x)))
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///rs.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // references at the `x` use in foo: (+ x x) — line 0, character 25
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/references","params":{"textDocument":{"uri":"file:///rs.lisp"},"position":{"line":0,"character":27},"context":{"includeDeclaration":true}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const result_chunk = out.items[idx..];
+    // Find the result array and check it contains only line-0 ranges, not line 1.
+    // Quick proof: the result must contain a "line":0 but never a "line":1.
+    try t.expect(std.mem.indexOf(u8, result_chunk, "\"line\":0") != null);
+    // The `x` references in bar (line 1) must NOT appear.
+    // Find the result section (between id:2 and the next response or end).
+    var line1_count: usize = 0;
+    var ss: usize = 0;
+    while (std.mem.indexOfPos(u8, result_chunk, ss, "\"line\":1")) |found| {
+        line1_count += 1;
+        ss = found + 1;
+    }
+    try t.expectEqual(@as(usize, 0), line1_count);
+}
+
+// zepo-41a2
+test "prepareRename returns range for a definable name" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src = "(define foo 1)";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///pr.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // prepareRename at character 8 (foo's name)
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file:///pr.lisp"},"position":{"line":0,"character":8}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    // Response must contain a range, not null.
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const chunk = out.items[idx..];
+    try t.expect(std.mem.indexOf(u8, chunk, "\"start\"") != null);
+}
+
+// zepo-41a2
+test "prepareRename refuses primitives" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src = "(define foo (cons 1 2))";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///prp.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // prepareRename on `cons` — should return null.
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file:///prp.lisp"},"position":{"line":0,"character":14}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const chunk = out.items[idx..];
+    try t.expect(std.mem.indexOf(u8, chunk, "\"result\":null") != null);
+}
+
+// zepo-41a2
+test "rename produces WorkspaceEdit covering all use sites" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    const src =
+        \\(define old-name 1)
+        \\(define use old-name)
+    ;
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///rn.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{"textDocument":{"uri":"file:///rn.lisp"},"position":{"line":0,"character":8},"newName":"new-name"}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    const idx = std.mem.indexOf(u8, out.items, "\"id\":2").?;
+    const chunk = out.items[idx..];
+    try t.expect(std.mem.indexOf(u8, chunk, "\"changes\"") != null);
+    try t.expect(std.mem.indexOf(u8, chunk, "\"new-name\"") != null);
+    // Must include at least 2 edits (the define and the use).
+    var edit_count: usize = 0;
+    var ss: usize = 0;
+    while (std.mem.indexOfPos(u8, chunk, ss, "\"newText\":")) |found| {
+        edit_count += 1;
+        ss = found + 1;
+    }
+    try t.expect(edit_count >= 2);
+}
