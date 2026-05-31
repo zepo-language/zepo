@@ -839,7 +839,39 @@ pub const VM = struct {
                     if (objects.isPrim(fn_val)) {
                         const raw = objects.primFnPtr(fn_val);
                         const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
-                        const prim_val = try pfn(vm, args_slice);
+                        // zepo-mi9x: snapshot frames depth so we can detect
+                        // whether pfn pushed a closure frame via execFn that
+                        // then yielded. If so, we need to patch that frame's
+                        // dst_reg so the closure's eventual RETURN lands in
+                        // our register `a` instead of trying to signal back
+                        // to a long-dead execFn.
+                        const frames_before = vm.call_stack.frames.items.len;
+                        const prim_val = pfn(vm, args_slice) catch |e| {
+                            if (e == error.FiberYielded and
+                                vm.call_stack.frames.items.len > frames_before)
+                            {
+                                // A nested closure (pushed by pfn -> execFn)
+                                // yielded. Repoint the BOTTOM newly-pushed
+                                // frame's return target at this PRIM_CALL's
+                                // result register so its eventual RETURN
+                                // value lands in our reg[a]. Frames pushed
+                                // ABOVE the bottom (intermediate execFn
+                                // results, e.g. with-exception-handler
+                                // wrapping a thunk) were already patched by
+                                // their own enclosing PRIM_CALL via this
+                                // same path — leave their dst_reg alone.
+                                //
+                                // Then advance OUR frame's PC past the CALL
+                                // so when the fiber resumes the dispatch
+                                // continues with the next bytecode (and the
+                                // closure's RETURN value lands in reg[a]).
+                                const bottom_idx = frames_before; // first new
+                                vm.call_stack.frames.items[bottom_idx].dst_reg = a;
+                                vm.call_stack.frames.items[frames_before - 1].pc = pc;
+                                return DispatchResult.yielded;
+                            }
+                            return e;
+                        };
                         // zepo-0bo: (yield) sets this flag; save PC and return yielded.
                         if (vm.yield_requested) {
                             vm.yield_requested = false;
