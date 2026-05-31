@@ -1256,3 +1256,71 @@ test "semanticTokens responds with valid data array" {
     // comma-separated numbers after "data":[.
     try t.expect(std.mem.indexOf(u8, chunk, "\"data\":[]}") == null);
 }
+
+// zepo-j3oe
+test "linter reports dead-export" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // `(module M (export defined missing) ...)` — `missing` has no define.
+    const src = "(module ex (export defined missing) (define defined 1))";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///de.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "exported 'missing' has no definition") != null);
+    // 'defined' is exported AND defined — must NOT be flagged.
+    try t.expect(std.mem.indexOf(u8, out.items, "exported 'defined'") == null);
+}
+
+// zepo-j3oe
+test "linter reports shadowing" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // Inner lambda's `x` shadows outer lambda's `x`.
+    const src = "(define foo (lambda (x) (lambda (x) x)))";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///sh.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "'x' shadows a binding") != null);
+}
