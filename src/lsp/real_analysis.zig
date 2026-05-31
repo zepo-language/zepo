@@ -28,6 +28,30 @@ pub const Kind = enum {
     global_value,
     /// Top-level (define-syntax NAME ...) — local macro
     local_macro,
+    /// zepo-ri9g: lexically bound in the enclosing lambda/let.
+    local,
+    /// zepo-ri9g: bound in an outer lambda, captured by closure.
+    captured,
+    /// zepo-ri9g: resolved at top level via the global scope or import.
+    global,
+};
+
+// zepo-ri9g: A lexical scope range. Built one per lambda/let, marking the
+// byte range of its body and the names it locally binds. Hover lookups
+// walk these innermost-out to determine if a hovered name is local /
+// captured / global.
+//
+// We use byte ranges rather than per-symbol-occurrence offsets because the
+// reader does not span-tag interned symbol values (they're shared across
+// all uses); only enclosing pairs get spans. Range lookup on the cursor
+// offset sidesteps that constraint.
+pub const ScopeRange = struct {
+    body_start: u32,
+    body_end: u32,
+    /// True for lambdas; false for let-style bindings (no closure boundary).
+    is_lambda: bool,
+    /// Names locally bound in this scope. Keys are owned []u8.
+    locals: std.StringHashMapUnmanaged(void) = .empty,
 };
 
 pub const RealAnalysis = struct {
@@ -37,6 +61,9 @@ pub const RealAnalysis = struct {
     /// lifetime — when the doc gets re-analyzed the old RealAnalysis can
     /// be deinit'd safely.
     top_level: std.StringHashMapUnmanaged(Kind) = .empty,
+    /// zepo-ri9g: lexical scopes recorded in source order. Innermost
+    /// scopes appear after their enclosing scopes in this list.
+    scopes: std.ArrayListUnmanaged(ScopeRange) = .empty,
 
     pub fn deinit(self: *RealAnalysis) void {
         var it = self.top_level.iterator();
@@ -44,12 +71,46 @@ pub const RealAnalysis = struct {
             self.alloc.free(entry.key_ptr.*);
         }
         self.top_level.deinit(self.alloc);
+        for (self.scopes.items) |*sc| {
+            var lit = sc.locals.iterator();
+            while (lit.next()) |entry| self.alloc.free(entry.key_ptr.*);
+            sc.locals.deinit(self.alloc);
+        }
+        self.scopes.deinit(self.alloc);
     }
 
     pub fn kindOf(self: *const RealAnalysis, name: []const u8) ?Kind {
         if (self.top_level.get(name)) |k| return k;
         if (prims_register.isPrimitive(name)) return .primitive;
         return null;
+    }
+
+    // zepo-ri9g: classify a hovered `name` at byte `offset`. Walk scopes
+    // from outermost-to-innermost looking for ones whose body covers the
+    // offset. The deepest match that binds `name` decides local vs captured.
+    pub fn classifyAt(self: *const RealAnalysis, name: []const u8, offset: u32) ?Kind {
+        var deepest_binding: ?usize = null;
+        var deepest_containing: ?usize = null;
+        for (self.scopes.items, 0..) |sc, i| {
+            if (offset < sc.body_start or offset > sc.body_end) continue;
+            deepest_containing = i;
+            if (sc.locals.contains(name)) deepest_binding = i;
+        }
+        if (deepest_binding) |bi| {
+            // If a lambda scope sits strictly between the binding and the
+            // use, it's captured. Otherwise local.
+            const containing = deepest_containing.?;
+            var j = bi + 1;
+            while (j <= containing) : (j += 1) {
+                const s = self.scopes.items[j];
+                if (s.is_lambda and offset >= s.body_start and offset <= s.body_end and !s.locals.contains(name))
+                    return .captured;
+            }
+            return .local;
+        }
+        if (self.top_level.get(name)) |k| return k;
+        if (prims_register.isPrimitive(name)) return .primitive;
+        return .global;
     }
 };
 
@@ -74,6 +135,11 @@ pub fn tryAnalyze(alloc: std.mem.Allocator, uri: []const u8, text: []const u8) ?
     var result = RealAnalysis{ .alloc = alloc };
     errdefer result.deinit();
 
+    // zepo-ri9g: collect every top-level node so we can do both passes
+    // (top-level kinds, then occurrence resolution).
+    var top_nodes = std.ArrayListUnmanaged(ast.NodeId).empty;
+    defer top_nodes.deinit(alloc);
+
     while (true) {
         const form = parser.readOne() catch |e| switch (e) {
             error.Eof => break,
@@ -88,14 +154,119 @@ pub fn tryAnalyze(alloc: std.mem.Allocator, uri: []const u8, text: []const u8) ?
             return null;
         };
 
+        top_nodes.append(alloc, node_id) catch {
+            result.deinit();
+            return null;
+        };
+
         recordTopLevel(&arena, node_id, &result) catch {
             result.deinit();
             return null;
         };
     }
 
+    // zepo-ri9g: second pass — record lexical scope ranges and the names
+    // bound in each. Hover later uses ranges-by-cursor-offset to classify
+    // a name as local / captured / global. Failures are non-fatal.
+    var scope_walker = ScopeWalker{
+        .alloc = alloc,
+        .arena = &arena,
+        .out = &result,
+    };
+    for (top_nodes.items) |nid| {
+        scope_walker.walk(nid) catch {};
+    }
+
     return result;
 }
+
+// zepo-ri9g: scope walker. For each lambda/let encountered, append a
+// ScopeRange to the result. Sym_refs themselves aren't recorded — hover
+// classifies them lazily by name lookup against the ranges (via
+// RealAnalysis.classifyAt).
+const ScopeWalker = struct {
+    alloc: std.mem.Allocator,
+    arena: *ast.NodeArena,
+    out: *RealAnalysis,
+
+    fn walk(self: *ScopeWalker, id: ast.NodeId) anyerror!void {
+        const node = self.arena.get(id).*;
+        switch (node) {
+            .literal, .quote, .sym_ref => {},
+            .define => |d| try self.walk(d.value),
+            .set_bang => |sb| try self.walk(sb.value),
+            .if_expr => |ie| {
+                try self.walk(ie.cond);
+                try self.walk(ie.then_);
+                if (ie.else_) |e| try self.walk(e);
+            },
+            .cond_expr => |c| {
+                for (c.clauses) |cl| {
+                    try self.walk(cl.test_);
+                    for (cl.body) |bid| try self.walk(bid);
+                }
+            },
+            .application => |app| {
+                try self.walk(app.func);
+                for (app.args) |aid| try self.walk(aid);
+            },
+            .sequence => |seq| {
+                for (seq.exprs) |eid| try self.walk(eid);
+            },
+            .with_handler => |wh| {
+                try self.walk(wh.handler);
+                for (wh.body) |bid| try self.walk(bid);
+            },
+            .lambda => |la| {
+                var range: ScopeRange = .{
+                    .body_start = la.span.start.offset,
+                    .body_end = la.span.end.offset,
+                    .is_lambda = true,
+                };
+                for (la.params) |p| try self.putOwnedKey(&range.locals, p);
+                if (la.rest_param) |rp| try self.putOwnedKey(&range.locals, rp);
+                for (la.keyword_params) |kp| try self.putOwnedKey(&range.locals, kp.name);
+                try self.out.scopes.append(self.alloc, range);
+                for (la.body) |bid| try self.walk(bid);
+            },
+            .let_expr => |le| {
+                for (le.bindings) |b| try self.walk(b.value);
+                var range: ScopeRange = .{
+                    .body_start = le.span.start.offset,
+                    .body_end = le.span.end.offset,
+                    .is_lambda = false,
+                };
+                for (le.bindings) |b| try self.putOwnedKey(&range.locals, b.name);
+                try self.out.scopes.append(self.alloc, range);
+                for (le.body) |bid| try self.walk(bid);
+            },
+            .let_star_expr => |le| {
+                var range: ScopeRange = .{
+                    .body_start = le.span.start.offset,
+                    .body_end = le.span.end.offset,
+                    .is_lambda = false,
+                };
+                for (le.bindings) |b| {
+                    try self.walk(b.value);
+                    try self.putOwnedKey(&range.locals, b.name);
+                }
+                try self.out.scopes.append(self.alloc, range);
+                for (le.body) |bid| try self.walk(bid);
+            },
+            .module_decl => |m| {
+                for (m.body) |bid| try self.walk(bid);
+            },
+            .import_stmt => {},
+        }
+    }
+
+    fn putOwnedKey(self: *ScopeWalker, map: *std.StringHashMapUnmanaged(void), name: []const u8) !void {
+        if (map.contains(name)) return;
+        const k = try self.alloc.dupe(u8, name);
+        errdefer self.alloc.free(k);
+        try map.put(self.alloc, k, {});
+    }
+};
 
 fn recordTopLevel(
     arena: *ast.NodeArena,
@@ -148,6 +319,42 @@ test "tryAnalyze: top-level kinds" {
     try t.expectEqual(Kind.global_value, r.kindOf("baz").?);
     try t.expectEqual(Kind.primitive, r.kindOf("cons").?);
     try t.expect(r.kindOf("not-a-thing") == null);
+}
+
+test "tryAnalyze: classifyAt reports local for a lambda parameter use" {
+    const t = std.testing;
+    const a = t.allocator;
+    // (define foo (lambda (x) (cons x 1)))
+    //  0         1         2         3
+    //  0123456789012345678901234567890123456
+    //                                 ^ `x` use inside cons is at byte 30
+    const src = "(define foo (lambda (x) (cons x 1)))";
+    var r = tryAnalyze(a, "test.lisp", src) orelse return error.TestUnexpectedResult;
+    defer r.deinit();
+    try t.expectEqual(@as(?Kind, .local), r.classifyAt("x", 30));
+    try t.expectEqual(@as(?Kind, .primitive), r.classifyAt("cons", 25));
+}
+
+test "tryAnalyze: classifyAt reports captured for a closure-captured name" {
+    const t = std.testing;
+    const a = t.allocator;
+    // (define adder (lambda (n) (lambda (x) (+ n x))))
+    // `n` inside (+ n x) is at byte 41 — it's bound in the outer lambda
+    // (param) but used inside the inner lambda, so it's captured.
+    const src = "(define adder (lambda (n) (lambda (x) (+ n x))))";
+    var r = tryAnalyze(a, "test.lisp", src) orelse return error.TestUnexpectedResult;
+    defer r.deinit();
+    try t.expectEqual(@as(?Kind, .captured), r.classifyAt("n", 41));
+}
+
+test "tryAnalyze: classifyAt reports global for an unbound name" {
+    const t = std.testing;
+    const a = t.allocator;
+    const src = "(define foo (bar))";
+    var r = tryAnalyze(a, "test.lisp", src) orelse return error.TestUnexpectedResult;
+    defer r.deinit();
+    // `bar` is unbound — should classify as global (not primitive, not local).
+    try t.expectEqual(@as(?Kind, .global), r.classifyAt("bar", 13));
 }
 
 test "tryAnalyze: returns null on parse error" {

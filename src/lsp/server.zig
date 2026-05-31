@@ -338,11 +338,15 @@ pub const Server = struct {
         try msg.appendSlice(s.alloc, sym.text);
         try msg.appendSlice(s.alloc, "**");
 
-        // zepo-wh3e: when the real-pipeline analysis is available, surface the
-        // binding kind under the name. Falls through silently when null.
+        // zepo-wh3e + zepo-ri9g: surface the binding kind under the name
+        // when real-pipeline analysis is available. Prefer per-occurrence
+        // kind (from ri9g) so locals and captures aren't reported as
+        // global_value, falling back to the name-level kindOf table.
         if (sym.dot_at == null) {
             if (a.real) |*ra| {
-                if (ra.kindOf(sym.text)) |kind| {
+                const sym_off_start: u32 = @intCast(analysis.posToOffsetEnc(doc.text, sym.range.start, s.encoding));
+                const eff_kind = ra.classifyAt(sym.text, sym_off_start);
+                if (eff_kind) |kind| {
                     const kind_str: []const u8 = switch (kind) {
                         .primitive => " *(primitive)*",
                         .macro => " *(macro)*",
@@ -350,6 +354,9 @@ pub const Server = struct {
                         .global_proc => " *(procedure)*",
                         .global_value => " *(value)*",
                         .local_macro => " *(macro)*",
+                        .local => " *(local)*",
+                        .captured => " *(captured)*",
+                        .global => " *(global)*",
                     };
                     try msg.appendSlice(s.alloc, kind_str);
                 }
