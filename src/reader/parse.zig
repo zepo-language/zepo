@@ -226,11 +226,15 @@ pub const Parser = struct {
         const v_slot = scope.push(value_mod.NIL);
         var has_tail = false;
 
+        // zepo-ri9g: track the close-paren's end offset so the recorded
+        // pair span covers the WHOLE form, not just the open paren.
+        var close_end_pos = open_tok.span.end;
         while (true) {
             const tok = try p.lexer.peek();
             if (tok.kind == .eof) return p.setDiag(error.UnbalancedParen, tok.span);
             if (tok.kind == .rparen) {
-                _ = try p.lexer.next();
+                const rp = try p.lexer.next();
+                close_end_pos = rp.span.end;
                 break;
             }
             if (tok.kind == .dot) {
@@ -245,6 +249,7 @@ pub const Parser = struct {
                 has_tail = true;
                 const closing = try p.lexer.next();
                 if (closing.kind != .rparen) return p.setDiag(error.DotInvalid, closing.span);
+                close_end_pos = closing.span.end;
                 break;
             }
             const next_tok = try p.lexer.next();
@@ -267,7 +272,7 @@ pub const Parser = struct {
         // An empty list () must return NIL, not a freshly allocated pair.
         if (value_mod.isNil(result)) return value_mod.NIL;
 
-        try p.recordSpan(result, open_tok.span.start, open_tok.span.end);
+        try p.recordSpan(result, open_tok.span.start, close_end_pos);
         return result;
     }
 };
