@@ -200,6 +200,10 @@ pub const Analysis = struct {
     symbols: std.ArrayListUnmanaged(SymbolHit) = .empty,
     /// Backing storage for `only` selection slices.
     only_arena: std.ArrayListUnmanaged([][]const u8) = .empty,
+    /// zepo-wh3e: real-pipeline analysis result (reader+ast+resolver), or
+    /// null if any stage failed. Hybrid model per ADR 0003 — features that
+    /// need binding-kind awareness route through this when present.
+    real: ?@import("real_analysis.zig").RealAnalysis = null,
 
     pub fn deinit(a: *Analysis) void {
         a.defines.deinit(a.alloc);
@@ -207,6 +211,7 @@ pub const Analysis = struct {
         a.symbols.deinit(a.alloc);
         for (a.only_arena.items) |slc| a.alloc.free(slc);
         a.only_arena.deinit(a.alloc);
+        if (a.real) |*r| r.deinit();
     }
 
     /// Find the symbol hit covering byte offset `off`, or null. Ranges stored
@@ -371,6 +376,11 @@ pub fn analyze(alloc: std.mem.Allocator, text: []const u8) !Analysis {
     // We re-scan, tracking depth and head-of-list context.
     sc = Scanner{ .src = text };
     try walkForms(alloc, &sc, text, &a);
+
+    // zepo-wh3e: attempt the real reader+ast pass. Null on any error —
+    // hover/completion fall back to the scanner data above.
+    a.real = @import("real_analysis.zig").tryAnalyze(alloc, "<doc>", text);
+
     return a;
 }
 

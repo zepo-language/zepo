@@ -327,6 +327,15 @@ const TABLE: []const Entry = &.{
     make("worker-stopping?",      0, worker_prims.primWorkerStoppingQ),
 };
 
+// zepo-wh3e: expose whether a name is a registered primitive. Used by the
+// LSP's hybrid analyzer to surface "this is a builtin" on hover.
+pub fn isPrimitive(name: []const u8) bool {
+    for (TABLE) |e| {
+        if (std.mem.eql(u8, e.name, name)) return true;
+    }
+    return false;
+}
+
 pub fn registerAll(gc: *GC, globals: *GlobalEnv, symbols: *SymbolTable) !void {
     for (TABLE) |e| {
         const sym = try symbols.intern(e.name);

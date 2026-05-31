@@ -638,3 +638,83 @@ test "analysis cache: didChange invalidates the cache" {
     try t.expect(std.mem.indexOf(u8, out.items, "first") != null);
     try t.expect(std.mem.indexOf(u8, out.items, "second") != null);
 }
+
+// zepo-wh3e
+test "hover surfaces (primitive) tag on a known primitive" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // 'cons' is a primitive — hovering it should show the (primitive) tag.
+    const src = "(define foo (cons 1 2))";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///p.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // Hover on `cons` at line 0, character 14.
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///p.lisp"},"position":{"line":0,"character":14}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    try t.expect(std.mem.indexOf(u8, out.items, "(primitive)") != null);
+}
+
+// zepo-wh3e
+test "hover degrades gracefully on parse-broken text" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    // Unterminated form — real-pipeline returns null, scanner fallback runs.
+    const src = "(define foo (lambda (x";
+
+    var input: std.ArrayListUnmanaged(u8) = .empty;
+    defer input.deinit(alloc);
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+    );
+    var open_body: std.ArrayListUnmanaged(u8) = .empty;
+    defer open_body.deinit(alloc);
+    try open_body.appendSlice(alloc,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b.lisp","languageId":"lisp","version":1,"text":"
+    );
+    try zepo.lsp.protocol.escapeJsonInto(&open_body, alloc, src);
+    try open_body.appendSlice(alloc, "\"}}}");
+    try frame(alloc, &input, open_body.items);
+
+    // Hover on `foo` at line 0, character 9 — should still respond, not crash,
+    // and the response should NOT contain the (primitive) kind tag since
+    // real-pipeline analysis is null.
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///b.lisp"},"position":{"line":0,"character":9}}}
+    );
+    try frame(alloc, &input,
+        \\{"jsonrpc":"2.0","method":"exit"}
+    );
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    try runWithInput(alloc, input.items, &out);
+
+    // Hover responded (id:2 result is present).
+    try t.expect(std.mem.indexOf(u8, out.items, "\"id\":2") != null);
+    // No kind annotation since real analysis is null on broken parse.
+    try t.expect(std.mem.indexOf(u8, out.items, "(primitive)") == null);
+    try t.expect(std.mem.indexOf(u8, out.items, "(procedure)") == null);
+}
