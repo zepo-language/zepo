@@ -178,8 +178,9 @@ pub const Server = struct {
             // zepo-ttk8: textDocumentSync.change = 2 (Incremental). We still
             // accept full-text changes (clients may send either based on
             // their own preference).
-            // zepo-70qf: advertise documentSymbol + workspaceSymbol.
-            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
+            // zepo-70qf + zepo-41a2: advertise documentSymbol +
+            // workspaceSymbol, references, and rename (with prepareProvider).
+            try out.appendSlice(s.alloc, "\",\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"workspaceSymbolProvider\":true,\"referencesProvider\":true,\"renameProvider\":{\"prepareProvider\":true},\"completionProvider\":{\"triggerCharacters\":[\".\"]}},\"serverInfo\":{\"name\":\"zepo-lsp\",\"version\":\"0.1.0\"}}");
             try s.sendResult(id, out.items);
             return false;
         }
@@ -226,6 +227,19 @@ pub const Server = struct {
         if (std.mem.eql(u8, method, "workspace/symbol")) {
             const id = obj.get("id") orelse std.json.Value{ .null = {} };
             return try s.onWorkspaceSymbol(id, params);
+        }
+        // zepo-41a2
+        if (std.mem.eql(u8, method, "textDocument/references")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onReferences(id, params);
+        }
+        if (std.mem.eql(u8, method, "textDocument/prepareRename")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onPrepareRename(id, params);
+        }
+        if (std.mem.eql(u8, method, "textDocument/rename")) {
+            const id = obj.get("id") orelse std.json.Value{ .null = {} };
+            return try s.onRename(id, params);
         }
 
         // Respond to unknown requests so clients don't hang.
@@ -714,6 +728,266 @@ pub const Server = struct {
         try out.appendSlice(s.alloc, "\",\"range\":");
         try writeRangeEnc(out, s.alloc, text, d.name_range, s.encoding);
         try out.appendSlice(s.alloc, "}}");
+    }
+
+    // -- References / Rename (zepo-41a2) ------------------------------------
+
+    /// Container for the resolved scope of a refactor: the set of (uri,
+    /// range) pairs that name a single binding. For locals, that's the
+    /// occurrences inside one lambda body in one file. For globals, that's
+    /// every matching occurrence across the workspace (filtered to exclude
+    /// shadowed-local uses).
+    const RefList = struct {
+        alloc: std.mem.Allocator,
+        items: std.ArrayListUnmanaged(Ref) = .empty,
+
+        const Ref = struct {
+            uri: []u8, // owned
+            range: analysis.Range,
+            text: []const u8, // borrowed: the doc/file text these ranges index into
+        };
+
+        fn deinit(self: *RefList) void {
+            for (self.items.items) |it| self.alloc.free(it.uri);
+            self.items.deinit(self.alloc);
+        }
+
+        fn append(self: *RefList, uri: []const u8, range: analysis.Range, text: []const u8) !void {
+            const uri_owned = try self.alloc.dupe(u8, uri);
+            errdefer self.alloc.free(uri_owned);
+            try self.items.append(self.alloc, .{ .uri = uri_owned, .range = range, .text = text });
+        }
+    };
+
+    /// Resolve all occurrences for the binding named at (uri, pos). Returns
+    /// null when the cursor isn't on a renameable symbol (e.g. on whitespace,
+    /// on a qualified part, on a primitive). Returned RefList owns its strings.
+    fn collectReferences(
+        s: *Server,
+        uri: []const u8,
+        pos: analysis.Pos,
+        include_definition: bool,
+    ) !?RefList {
+        const doc = s.store.get(uri) orelse return null;
+        const a = try s.getCachedAnalysis(uri);
+        const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
+        const sym = a.symbolAtOffset(doc.text, off) orelse return null;
+        if (sym.dot_at != null) return null; // qualified — out of scope
+        const name = sym.text;
+
+        var refs = RefList{ .alloc = s.alloc };
+        errdefer refs.deinit();
+
+        // Determine scope kind from the real analyzer when available.
+        var is_local: bool = false;
+        var local_scope_start: u32 = 0;
+        var local_scope_end: u32 = 0;
+        if (a.real) |*ra| {
+            const off_u32: u32 = @intCast(off);
+            if (ra.classifyAt(name, off_u32)) |k| {
+                if (k == .primitive) return null; // refuse to rename primitives
+                if (k == .local or k == .captured) {
+                    // Find the deepest scope that binds `name` and contains
+                    // the cursor offset — that defines the rename scope.
+                    var deepest_idx: ?usize = null;
+                    for (ra.scopes.items, 0..) |sc, i| {
+                        if (off_u32 < sc.body_start or off_u32 > sc.body_end) continue;
+                        if (sc.locals.contains(name)) deepest_idx = i;
+                    }
+                    if (deepest_idx) |di| {
+                        is_local = true;
+                        local_scope_start = ra.scopes.items[di].body_start;
+                        local_scope_end = ra.scopes.items[di].body_end;
+                    }
+                }
+            }
+        }
+
+        if (is_local) {
+            // Single-file, scoped. Iterate scanner-side symbols within the
+            // scope's byte range.
+            for (a.symbols.items) |hit| {
+                if (hit.dot_at != null) continue;
+                if (!std.mem.eql(u8, hit.text, name)) continue;
+                const hit_off: u32 = @intCast(analysis.posToOffsetEnc(doc.text, hit.range.start, s.encoding));
+                if (hit_off < local_scope_start or hit_off > local_scope_end) continue;
+                _ = include_definition; // local: include all occurrences
+                try refs.append(uri, hit.range, doc.text);
+            }
+            return refs;
+        }
+
+        // Global scope: walk every open document, then every workspace file
+        // not already open. For each, include occurrences whose classifyAt
+        // resolves to a non-shadowed global. If real analysis is unavailable
+        // for a file, fall back to including all occurrences of the name
+        // (best-effort).
+        var doc_it = s.store.docs.iterator();
+        while (doc_it.next()) |entry| {
+            const u = entry.key_ptr.*;
+            const d = entry.value_ptr;
+            const aa = s.getCachedAnalysis(u) catch continue;
+            for (aa.symbols.items) |hit| {
+                if (hit.dot_at != null) continue;
+                if (!std.mem.eql(u8, hit.text, name)) continue;
+                if (aa.real) |*ra| {
+                    const h_off: u32 = @intCast(analysis.posToOffsetEnc(d.text, hit.range.start, s.encoding));
+                    if (ra.classifyAt(name, h_off)) |k| {
+                        if (k == .local or k == .captured) continue; // shadow
+                    }
+                }
+                try refs.append(u, hit.range, d.text);
+            }
+        }
+
+        try s.resolver.ensurePaths();
+        for (s.resolver.paths.items) |dir| {
+            try s.collectGlobalRefsInDir(dir, name, &refs);
+        }
+        _ = include_definition; // global: include all occurrences
+        return refs;
+    }
+
+    fn collectGlobalRefsInDir(s: *Server, dir_path: []const u8, name: []const u8, refs: *RefList) !void {
+        var pbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (dir_path.len >= pbuf.len) return;
+        @memcpy(pbuf[0..dir_path.len], dir_path);
+        pbuf[dir_path.len] = 0;
+        const path_c: [*:0]const u8 = @ptrCast(&pbuf);
+        const dp = std.c.opendir(path_c) orelse return;
+        defer _ = std.c.closedir(dp);
+
+        while (std.c.readdir(dp)) |entry| {
+            const nm = std.mem.sliceTo(&entry.name, 0);
+            if (nm.len < 6 or !std.mem.endsWith(u8, nm, ".lisp")) continue;
+            const abs = std.fs.path.join(s.alloc, &.{ dir_path, nm }) catch continue;
+            defer s.alloc.free(abs);
+            const got_opt = s.resolver.getAnalysis(abs) catch continue;
+            const got = got_opt orelse continue;
+            const uri = std.fmt.allocPrint(s.alloc, "file://{s}", .{abs}) catch continue;
+            defer s.alloc.free(uri);
+            if (s.store.docs.contains(uri)) continue;
+            for (got.an.symbols.items) |hit| {
+                if (hit.dot_at != null) continue;
+                if (!std.mem.eql(u8, hit.text, name)) continue;
+                if (got.an.real) |*ra| {
+                    const h_off: u32 = @intCast(analysis.posToOffsetEnc(got.text, hit.range.start, s.encoding));
+                    if (ra.classifyAt(name, h_off)) |k| {
+                        if (k == .local or k == .captured) continue;
+                    }
+                }
+                try refs.append(uri, hit.range, got.text);
+            }
+        }
+    }
+
+    fn onReferences(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const td = getObject(params, "textDocument") orelse return s.sendNullResult(id);
+        const uri = getString(td, "uri") orelse return s.sendNullResult(id);
+        const pos = getPos(params) orelse return s.sendNullResult(id);
+        const ctx = getObject(params, "context");
+        const include_def: bool = if (ctx) |c|
+            (if (c.get("includeDeclaration")) |v|
+                (v == .bool and v.bool)
+            else
+                true)
+        else
+            true;
+
+        var refs_opt = (try s.collectReferences(uri, pos, include_def)) orelse {
+            return s.sendNullResult(id);
+        };
+        defer refs_opt.deinit();
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        try out.append(s.alloc, '[');
+        var first: bool = true;
+        for (refs_opt.items.items) |ref| {
+            if (!first) try out.append(s.alloc, ',');
+            first = false;
+            try out.appendSlice(s.alloc, "{\"uri\":\"");
+            try proto.escapeJsonInto(&out, s.alloc, ref.uri);
+            try out.appendSlice(s.alloc, "\",\"range\":");
+            try writeRangeEnc(&out, s.alloc, ref.text, ref.range, s.encoding);
+            try out.append(s.alloc, '}');
+        }
+        try out.append(s.alloc, ']');
+        try s.sendResult(id, out.items);
+        return false;
+    }
+
+    fn onPrepareRename(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const td = getObject(params, "textDocument") orelse return s.sendNullResult(id);
+        const uri = getString(td, "uri") orelse return s.sendNullResult(id);
+        const pos = getPos(params) orelse return s.sendNullResult(id);
+        const doc = s.store.get(uri) orelse return s.sendNullResult(id);
+        const a = try s.getCachedAnalysis(uri);
+        const off = analysis.posToOffsetEnc(doc.text, pos, s.encoding);
+        const sym = a.symbolAtOffset(doc.text, off) orelse return s.sendNullResult(id);
+        if (sym.dot_at != null) return s.sendNullResult(id);
+
+        // Refuse primitives — return null. (LSP spec: null means "rename
+        // not available at this location".)
+        if (a.real) |*ra| {
+            if (ra.classifyAt(sym.text, @intCast(off))) |k| {
+                if (k == .primitive) return s.sendNullResult(id);
+            }
+        }
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        try writeRangeEnc(&out, s.alloc, doc.text, sym.range, s.encoding);
+        try s.sendResult(id, out.items);
+        return false;
+    }
+
+    fn onRename(s: *Server, id: std.json.Value, params: std.json.ObjectMap) !bool {
+        const td = getObject(params, "textDocument") orelse return s.sendNullResult(id);
+        const uri = getString(td, "uri") orelse return s.sendNullResult(id);
+        const pos = getPos(params) orelse return s.sendNullResult(id);
+        const new_name = getString(params, "newName") orelse return s.sendNullResult(id);
+
+        var refs_opt = (try s.collectReferences(uri, pos, true)) orelse {
+            return s.sendNullResult(id);
+        };
+        defer refs_opt.deinit();
+
+        // Build WorkspaceEdit { changes: { uri: [TextEdit, ...] } }.
+        // Group refs by URI so each file gets one TextEdit array.
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        try out.appendSlice(s.alloc, "{\"changes\":{");
+
+        // Track which URIs we've already opened in the JSON output.
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(s.alloc);
+
+        var first_uri: bool = true;
+        for (refs_opt.items.items) |ref| {
+            if (seen.contains(ref.uri)) continue;
+            try seen.put(s.alloc, ref.uri, {});
+            if (!first_uri) try out.append(s.alloc, ',');
+            first_uri = false;
+            try out.append(s.alloc, '"');
+            try proto.escapeJsonInto(&out, s.alloc, ref.uri);
+            try out.appendSlice(s.alloc, "\":[");
+            var first_edit: bool = true;
+            for (refs_opt.items.items) |r2| {
+                if (!std.mem.eql(u8, r2.uri, ref.uri)) continue;
+                if (!first_edit) try out.append(s.alloc, ',');
+                first_edit = false;
+                try out.appendSlice(s.alloc, "{\"range\":");
+                try writeRangeEnc(&out, s.alloc, r2.text, r2.range, s.encoding);
+                try out.appendSlice(s.alloc, ",\"newText\":\"");
+                try proto.escapeJsonInto(&out, s.alloc, new_name);
+                try out.appendSlice(s.alloc, "\"}");
+            }
+            try out.append(s.alloc, ']');
+        }
+        try out.appendSlice(s.alloc, "}}");
+        try s.sendResult(id, out.items);
+        return false;
     }
 
     // -- Diagnostics --------------------------------------------------------
