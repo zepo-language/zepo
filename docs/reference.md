@@ -632,6 +632,41 @@ to others. Value expressions are evaluated in the outer dynamic environment
 the body (e.g. `raise` caught by an enclosing `guard`) unwinds the bindings,
 so the handler sees the restored values.
 
+### `defstruct` and generic functions
+
+Single-dispatch generic functions dispatch on the **type of the first argument**
+(R7RS/CLOS-lite; `:primary` methods only — no multiple dispatch or method
+combination yet). User types come from `defstruct`.
+
+```scheme
+(defstruct circle radius)        ; → make-circle, circle?, circle-radius
+(defstruct rect w h)             ; → make-rect, rect?, rect-w, rect-h
+
+(defgeneric area (shape))
+(defmethod area ((s circle)) (* 3.14159 (circle-radius s) (circle-radius s)))
+(defmethod area ((s rect))   (* (rect-w s) (rect-h s)))
+
+(area (make-circle 10))          ; => 314.159
+(area (make-rect 3 4))           ; => 12
+```
+
+- `(defstruct NAME field...)` defines a record type: constructor `(make-NAME …)`,
+  predicate `(NAME? x)`, and an accessor `(NAME-field x)` per field. A struct
+  value is a tagged vector; `(type-of v)` returns its type symbol.
+- `(type-of x)` → a symbol naming x's type: `integer`, `float`, `boolean`,
+  `char`, `null`, `pair`, `string`, `symbol`, `vector`, `procedure`,
+  `hash-table`, `bytevector`, `parameter`, `fiber`, `foreign`, or a struct's
+  type. Numbers report the *specific* type (`integer`/`float`), not `number`.
+- `(defgeneric NAME (args...))` declares a generic. `(defmethod NAME ((arg
+  TYPE) more...) body...)` adds a method specialized on TYPE (any `type-of`
+  result, including primitives like `string`). Calling a generic with no
+  applicable method raises a clear error naming the generic and the type.
+
+Dispatch is `type-of` + one hash-table lookup + `apply` — comparable to a
+hand-rolled hash-table-of-procedures. There is no subtype/`is-a` hierarchy:
+`type-of` is exact, so a method on `circle` does not apply to other types. See
+ADR 0006.
+
 ### `unwind-protect` and the with-X resource convention
 
 The canonical resource pattern is **acquire → use → release-no-matter-what**,

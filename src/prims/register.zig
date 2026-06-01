@@ -67,6 +67,7 @@ const TABLE: []const Entry = &.{
     make("char?", 1, predicates.primCharQ),
     make("string?", 1, predicates.primStringQ),
     make("procedure?", 1, predicates.primProcedureQ),
+    make("type-of", 1, predicates.primTypeOf), // zepo-gz21
 
     make("eq?", 2, equality.primEqQ),
     make("equal?", 2, equality.primEqualQ),

@@ -582,6 +582,92 @@
 (define (advised? name)
   (hash-contains? *advice-originals* name))
 
+; zepo-gz21: structs + single-dispatch generic functions.
+;
+; A struct value is a vector tagged  #( %struct <type-sym> field... )  — the
+; %struct marker makes it distinguishable from a plain vector, and type-of
+; (a primitive) returns <type-sym> for it. defstruct generates a constructor,
+; a predicate, and one accessor per field.
+;
+;   (defstruct circle radius)
+;   (circle? (make-circle 5))      ; => #t
+;   (circle-radius (make-circle 5)) ; => 5
+(define (%make-struct type fields)
+  (let ((v (make-vector (+ 2 (length fields)) 0)))
+    (vector-set! v 0 '%struct)
+    (vector-set! v 1 type)
+    (let loop ((fs fields) (i 2))
+      (if (null? fs) v
+          (begin (vector-set! v i (car fs)) (loop (cdr fs) (+ i 1)))))))
+
+(define (%struct-is? x type)
+  (and (vector? x)
+       (>= (vector-length x) 2)
+       (eq? (vector-ref x 0) '%struct)
+       (eq? (vector-ref x 1) type)))
+
+; Built with explicit list construction (not quasiquote) to avoid nested
+; quasiquote in the per-field accessor loop.
+(defmacro defstruct (name . fields)
+  (let ((mk (string->symbol (string-append "make-" (symbol->string name))))
+        (pred (string->symbol (string-append (symbol->string name) "?"))))
+    (let ((accessors
+            (let loop ((fs fields) (i 2) (acc '()))
+              (if (null? fs)
+                  (reverse acc)
+                  (loop (cdr fs) (+ i 1)
+                        (cons (list 'define
+                                    (list (string->symbol
+                                            (string-append (symbol->string name) "-"
+                                                           (symbol->string (car fs))))
+                                          's)
+                                    (list 'vector-ref 's i))
+                              acc))))))
+      (append
+        (list 'begin
+              (list 'define (cons mk fields)
+                    (list '%make-struct (list 'quote name) (cons 'list fields)))
+              (list 'define (list pred 'x)
+                    (list '%struct-is? 'x (list 'quote name))))
+        accessors))))
+
+; Generic functions. *generics* maps a generic name to a hash-table of
+; type-symbol -> method closure. Dispatch is on (type-of (car args)).
+(define *generics* (make-hash-table))
+
+(define (%register-generic! name)
+  (if (not (hash-contains? *generics* name))
+      (hash-set! *generics* name (make-hash-table))))
+
+(define (%add-method! name type method)
+  (%register-generic! name)
+  (hash-set! (hash-get *generics* name) type method))
+
+(define (%dispatch-generic name args)
+  (if (null? args)
+      (error "generic called with no arguments:" name)
+      (let ((table (hash-get *generics* name)))
+        (let ((method (and table (hash-get table (type-of (car args))))))
+          (if method
+              (apply method args)
+              (error "no applicable method for generic"
+                     name 'on-type (type-of (car args))))))))
+
+;   (defgeneric area (shape))
+;   (defmethod area ((s circle)) (* 3.14159 (circle-radius s) (circle-radius s)))
+; args / opts (e.g. :documentation) are accepted for shape but not yet used.
+(defmacro defgeneric (name args . opts)
+  `(begin
+     (%register-generic! ',name)
+     (define ,name (lambda %generic-args (%dispatch-generic ',name %generic-args)))))
+
+;   (defmethod NAME ((arg TYPE) more...) body...)  — dispatches on arg's type.
+(defmacro defmethod (name spec . body)
+  (let ((arg (car (car spec)))      ; the dispatch parameter name
+        (type (car (cdr (car spec)))) ; its type symbol
+        (rest (cdr spec)))           ; remaining (untyped) params
+    `(%add-method! ',name ',type (lambda (,arg ,@rest) ,@body))))
+
 ; zepo-g120: default interactive debugger. The REPL installs it via
 ; (%set-debugger-hook! %default-debugger); it is never called in non-interactive
 ; runs. It runs at the signal site of an UNHANDLED condition — restarts are
