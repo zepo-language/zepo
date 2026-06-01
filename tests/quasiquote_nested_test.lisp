@@ -29,4 +29,19 @@
 (deftest nested-qq/builds-data-list
   (=check (%qq-table ((a 1) (b 2))) '((a . 1) (b . 2))))
 
+;; zepo-y2br: R7RS nesting-level tracking for literal double-backtick.
+(deftest nested-qq/double-backtick-preserves-inner-unquote
+  ;; inner unquote is at level 2 → NOT evaluated, kept as data
+  (=check `(a `(b ,(+ 1 2)))
+          '(a (quasiquote (b (unquote (+ 1 2)))))))
+
+(deftest nested-qq/double-comma-evaluates-outer-only
+  ;; ,, : the outer comma drops to level 1 and evaluates (+ 1 2)=3, wrapped in
+  ;; an (unquote 3) data form for the inner quasiquote
+  (=check `(a `(b ,,(+ 1 2)))
+          '(a (quasiquote (b (unquote 3))))))
+
+(deftest nested-qq/level1-unaffected
+  (=check `(a ,(+ 1 2) ,@(list 4 5)) '(a 3 4 5)))
+
 (run-tests)
