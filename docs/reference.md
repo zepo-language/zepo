@@ -632,6 +632,52 @@ to others. Value expressions are evaluated in the outer dynamic environment
 the body (e.g. `raise` caught by an enclosing `guard`) unwinds the bindings,
 so the handler sees the restored values.
 
+### `unwind-protect` and the with-X resource convention
+
+The canonical resource pattern is **acquire → use → release-no-matter-what**,
+built on `unwind-protect`:
+
+```scheme
+(let ((r (open-thing)))
+  (unwind-protect
+    (use r)          ; protected body — its value is returned
+    (close r)))      ; cleanup — runs on normal return AND on error
+```
+
+`(unwind-protect BODY CLEANUP...)` returns BODY's value; CLEANUP runs whether
+BODY returns normally or raises (the condition is re-raised after cleanup). It
+is a macro over `guard`. **Limitation:** Zepo has no continuations and no
+VM-level unwind hook, so a restart that transfers control *out* of BODY (see
+[`restart-case`](#handler-bind-and-restart-case)) bypasses CLEANUP. For ordinary
+control flow this is exactly right.
+
+Wrap recurring acquire/release pairs in a `with-X` macro so callers can't forget
+the release. The convention: `(with-X (binding) body...)` binds the resource,
+runs `body`, and releases on the way out. Two are in the stdlib as models:
+
+| Macro | Description |
+|-------|-------------|
+| `(with-output-string (p) body...)` | Bind `p` to a fresh string output port; write with `port-display`/`port-write`; returns the accumulated string. |
+| `(with-temp-file (path) body...)` | Create a unique temp file, bind `path`, delete it afterward (even on error). |
+
+```scheme
+(with-output-string (p)
+  (port-display p "x = ") (port-write p 42))   ; => "x = 42"
+
+(with-temp-file (path)
+  (file-write-string path "hi")
+  (file-read-string path))                     ; => "hi"  (file then deleted)
+```
+
+A `with-X` macro for your own resource is a few lines:
+
+```scheme
+(defmacro with-thing (binding . body)
+  (let ((r (car binding)))
+    `(let ((,r (open-thing)))
+       (unwind-protect (begin ,@body) (close-thing ,r)))))
+```
+
 ### `handler-bind` and `restart-case`
 
 Restarts are named recovery points (Common-Lisp style). Unlike `guard` /

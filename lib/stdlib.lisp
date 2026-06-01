@@ -597,6 +597,55 @@
         (newline)
         (%debugger-list (cdr rs) (+ i 1)))))
 
+; zepo-qqzm: unwind-protect — run CLEANUP after BODY whether BODY returns
+; normally or raises. This is the foundation of the with-X resource convention:
+;   (let ((r (acquire)))
+;     (unwind-protect (use r) (release r)))
+; Built on guard, so CLEANUP runs on the error path (then the condition is
+; re-raised) and on the normal path. LIMITATION: Zepo has no continuations and
+; no VM-level unwind hook, so a restart that transfers control OUT of BODY (see
+; restart-case) bypasses CLEANUP. For ordinary acquire/use/release this is right.
+;;
+;; >>> (unwind-protect 42 'cleanup-ran)
+;; => 42
+(defmacro unwind-protect (body . cleanup)
+  (let ((res (gensym)) (exn (gensym)))
+    `(guard (,exn (#t ,@cleanup (raise ,exn)))
+       (let ((,res ,body))
+         ,@cleanup
+         ,res))))
+
+; zepo-qqzm: (with-output-string (p) body...) — bind P to a fresh string output
+; port for BODY (write to it with port-display / port-write) and return the
+; accumulated string.
+;
+;;
+;; >>> (with-output-string (p) (port-display p "x = ") (port-write p 42))
+;; => "x = 42"
+(defmacro with-output-string (binding . body)
+  (let ((p (car binding)))
+    `(let ((,p (open-output-string)))
+       ,@body
+       (get-output-string ,p))))
+
+; zepo-qqzm: (with-temp-file (path) body...) — create a unique empty temp file,
+; bind PATH to it for BODY, and delete it afterward (even if BODY raises).
+;;
+;; >>> (with-temp-file (p) (file-write-string p "hi") (file-read-string p))
+;; => "hi"
+(define (%temp-path)
+  (string-append "/tmp/zepo-"
+                 (number->string (getpid)) "-"
+                 (number->string (current-time-ms)) "-"
+                 (symbol->string (gensym "t"))))
+(defmacro with-temp-file (binding . body)
+  (let ((path (car binding)))
+    `(let ((,path (%temp-path)))
+       (file-write-string ,path "")
+       (unwind-protect
+         (begin ,@body)
+         (file-delete ,path)))))
+
 (define (%default-debugger cond)
   (let ((restarts (compute-restarts)))
     (if (null? restarts)
