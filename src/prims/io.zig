@@ -100,6 +100,10 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
             try out.appendSlice(allocator, "#<primitive>");
             return;
         }
+        if (objects.isParameter(v)) { // zepo-6o3p
+            try out.appendSlice(allocator, "#<parameter>");
+            return;
+        }
     }
     if (value_mod.isPtr(v) and objects.isForeign(v)) {
         const tag = objects.foreignTypeTag(v);

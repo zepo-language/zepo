@@ -28,6 +28,7 @@ pub const Kind = enum(u4) {
     hash_table = 11,
     bytevector = 12, // zepo-9qg
     fiber = 13, // zepo-4d6: fiber handle — body [status][result][fs_ptr]
+    parameter = 14, // zepo-6o3p: parameter object — body [default(Value)][converter(Value, NIL=none)]
     _,
 };
 

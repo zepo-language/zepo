@@ -41,6 +41,8 @@ const hash_table_offsets = [_]u16{1};
 // zepo-4d6: fiber handle body[1] = result (Value). body[0] = status (raw),
 // body[2] = FiberState pointer (raw, 0 once reaped).
 const fiber_offsets = [_]u16{1};
+// zepo-6o3p: parameter object body[0]=default value (Value), body[1]=converter (Value, NIL if none).
+const parameter_offsets = [_]u16{ 0, 1 };
 
 pub const LAYOUT_TABLE: [16]LayoutDesc = blk: {
     var t: [16]LayoutDesc = undefined;
@@ -166,6 +168,15 @@ pub const LAYOUT_TABLE: [16]LayoutDesc = blk: {
         .kind = .fiber,
         .body_words = 3,
         .value_offsets = &fiber_offsets,
+        .has_raw_tail = false,
+        .length_offset = 0,
+    };
+
+    // zepo-6o3p: parameter object. body[0]=default value (Value), body[1]=converter (Value, NIL if none).
+    t[@intFromEnum(Kind.parameter)] = .{
+        .kind = .parameter,
+        .body_words = 2,
+        .value_offsets = &parameter_offsets,
         .has_raw_tail = false,
         .length_offset = 0,
     };

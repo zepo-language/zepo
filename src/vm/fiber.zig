@@ -27,6 +27,17 @@ pub const HandlerFrame = struct {
     dst_reg: u16,
     resume_pc: u32,
     resume_func: *CompiledFn,
+    // zepo-6o3p: dynamic_stack length when this handler was installed, so a
+    // non-local exit through it truncates dynamic bindings established inside.
+    dynamic_depth: u32,
+};
+
+/// zepo-6o3p: one active dynamic (parameterize) binding. Top = most recent.
+/// `param` is the parameter object (matched by identity); `value` is the
+/// already-converted bound value. Lives per-fiber so parameters are fiber-local.
+pub const DynamicFrame = struct {
+    param: Value,
+    value: Value,
 };
 
 pub const FiberStatus = enum {
@@ -44,6 +55,8 @@ pub const FiberState = struct {
     call_stack: CallStack,
     /// zepo-9bi: per-fiber exception-handler stack. Top = most recent.
     handler_stack: std.ArrayListUnmanaged(HandlerFrame) = .empty,
+    /// zepo-6o3p: per-fiber dynamic (parameterize) binding stack. Top = most recent.
+    dynamic_stack: std.ArrayListUnmanaged(DynamicFrame) = .empty,
     status: FiberStatus,
     allocator: std.mem.Allocator,
     // zepo-i19: fibers blocked in (fiber-join) waiting for this fiber to finish.
@@ -73,6 +86,7 @@ pub const FiberState = struct {
         const alloc = fs.allocator;
         fs.call_stack.deinit();
         fs.handler_stack.deinit(alloc);
+        fs.dynamic_stack.deinit(alloc); // zepo-6o3p
         fs.waiters.deinit(alloc);
         alloc.destroy(fs);
     }

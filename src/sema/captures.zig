@@ -68,6 +68,13 @@ pub const CaptureAnalyzer = struct {
                 try c.walk(wh.handler);
                 for (wh.body) |bid| try c.walk(bid);
             },
+            .parameterize => |pz| {
+                // zepo-6o3p: params/inits/body all evaluate in the enclosing
+                // scope — parameterize introduces no lexical bindings.
+                for (pz.params) |pid| try c.walk(pid);
+                for (pz.inits) |iid| try c.walk(iid);
+                for (pz.body) |bid| try c.walk(bid);
+            },
         }
     }
 
@@ -308,6 +315,12 @@ pub const CaptureAnalyzer = struct {
                 // zepo-9bi: handler + inlined body both see the enclosing params.
                 try c.collectFree(wh.handler, params, free, mutated);
                 for (wh.body) |bid| try c.collectFree(bid, params, free, mutated);
+            },
+            .parameterize => |pz| {
+                // zepo-6o3p: no new lexical scope — everything sees enclosing params.
+                for (pz.params) |pid| try c.collectFree(pid, params, free, mutated);
+                for (pz.inits) |iid| try c.collectFree(iid, params, free, mutated);
+                for (pz.body) |bid| try c.collectFree(bid, params, free, mutated);
             },
         }
     }

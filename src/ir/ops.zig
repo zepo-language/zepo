@@ -139,6 +139,13 @@ pub const Op = union(enum) {
     push_handler: struct { handler: Reg, dst: Reg, resume_label: Label },
     pop_handler,
 
+    // zepo-6o3p: push one dynamic (parameterize) binding onto the fiber
+    // dynamic_stack. `param` must evaluate to a parameter object; `value` is
+    // the (pre-converter) bound value — the VM applies the parameter's
+    // converter at push time. pop_params discards `count` frames on body exit.
+    push_param: struct { param: Reg, value: Reg },
+    pop_params: struct { count: u16 },
+
     /// zepo-9bi: explicit register-to-register move. Needed by the
     /// with-handler lowering to land the body's last expression into the
     /// same register the handler writes to.

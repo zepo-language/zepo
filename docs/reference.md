@@ -608,6 +608,30 @@ Execute body only when condition is falsy.
   (do-more-work))
 ```
 
+### `parameterize`
+
+Dynamically bind one or more parameter objects (see
+[`make-parameter`](#make-parameter)) for the dynamic extent of the body, then
+restore the previous values on exit — including exit via `raise`.
+
+```scheme
+(define p (make-parameter 10))
+(p)                              ; => 10  (default)
+(parameterize ((p 20)) (p))      ; => 20
+(p)                              ; => 10  (restored)
+
+; multiple bindings
+(define a (make-parameter 1))
+(define b (make-parameter 2))
+(parameterize ((a 10) (b 20)) (+ (a) (b)))   ; => 30
+```
+
+Bindings are **fiber-local**: a value parameterized in one fiber is invisible
+to others. Value expressions are evaluated in the outer dynamic environment
+*before* the new bindings are installed (R7RS order). A non-local exit out of
+the body (e.g. `raise` caught by an enclosing `guard`) unwinds the bindings,
+so the handler sees the restored values.
+
 ### `defmacro`
 
 Define a macro — a compile-time code transformer.
@@ -1378,6 +1402,35 @@ formatted output or building strings.
 (call-with-values producer (lambda (a b c) (+ a b c)))
 ; => 60
 ```
+
+### Parameter objects
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `make-parameter` | 1–2 | `(make-parameter init [converter])` → a fiber-local parameter object |
+
+A parameter object is itself a procedure:
+
+- `(p)` returns its current dynamic value — the most recent
+  [`parameterize`](#parameterize) binding in the current fiber, or its default.
+- `(p v)` sets the current binding's value (or the default if none is active).
+
+If a `converter` procedure is supplied, it is applied to the initial value and
+to every value subsequently bound via `parameterize` or `(p v)`.
+
+```scheme
+(define radix (make-parameter 10))
+(radix)                                   ; => 10
+(parameterize ((radix 16)) (radix))       ; => 16
+(radix)                                   ; => 10
+
+; converter coerces every bound value
+(define level (make-parameter 0 (lambda (x) (max 0 x))))
+(parameterize ((level -5)) (level))       ; => 0
+```
+
+See [`parameterize`](#parameterize) for the binding form and its
+fiber-local / unwind semantics.
 
 ### Error
 

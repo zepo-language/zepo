@@ -288,6 +288,8 @@ fn computeMaxReg(f: *Function) Reg {
             .eq_p => |x| { upd.go(x.dst, &max_r); upd.go(x.src1, &max_r); upd.go(x.src2, &max_r); },
             .push_handler => |x| { upd.go(x.handler, &max_r); upd.go(x.dst, &max_r); },
             .pop_handler => {},
+            .push_param => |x| { upd.go(x.param, &max_r); upd.go(x.value, &max_r); }, // zepo-6o3p
+            .pop_params => {}, // zepo-6o3p
             .move => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
             .branch, .label, .safepoint => {},
         }
@@ -554,6 +556,9 @@ const FnEmit = struct {
                 try c.emitInstr(0);
             },
             .pop_handler => try c.emitInstr(bytecode.encode(.POP_HANDLER, 0, 0, 0)),
+            // zepo-6o3p: dynamic binding push/pop.
+            .push_param => |x| try c.emitInstr(bytecode.encode(.PUSH_PARAM, c.phys(x.param), c.phys(x.value), 0)),
+            .pop_params => |x| try c.emitInstr(bytecode.encodeBC(.POP_PARAMS, 0, x.count)),
             .move => |x| try c.emitInstr(bytecode.encode(.MOVE, c.phys(x.dst), c.phys(x.src), 0)),
             .label => |x| {
                 try c.label_positions.put(x.id, c.currentPc());

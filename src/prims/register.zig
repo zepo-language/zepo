@@ -83,6 +83,7 @@ const TABLE: []const Entry = &.{
 
     make("not", 1, apply_mod.primNot),
     make("apply", -1, apply_mod.primApply),
+    make("make-parameter", -1, apply_mod.primMakeParameter), // zepo-6o3p (arity 1..2 checked in prim)
     make("eval", 1, eval_prim.primEval), // zepo-ksw
     make("read-from-string", 1, eval_prim.primReadFromString), // zepo-dheb
     make("%set-binding-doc!", 2, eval_prim.primSetBindingDoc), // zepo-uney

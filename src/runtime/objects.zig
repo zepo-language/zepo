@@ -111,6 +111,39 @@ pub fn boxSet(gc: *GC, v: Value, new_val: Value) void {
     slot.* = new_val;
 }
 
+// -------------------- Parameter --------------------
+// zepo-6o3p: R7RS parameter object. Body: [default(Value)][converter(Value, NIL=none)].
+// The current dynamic value never lives here — it lives on the per-fiber
+// dynamic_stack so parameters are fiber-local. This object holds only the
+// fallback default and the optional converter procedure.
+
+pub fn makeParameter(gc: *GC, default_val: Value, converter: Value) !Value {
+    var scope = gc_mod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const dv = scope.push(default_val);
+    const cv = scope.push(converter);
+    const h = try gc.alloc(.parameter, 2);
+    storeValue(gc, h, bodyValueSlot(h, 0), dv.*);
+    storeValue(gc, h, bodyValueSlot(h, 1), cv.*);
+    return value_mod.fromPtr(h);
+}
+
+pub fn parameterDefault(v: Value) Value {
+    return bodyValueSlot(value_mod.ptrVal(v), 0).*;
+}
+
+pub fn parameterConverter(v: Value) Value {
+    return bodyValueSlot(value_mod.ptrVal(v), 1).*;
+}
+
+pub fn setParameterDefault(gc: *GC, v: Value, new_val: Value) void {
+    const h = value_mod.ptrVal(v);
+    const slot = bodyValueSlot(h, 0);
+    gc.writeBarrier(h, slot, new_val);
+    slot.* = new_val;
+}
+
 // -------------------- String --------------------
 // Body: [len: u64][bytes padded to word boundary]
 
@@ -484,11 +517,14 @@ pub fn isEnvFrame(v: Value) bool {
 pub fn isBytevector(v: Value) bool { // zepo-9qg
     return isKind(v, .bytevector);
 }
+pub fn isParameter(v: Value) bool { // zepo-6o3p
+    return isKind(v, .parameter);
+}
 
 pub fn isNumber(v: Value) bool {
     return value_mod.isFixnum(v) or isFloat(v);
 }
 
 pub fn isProcedure(v: Value) bool {
-    return isClosure(v) or isPrim(v);
+    return isClosure(v) or isPrim(v) or isParameter(v); // zepo-6o3p: parameters are callable
 }

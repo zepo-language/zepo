@@ -120,6 +120,11 @@ pub const VM = struct {
     // fibers' copies are in their FiberState.
     handler_stack: std.ArrayListUnmanaged(fiber_mod.HandlerFrame) = .empty,
     main_handler_snapshot: std.ArrayListUnmanaged(fiber_mod.HandlerFrame) = .empty,
+    // zepo-6o3p: per-fiber dynamic (parameterize) binding stack. Swapped in/out
+    // with call_stack/handler_stack by the scheduler exactly like handler_stack;
+    // the main fiber's saved copy is in main_dynamic_snapshot.
+    dynamic_stack: std.ArrayListUnmanaged(fiber_mod.DynamicFrame) = .empty,
+    main_dynamic_snapshot: std.ArrayListUnmanaged(fiber_mod.DynamicFrame) = .empty,
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -182,6 +187,8 @@ pub const VM = struct {
         // zepo-9bi: free handler-stack storage (both active and snapshot).
         vm.handler_stack.deinit(vm.allocator);
         vm.main_handler_snapshot.deinit(vm.allocator);
+        vm.dynamic_stack.deinit(vm.allocator); // zepo-6o3p
+        vm.main_dynamic_snapshot.deinit(vm.allocator); // zepo-6o3p
         // zepo-4yr: free all spawned fiber states. zepo-4d6: skip reaped (null) slots.
         for (vm.fibers.items) |maybe_fs| if (maybe_fs) |fs| fs.deinit();
         vm.fibers.deinit(vm.allocator);
@@ -236,6 +243,27 @@ pub const VM = struct {
             const fs = maybe_fs orelse continue;
             visitCallStack(&fs.call_stack, visitor, visitor_ctx);
             visitor(visitor_ctx, &fs.handle);
+        }
+        // zepo-6o3p: dynamic (parameterize) bindings. Unlike handler_stack —
+        // whose handler closures are always reachable through registers — a
+        // parameterized value can be held ONLY by its dynamic frame, so these
+        // MUST be traced or a GC mid-extent frees it. vm.dynamic_stack is the
+        // active fiber's; main_dynamic_snapshot is the suspended main fiber's;
+        // each fs.dynamic_stack is a suspended spawned fiber's. The three sets
+        // are disjoint (the active fiber's fs copy is empty after swap-out).
+        const visitDynStack = struct {
+            fn call(ds: *const std.ArrayListUnmanaged(fiber_mod.DynamicFrame), vis: @import("../gc/roots.zig").RootVisitor, vis_ctx: *anyopaque) void {
+                for (ds.items) |*frame| {
+                    vis(vis_ctx, &frame.param);
+                    vis(vis_ctx, &frame.value);
+                }
+            }
+        }.call;
+        visitDynStack(&vm.dynamic_stack, visitor, visitor_ctx);
+        visitDynStack(&vm.main_dynamic_snapshot, visitor, visitor_ctx);
+        for (vm.fibers.items) |maybe_fs| {
+            const fs = maybe_fs orelse continue;
+            visitDynStack(&fs.dynamic_stack, visitor, visitor_ctx);
         }
         visitor(visitor_ctx, &vm.raised_val);
         // zepo-oju: channel buf/send_waiters hold ChannelValue (non-GC) — no tracing needed.
@@ -916,6 +944,10 @@ pub const VM = struct {
                         func = tgt;
                         pc = 0;
                         code = func.code;
+                    } else if (objects.isParameter(fn_val)) {
+                        // zepo-6o3p: parameter read/mutate — no frame push.
+                        const pv = try vm.paramApply(fn_val, args_slice);
+                        vm.call_stack.reg(a).* = pv;
                     } else {
                         return error.TypeError;
                     }
@@ -1001,6 +1033,18 @@ pub const VM = struct {
                         }
                         if (at_outermost) return DispatchResult{ .value = v };
                         // zepo-5wg: non-outermost prim tail call — pop, write result.
+                        const dst = vm.call_stack.currentFrame().dst_reg;
+                        _ = vm.call_stack.pop();
+                        func = vm.call_stack.currentFrame().func;
+                        pc = vm.call_stack.currentFrame().pc;
+                        code = func.code;
+                        vm.call_stack.reg(dst).* = v;
+                        continue;
+                    }
+                    if (objects.isParameter(fn_val)) {
+                        // zepo-6o3p: parameter in tail position.
+                        const v = try vm.paramApply(fn_val, tc_args_buf[0..b]);
+                        if (at_outermost) return DispatchResult{ .value = v };
                         const dst = vm.call_stack.currentFrame().dst_reg;
                         _ = vm.call_stack.pop();
                         func = vm.call_stack.currentFrame().func;
@@ -1419,6 +1463,7 @@ pub const VM = struct {
                         .dst_reg = dst_reg,
                         .resume_pc = resume_pc,
                         .resume_func = func,
+                        .dynamic_depth = @intCast(vm.dynamic_stack.items.len), // zepo-6o3p
                     });
                 },
                 .POP_HANDLER => {
@@ -1427,6 +1472,28 @@ pub const VM = struct {
                     // a compiler bug, but tolerate it in release builds.
                     if (vm.handler_stack.items.len > 0)
                         _ = vm.handler_stack.pop();
+                },
+                // zepo-6o3p: install one dynamic (parameterize) binding.
+                .PUSH_PARAM => {
+                    const a = bytecode.decodeA(instr);
+                    const b = bytecode.decodeB(instr);
+                    if (!objects.isParameter(vm.call_stack.reg(a).*)) return error.TypeError;
+                    const conv = objects.parameterConverter(vm.call_stack.reg(a).*);
+                    // Pass the live register window (a GC root, never realloc'd)
+                    // to callValue so a GC inside the converter can't strand the
+                    // arg. Re-read param afterwards in case the GC moved it.
+                    const v: Value = if (!value_mod.isNil(conv))
+                        try vm.callValue(conv, vm.call_stack.reg(b)[0..1])
+                    else
+                        vm.call_stack.reg(b).*;
+                    try vm.dynamic_stack.append(vm.allocator, .{ .param = vm.call_stack.reg(a).*, .value = v });
+                },
+                // zepo-6o3p: discard the top `count` dynamic bindings on normal exit.
+                .POP_PARAMS => {
+                    const count = bytecode.decodeBC(instr);
+                    var k: u16 = 0;
+                    while (k < count and vm.dynamic_stack.items.len > 0) : (k += 1)
+                        _ = vm.dynamic_stack.pop();
                 },
             }
         }
@@ -1506,6 +1573,11 @@ pub const VM = struct {
         while (vm.call_stack.frames.items.len > hf.frame_depth) {
             _ = vm.call_stack.pop();
         }
+        // zepo-6o3p: discard dynamic (parameterize) bindings established inside
+        // the protected body — they are out of dynamic extent once we escape.
+        while (vm.dynamic_stack.items.len > hf.dynamic_depth) {
+            _ = vm.dynamic_stack.pop();
+        }
 
         // Caller frame resumes at the handler's resume_pc with the
         // function it was compiled in (so cross-fn tail calls inside the
@@ -1539,6 +1611,37 @@ pub const VM = struct {
     }
 
     /// Invoke a callable Value (closure or prim) with the given args.
+    /// zepo-6o3p: apply a parameter object. `(p)` reads the current dynamic
+    /// value (most recent matching frame on this fiber's dynamic_stack, else
+    /// the object's default). `(p v)` converts v and overwrites the topmost
+    /// matching binding, or the default if no binding is active.
+    pub fn paramApply(vm: *VM, p: Value, args: []const Value) LispError!Value {
+        if (args.len == 0) {
+            var i = vm.dynamic_stack.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (vm.dynamic_stack.items[i].param == p) return vm.dynamic_stack.items[i].value;
+            }
+            return objects.parameterDefault(p);
+        }
+        if (args.len == 1) {
+            var nv = args[0];
+            const conv = objects.parameterConverter(p);
+            if (!value_mod.isNil(conv)) nv = try vm.callValue(conv, args[0..1]);
+            var i = vm.dynamic_stack.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (vm.dynamic_stack.items[i].param == p) {
+                    vm.dynamic_stack.items[i].value = nv;
+                    return nv;
+                }
+            }
+            objects.setParameterDefault(vm.gc, p, nv);
+            return nv;
+        }
+        return error.ArityMismatch;
+    }
+
     pub fn callValue(vm: *VM, fn_val: Value, args: []const Value) LispError!Value {
         if (objects.isClosure(fn_val)) {
             const fn_id = objects.closureCodePtr(fn_val);
@@ -1551,6 +1654,7 @@ pub const VM = struct {
             const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
             return pfn(vm, args);
         }
+        if (objects.isParameter(fn_val)) return vm.paramApply(fn_val, args); // zepo-6o3p
         return error.TypeError;
     }
 };
