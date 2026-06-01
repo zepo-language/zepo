@@ -544,3 +544,40 @@
          ,@(cdr var-and-clauses)
          (else (raise ,(car var-and-clauses)))))
      (lambda () ,@body)))
+
+; zepo-rdan: advice / wrapper convention.
+;
+; (advise 'name wrapper) replaces the global function bound to `name` with a
+; wrapper. The wrapper is called as (wrapper orig arg ...), where `orig` is the
+; function that was bound just before this advise — invoke it with
+; (apply orig args). Advice stacks; (unadvise 'name) restores the original
+; (pre-advice) function and drops all advice on it.
+;
+;   (advise 'http-get
+;     (lambda (orig . args)
+;       (log "fetching" (car args))
+;       (apply orig args)))
+;   (unadvise 'http-get)
+;
+; advise MUTATES the global binding, so it is best for REPL / debugging /
+; instrumentation. For cross-cutting concerns in library code, prefer a
+; parameterize'd hook instead (a make-parameter holding the hook, switched on
+; for a dynamic extent) — that composes and is fiber-local. See the language
+; reference ("Advice and dynamic hooks") for the production idiom.
+(define *advice-originals* (make-hash-table))
+
+(define (advise name wrapper)
+  (unless (hash-contains? *advice-originals* name)
+    (hash-set! *advice-originals* name (%global-ref name)))
+  (let ((current (%global-ref name)))
+    (%global-set! name (lambda args (apply wrapper current args))))
+  name)
+
+(define (unadvise name)
+  (when (hash-contains? *advice-originals* name)
+    (%global-set! name (hash-get *advice-originals* name))
+    (hash-delete! *advice-originals* name))
+  name)
+
+(define (advised? name)
+  (hash-contains? *advice-originals* name))
