@@ -628,9 +628,10 @@ pub const Builder = struct {
             return BuildError.InvalidSpecialForm;
         }
 
-        if (rest_param != null and kw_params.items.len > 0) {
-            return BuildError.InvalidSpecialForm;
-        }
+        // zepo-iv6k: a rest param MAY now combine with #:keyword params — the
+        // rest param captures the UNKNOWN keyword pairs (a flat plist) so a
+        // function can handle some keys and forward the rest. (Previously this
+        // combination was rejected.)
 
         // zepo-uney: peel optional :documentation "..." before body collection
         const peeled = try peelDocumentation(b.arena, body_form);
@@ -765,9 +766,7 @@ pub const Builder = struct {
                 }
             }
 
-            if (rest_param != null and kw_params.items.len > 0) {
-                return BuildError.InvalidSpecialForm;
-            }
+            // zepo-iv6k: rest + #:keyword params now allowed (see above).
 
             // zepo-uney: shorthand define-with-params: peel docstring from
             // body before collecting body forms.
