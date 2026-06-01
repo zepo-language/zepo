@@ -312,7 +312,9 @@ fn realMain() !void {
         try run_cmd.runRun(&ctx, alloc, args[cmd_start + 1 ..]);
     } else if (std.mem.eql(u8, interp_arg, "test")) {
         zepo.prims.io.program_argv = args[cmd_start + 1 ..];
-        try test_cmd.runTest(&ctx, alloc, args[cmd_start + 1 ..]);
+        // zepo-qp1o: args[0] is this binary's path, used to re-exec one child
+        // per file for full isolation in discovery mode.
+        try test_cmd.runTest(&ctx, alloc, args[0], args[cmd_start + 1 ..]);
     } else {
         // Direct file: zepo script.lisp arg1 arg2
         zepo.prims.io.program_argv = args[cmd_start..];

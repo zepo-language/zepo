@@ -6,6 +6,12 @@ const ProjectConfig = @import("project_config.zig").ProjectConfig;
 extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
 extern "c" fn ftell(stream: *std.c.FILE) c_long;
 
+// zepo-qp1o: re-exec one child per file in discovery mode (full isolation).
+extern "c" fn fork() c_int;
+extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+extern "c" fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
+extern "c" fn _exit(code: c_int) noreturn;
+
 fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     var pbuf: [4096]u8 = undefined;
     if (path.len >= pbuf.len) return null;
@@ -34,7 +40,7 @@ fn writeStderr(bytes: []const u8) void {
     _ = std.c.write(2, bytes.ptr, bytes.len);
 }
 
-pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_args: []const []const u8) !void {
+pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, self_path: []const u8, test_args: []const []const u8) !void {
     // Load project.lisp for module paths and test-dir (optional).
     var cfg_opt = ProjectConfig.loadOptional(alloc);
     defer if (cfg_opt) |*c| c.deinit();
@@ -97,10 +103,15 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
         }
     }.lt);
 
+    // zepo-qp1o: run each file in a FRESH child process (`<self> test <file>`).
+    // Files used to share one EvalContext, so two files importing different test
+    // modules (test vs testing) collided on overlapping export names, and the
+    // frameworks' mutable *tests* registries leaked across files. A subprocess
+    // gives each file a pristine interpreter — the only fully-correct isolation.
     var passed: usize = 0;
     var failed: usize = 0;
     for (files.items) |f| {
-        if (runFile(ctx, alloc, f)) {
+        if (runFileIsolated(alloc, self_path, f)) {
             passed += 1;
         } else {
             failed += 1;
@@ -112,6 +123,33 @@ pub fn runTest(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, test_ar
     writeStdout(summary);
 
     if (failed > 0) std.process.exit(1);
+}
+
+// zepo-qp1o: run one test file in a fresh child process: `<self> test <path>`.
+// The child takes the single-file path in runTest (runs it in-process, then
+// exits 0/1). Child stdout/stderr are inherited, so its PASS/FAIL/Summary lines
+// stream through; the parent only needs the exit status. Env (ZEPO_PATH) and
+// cwd are inherited across fork, so module resolution and relative paths work.
+fn runFileIsolated(alloc: std.mem.Allocator, self_path: []const u8, path: []const u8) bool {
+    const self_z = alloc.dupeZ(u8, self_path) catch return false;
+    defer alloc.free(self_z);
+    const test_z = alloc.dupeZ(u8, "test") catch return false;
+    defer alloc.free(test_z);
+    const path_z = alloc.dupeZ(u8, path) catch return false;
+    defer alloc.free(path_z);
+
+    var argv = [_]?[*:0]const u8{ self_z.ptr, test_z.ptr, path_z.ptr, null };
+    const pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        _ = execvp(self_z.ptr, @ptrCast(&argv));
+        _exit(127); // execvp only returns on error
+    }
+    var status: c_int = 0;
+    _ = waitpid(pid, &status, 0);
+    // Normal exit with code 0 → file passed. (status & 0x7f) == 0 means exited
+    // (not signalled); high byte holds the exit code.
+    return (status & 0x7f) == 0 and ((status >> 8) & 0xff) == 0;
 }
 
 fn runFile(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, path: []const u8) bool {
