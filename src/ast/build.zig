@@ -143,6 +143,8 @@ pub const Builder = struct {
             if (std.mem.eql(u8, name, "with-exception-handler")) {
                 if (try b.tryBuildWithHandler(pair)) |node| return node;
             }
+            // zepo-6o3p: parameterize is always a special form (no fallback).
+            if (std.mem.eql(u8, name, "parameterize")) return b.buildParameterize(pair);
             // module/import/export are top-level-only forms handled by the
             // evaluation driver before the builder runs. Encountering one
             // here means it was nested inside another expression.
@@ -900,6 +902,47 @@ pub const Builder = struct {
         return try b.arena.add(.{ .with_handler = .{
             .handler = handler_id,
             .body = body_owned,
+            .span = b.current_span,
+        } });
+    }
+
+    // zepo-6o3p: (parameterize ((p1 v1) (p2 v2) ...) body...)
+    fn buildParameterize(b: *Builder, pair: Value) BuildError!NodeId {
+        const rest = objects.pairCdr(pair).*;
+        if (!objects.isPair(rest)) return BuildError.InvalidSpecialForm;
+        const bindings_form = objects.pairCar(rest).*;
+        const body_form = objects.pairCdr(rest).*;
+
+        var params = std.ArrayListUnmanaged(NodeId).empty;
+        defer params.deinit(b.allocator);
+        var inits = std.ArrayListUnmanaged(NodeId).empty;
+        defer inits.deinit(b.allocator);
+
+        var cur = bindings_form;
+        while (!value_mod.isNil(cur)) {
+            if (!objects.isPair(cur)) return BuildError.InvalidSpecialForm;
+            const binding = objects.pairCar(cur).*;
+            if (!objects.isPair(binding)) return BuildError.InvalidSpecialForm;
+            const p_form = objects.pairCar(binding).*;
+            const bind_rest = objects.pairCdr(binding).*;
+            if (!objects.isPair(bind_rest)) return BuildError.InvalidSpecialForm;
+            const v_form = objects.pairCar(bind_rest).*;
+            // exactly (param value) — reject (param) or (param v extra)
+            if (!value_mod.isNil(objects.pairCdr(bind_rest).*)) return BuildError.InvalidSpecialForm;
+            try params.append(b.allocator, try b.buildExpr(p_form));
+            try inits.append(b.allocator, try b.buildExpr(v_form));
+            cur = objects.pairCdr(cur).*;
+        }
+
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
+        defer body_ids.deinit(b.allocator);
+        try b.collectBody(body_form, &body_ids);
+        if (body_ids.items.len == 0) return BuildError.InvalidSpecialForm;
+
+        return b.arena.add(.{ .parameterize = .{
+            .params = try b.arena.dupNodeIds(params.items),
+            .inits = try b.arena.dupNodeIds(inits.items),
+            .body = try b.arena.dupNodeIds(body_ids.items),
             .span = b.current_span,
         } });
     }

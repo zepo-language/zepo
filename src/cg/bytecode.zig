@@ -94,6 +94,11 @@ pub const Opcode = enum(u8) {
     // POP_HANDLER discards the topmost handler frame on normal body exit.
     PUSH_HANDLER,
     POP_HANDLER,
+    // zepo-6o3p: dynamic (parameterize) bindings on the fiber dynamic_stack.
+    //   PUSH_PARAM: A=param_reg, B=value_reg — converts value, pushes a frame.
+    //   POP_PARAMS: BC=count — discards the top `count` dynamic frames.
+    PUSH_PARAM,
+    POP_PARAMS,
 };
 
 pub const Instr = u32;

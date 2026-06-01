@@ -217,6 +217,11 @@ const ScopeWalker = struct {
                 try self.walk(wh.handler);
                 for (wh.body) |bid| try self.walk(bid);
             },
+            .parameterize => |pz| { // zepo-6o3p
+                for (pz.params) |pid| try self.walk(pid);
+                for (pz.inits) |iid| try self.walk(iid);
+                for (pz.body) |bid| try self.walk(bid);
+            },
             .lambda => |la| {
                 var range: ScopeRange = .{
                     .body_start = la.span.start.offset,

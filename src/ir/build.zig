@@ -180,6 +180,7 @@ pub const Compiler = struct {
                 break :blk r;
             },
             .with_handler => |wh| c.lowerWithHandler(ctx, wh.handler, wh.body, tail),
+            .parameterize => |pz| c.lowerParameterize(ctx, pz.params, pz.inits, pz.body, tail),
         };
     }
 
@@ -231,6 +232,62 @@ pub const Compiler = struct {
         try ctx.func.emit(.{ .label = .{ .id = resume_lbl } });
         // Handler's RETURN already wrote the result into dst; nothing to do.
         try ctx.func.emit(.{ .label = .{ .id = end_lbl } });
+        return dst;
+    }
+
+    /// zepo-6o3p: lower (parameterize ((p1 v1) (p2 v2) ...) body...).
+    /// Emitted shape (pseudocode):
+    ///   eval v1 -> rv1 ; eval v2 -> rv2 ; ...   (all values first, R7RS order)
+    ///   eval p1 -> rp1 ; PUSH_PARAM rp1, rv1
+    ///   eval p2 -> rp2 ; PUSH_PARAM rp2, rv2
+    ///   <body — last expr writes to dst>
+    ///   POP_PARAMS count=N
+    /// Like with-handler, `tail` is ignored: POP_PARAMS must fire on the way
+    /// out, so we cannot tail-call out of the body. The VM applies each
+    /// parameter's converter at PUSH_PARAM time.
+    fn lowerParameterize(c: *Compiler, ctx: *FnCtx, params: []const NodeId, inits: []const NodeId, body: []const NodeId, tail: bool) anyerror!Reg {
+        _ = tail;
+        std.debug.assert(params.len == inits.len);
+
+        // dst holds the body result; allocate first so the reclaim below
+        // (which frees the value/param scratch) never touches it.
+        const dst = ctx.freshReg();
+
+        // Evaluate every value expression first, in the OUTER dynamic
+        // environment, before any binding is installed (R7RS evaluation
+        // order). Keep their result registers live until pushed.
+        var value_regs = std.ArrayListUnmanaged(Reg).empty;
+        defer value_regs.deinit(ctx.allocator);
+        for (inits) |iid| {
+            try value_regs.append(ctx.allocator, try c.lowerNode(ctx, iid));
+        }
+
+        // Evaluate each parameter expression and install its binding.
+        for (params, 0..) |pid, i| {
+            const param_reg = try c.lowerNode(ctx, pid);
+            try ctx.func.emit(.{ .push_param = .{ .param = param_reg, .value = value_regs.items[i] } });
+        }
+
+        // Reclaim the value/param scratch registers — they are dead once the
+        // bindings live on the runtime dynamic_stack. dst (< all of them) and
+        // the bindings themselves survive.
+        ctx.next_reg = dst + 1;
+        const saved_reg = ctx.next_reg;
+
+        if (body.len == 0) {
+            try ctx.func.emit(.{ .load_nil = .{ .dst = dst } });
+        } else {
+            for (body[0 .. body.len - 1]) |bid| {
+                _ = try c.lowerNode(ctx, bid);
+                ctx.next_reg = saved_reg; // discard intermediate results
+            }
+            const last_r = try c.lowerNode(ctx, body[body.len - 1]);
+            if (last_r != dst) {
+                try ctx.func.emit(.{ .move = .{ .dst = dst, .src = last_r } });
+            }
+        }
+
+        try ctx.func.emit(.{ .pop_params = .{ .count = @intCast(params.len) } });
         return dst;
     }
 

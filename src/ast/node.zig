@@ -107,6 +107,16 @@ pub const Node = union(enum) {
         body: []NodeId,
         span: Span,
     },
+    /// zepo-6o3p: (parameterize ((p1 v1) (p2 v2) ...) body...). `params` and
+    /// `inits` are parallel arrays (same length); each (pi vi) installs a
+    /// dynamic binding for the extent of body. Compiles to PUSH_PARAM ...
+    /// POP_PARAMS so yields/raises inside body unwind the bindings correctly.
+    parameterize: struct {
+        params: []NodeId,
+        inits: []NodeId,
+        body: []NodeId,
+        span: Span,
+    },
 };
 
 pub const ImportSelection = union(enum) {

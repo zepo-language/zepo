@@ -19,6 +19,22 @@ pub fn primNot(vm: *VM, args: []const Value) LispError!Value {
     return if (value_mod.isFalsy(args[0])) value_mod.TRUE else value_mod.FALSE;
 }
 
+// zepo-6o3p: (make-parameter init) or (make-parameter init converter).
+// Returns a fiber-local parameter object. The converter, if supplied, is
+// applied to the initial value (and to every value bound via parameterize).
+pub fn primMakeParameter(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len < 1 or args.len > 2) return error.ArityMismatch;
+    if (args.len == 1) {
+        return objects.makeParameter(vm.gc, args[0], value_mod.NIL) catch error.OutOfMemory;
+    }
+    if (!objects.isProcedure(args[1])) return error.TypeError;
+    const initial = try vm.callValue(args[1], args[0..1]);
+    // Re-read the converter from args (the live register window, a GC root)
+    // in case callValue triggered a GC that moved it. makeParameter roots
+    // both values internally across its own allocation.
+    return objects.makeParameter(vm.gc, initial, args[1]) catch error.OutOfMemory;
+}
+
 pub fn primApply(vm: *VM, args: []const Value) LispError!Value {
     if (args.len < 2) return error.ArityMismatch;
     const proc = args[0];
@@ -50,6 +66,7 @@ pub fn primApply(vm: *VM, args: []const Value) LispError!Value {
         const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
         return vm.execFn(tgt, proc, buf[0..n]);
     }
+    if (objects.isParameter(proc)) return vm.paramApply(proc, buf[0..n]); // zepo-6o3p
     // Prim.
     const raw = objects.primFnPtr(proc);
     const pfn: vm_mod.PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
@@ -74,6 +91,7 @@ fn callProc(vm: *VM, proc: Value, call_args: []const Value) LispError!Value {
         const tgt = vm.compiled_fns[@intCast(fn_id)]; // zepo-nhl
         return vm.execFn(tgt, proc, call_args);
     }
+    if (objects.isParameter(proc)) return vm.paramApply(proc, call_args); // zepo-6o3p
     const raw = objects.primFnPtr(proc);
     const pfn: vm_mod.PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
     return pfn(vm, call_args);
