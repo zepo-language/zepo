@@ -283,12 +283,20 @@ pub fn primError(vm: *VM, args: []const Value) LispError!Value {
         if (vm.error_msg) |old| vm.allocator.free(old);
         vm.error_msg = vm.allocator.dupe(u8, objects.stringBytes(msg_val)) catch null;
     }
+    // zepo-g120: run handler-bind (non-unwinding) handlers in place first; a
+    // transfer (invoke-restart / inner unwinding handler) escapes here. If they
+    // all decline, fall through to the unwinding-handler path via UserError.
+    // Do NOT reset signal_floor here — a raise from inside a running handler is
+    // a nested signal and must skip the active handler (signal saves/restores
+    // the floor; tryHandle resets it to 0 when it finally consumes the error).
+    try vm.signal(condition);
     return error.UserError;
 }
 
 pub fn primRaise(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     vm.raised_val = args[0];
+    try vm.signal(args[0]); // run handler-bind handlers in place (see primError)
     return error.UserError;
 }
 
@@ -308,6 +316,9 @@ pub fn primWithExceptionHandler(vm: *VM, args: []const Value) LispError!Value {
         // logic ONLY for actual user errors, so the scheduler sees its
         // own signal cleanly.)
         if (err == error.FiberYielded) return err;
+        // zepo-g120: RestartInvoked is an internal restart transfer — must
+        // reach the dispatch trampoline untouched, never invoke this handler.
+        if (err == error.RestartInvoked) return err;
         // execFn leaves the failed frame on the call stack for diagnostics;
         // unwind back to the pre-thunk depth before invoking the handler so
         // that currentFrame() points at the correct outer frame.

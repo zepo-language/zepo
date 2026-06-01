@@ -87,6 +87,10 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
         };
     }
 
+    // zepo-g120: install the interactive restart debugger for this REPL session
+    // (non-interactive runs never set it, so they print errors as before).
+    _ = ctx.evalString("(%set-debugger-hook! %default-debugger)", "<repl-init>") catch {};
+
     // History file: ~/.zepo_history
     const hist_path: ?[]const u8 = blk: {
         const home = std.mem.span(std.c.getenv("HOME") orelse break :blk null);

@@ -99,6 +99,11 @@ pub const Opcode = enum(u8) {
     //   POP_PARAMS: BC=count — discards the top `count` dynamic frames.
     PUSH_PARAM,
     POP_PARAMS,
+    // zepo-g120: restarts (restart-case) on the fiber restart_stack.
+    //   PUSH_RESTART: 3-word. word1=[op][clause_fn_reg][dst_reg]; word2=resume_pc
+    //   (u32); word3=name_reg | (report_reg<<8). POP_RESTARTS: BC=count.
+    PUSH_RESTART,
+    POP_RESTARTS,
 };
 
 pub const Instr = u32;

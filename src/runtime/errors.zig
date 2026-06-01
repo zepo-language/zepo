@@ -36,6 +36,11 @@ pub const LispError = error{
     // zepo-0bo: used internally to signal a cooperative fiber yield through
     // the Zig error path. Not catchable by user-level (guard ...).
     FiberYielded,
+    // zepo-g120: internal control-flow signal raised by (invoke-restart ...).
+    // Carries no payload in the error itself — vm.pending_restart holds the
+    // target restart frame + args. Caught by the dispatch trampoline, which
+    // performs the transfer into the restart-case. Not user-catchable.
+    RestartInvoked,
 };
 
 pub const RuntimeError = struct {

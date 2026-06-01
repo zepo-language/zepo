@@ -125,6 +125,28 @@ pub const VM = struct {
     // the main fiber's saved copy is in main_dynamic_snapshot.
     dynamic_stack: std.ArrayListUnmanaged(fiber_mod.DynamicFrame) = .empty,
     main_dynamic_snapshot: std.ArrayListUnmanaged(fiber_mod.DynamicFrame) = .empty,
+    // zepo-g120: per-fiber restart (restart-case) stack, swapped like the
+    // handler/dynamic stacks; main fiber's saved copy in main_restart_snapshot.
+    restart_stack: std.ArrayListUnmanaged(fiber_mod.RestartFrame) = .empty,
+    main_restart_snapshot: std.ArrayListUnmanaged(fiber_mod.RestartFrame) = .empty,
+    // zepo-g120: exclusive upper bound of handlers visible to the current
+    // `signal` walk. handler_stack index 0 is the OUTERMOST handler, so while a
+    // binding handler at index i runs, a nested raise must see only outer
+    // handlers (index < i) — signal sets the ceiling to i for that extent.
+    // maxInt means "all handlers" (fresh signal). signal saves/restores it.
+    signal_ceiling: usize = std.math.maxInt(usize),
+    // zepo-g120: set by (invoke-restart ...) before it returns error.RestartInvoked;
+    // the dispatch trampoline reads it to perform the transfer. Rooted in
+    // vmRootVisit while non-null.
+    pending_restart: ?fiber_mod.RestartFrame = null,
+    pending_restart_args: std.ArrayListUnmanaged(Value) = .empty,
+    // zepo-g120: last-resort debugger, invoked in place by `signal` when a
+    // condition reaches the bottom with no active handler (REPL sets it via
+    // %set-debugger-hook!). Runs at the signal site so restarts are still live;
+    // may invoke-restart (transfer) or return to decline (→ propagate). NIL =
+    // none (non-interactive runs). GC-rooted in vmRootVisit.
+    debugger_hook: Value = value_mod.NIL,
+    in_debugger: bool = false, // zepo-g120: re-entrancy guard for debugger_hook
     /// The GC is informed of live VM registers via a root-visitor callback
     /// registered in `installAsRoot`. The callback (`vmRootVisit`) walks only
     /// the active frame windows in `call_stack.regs`. We pre-reserve
@@ -189,6 +211,9 @@ pub const VM = struct {
         vm.main_handler_snapshot.deinit(vm.allocator);
         vm.dynamic_stack.deinit(vm.allocator); // zepo-6o3p
         vm.main_dynamic_snapshot.deinit(vm.allocator); // zepo-6o3p
+        vm.restart_stack.deinit(vm.allocator); // zepo-g120
+        vm.main_restart_snapshot.deinit(vm.allocator); // zepo-g120
+        vm.pending_restart_args.deinit(vm.allocator); // zepo-g120
         // zepo-4yr: free all spawned fiber states. zepo-4d6: skip reaped (null) slots.
         for (vm.fibers.items) |maybe_fs| if (maybe_fs) |fs| fs.deinit();
         vm.fibers.deinit(vm.allocator);
@@ -265,6 +290,32 @@ pub const VM = struct {
             const fs = maybe_fs orelse continue;
             visitDynStack(&fs.dynamic_stack, visitor, visitor_ctx);
         }
+        // zepo-g120: restart frames hold heap name/clause_fn/report that may be
+        // otherwise unreachable (same reasoning as dynamic_stack) — trace them.
+        const visitRestartStack = struct {
+            fn call(rs: *const std.ArrayListUnmanaged(fiber_mod.RestartFrame), vis: @import("../gc/roots.zig").RootVisitor, vis_ctx: *anyopaque) void {
+                for (rs.items) |*frame| {
+                    vis(vis_ctx, &frame.name);
+                    vis(vis_ctx, &frame.clause_fn);
+                    vis(vis_ctx, &frame.report);
+                }
+            }
+        }.call;
+        visitRestartStack(&vm.restart_stack, visitor, visitor_ctx);
+        visitRestartStack(&vm.main_restart_snapshot, visitor, visitor_ctx);
+        for (vm.fibers.items) |maybe_fs| {
+            const fs = maybe_fs orelse continue;
+            visitRestartStack(&fs.restart_stack, visitor, visitor_ctx);
+        }
+        // zepo-g120: a restart invocation in flight — its target frame's heap
+        // values and the pending args must survive the unwind to the trampoline.
+        if (vm.pending_restart) |*pr| {
+            visitor(visitor_ctx, &pr.name);
+            visitor(visitor_ctx, &pr.clause_fn);
+            visitor(visitor_ctx, &pr.report);
+        }
+        for (vm.pending_restart_args.items) |*a| visitor(visitor_ctx, a);
+        visitor(visitor_ctx, &vm.debugger_hook); // zepo-g120
         visitor(visitor_ctx, &vm.raised_val);
         // zepo-oju: channel buf/send_waiters hold ChannelValue (non-GC) — no tracing needed.
         // Compiled-function constant pools hold heap Values (strings, symbols,
@@ -305,7 +356,16 @@ pub const VM = struct {
             var result: DispatchResult = undefined;
             handler_retry: while (true) {
                 result = vm.dispatch() catch |e| {
-                    if (try vm.tryHandle(e)) continue :handler_retry;
+                    // zepo-g120: resumeExecFn is the root loop for a resumed
+                    // fiber — any restart targeting this fiber resolves here.
+                    if (e == error.RestartInvoked) {
+                        if (vm.pending_restart != null) {
+                            try vm.performRestart();
+                            continue :handler_retry;
+                        }
+                        return e;
+                    }
+                    if (try vm.tryHandle(e, 0)) continue :handler_retry;
                     return e;
                 };
                 break;
@@ -483,13 +543,29 @@ pub const VM = struct {
 
             try vm.setupCallArgs(func, args_src, base, args_in_regs);
 
+            // zepo-g120: frame count at this entry. A RestartInvoked whose target
+            // restart-case frame is at/above this is within our extent and we
+            // perform the transfer; otherwise it belongs to an outer execFn and
+            // we re-propagate (the handler that invoked it runs as a nested
+            // execFn above the restart-case it targets).
+            const my_floor = vm.call_stack.frames.items.len;
+
             // zepo-9bi: same retry shape as resumeExecFn — inner loop so a
             // handler-intercepted error re-enters dispatch in-place rather
             // than re-pushing a frame via :trampoline.
             var result: DispatchResult = undefined;
             handler_retry: while (true) {
                 result = vm.dispatch() catch |e| {
-                    if (try vm.tryHandle(e)) continue :handler_retry;
+                    if (e == error.RestartInvoked) {
+                        if (vm.pending_restart) |pr| {
+                            if (pr.frame_depth >= my_floor) {
+                                try vm.performRestart();
+                                continue :handler_retry;
+                            }
+                        }
+                        return e; // belongs to an outer execFn
+                    }
+                    if (try vm.tryHandle(e, my_floor)) continue :handler_retry;
                     // Leave frame on stack — printDiagnostic walks them for traces.
                     // VM is always torn down by EvalContext after an error.
                     return e;
@@ -1455,6 +1531,7 @@ pub const VM = struct {
                 .PUSH_HANDLER => {
                     const handler_reg = bytecode.decodeA(instr);
                     const dst_reg = bytecode.decodeB(instr);
+                    const binding = bytecode.decodeC(instr) != 0; // zepo-g120
                     const resume_pc = code[pc]; // word2 is the raw pc
                     pc += 1;
                     try vm.handler_stack.append(vm.allocator, .{
@@ -1464,6 +1541,8 @@ pub const VM = struct {
                         .resume_pc = resume_pc,
                         .resume_func = func,
                         .dynamic_depth = @intCast(vm.dynamic_stack.items.len), // zepo-6o3p
+                        .kind = if (binding) .binding else .unwinding, // zepo-g120
+                        .restart_depth = @intCast(vm.restart_stack.items.len), // zepo-g120
                     });
                 },
                 .POP_HANDLER => {
@@ -1494,6 +1573,39 @@ pub const VM = struct {
                     var k: u16 = 0;
                     while (k < count and vm.dynamic_stack.items.len > 0) : (k += 1)
                         _ = vm.dynamic_stack.pop();
+                },
+                // zepo-g120: install one restart (see bytecode.zig encoding).
+                .PUSH_RESTART => {
+                    const clause_fn_reg = bytecode.decodeA(instr);
+                    const dst_reg = bytecode.decodeB(instr);
+                    const resume_pc = code[pc]; // word2
+                    const packed_regs = code[pc + 1]; // word3
+                    pc += 2;
+                    const name_reg: u8 = @intCast(packed_regs & 0xFF);
+                    const report_reg: u8 = @intCast((packed_regs >> 8) & 0xFF);
+                    const clause_index: u32 = (packed_regs >> 16) & 0xFFFF;
+                    // restart_base = stack length before this restart-case's first
+                    // clause was pushed; clause i is pushed when len == base + i.
+                    const restart_base: u32 = @as(u32, @intCast(vm.restart_stack.items.len)) - clause_index;
+                    try vm.restart_stack.append(vm.allocator, .{
+                        .name = vm.call_stack.reg(name_reg).*,
+                        .clause_fn = vm.call_stack.reg(clause_fn_reg).*,
+                        .report = vm.call_stack.reg(report_reg).*,
+                        .frame_depth = @intCast(vm.call_stack.frames.items.len),
+                        .dst_reg = dst_reg,
+                        .resume_pc = resume_pc,
+                        .resume_func = func,
+                        .dynamic_depth = @intCast(vm.dynamic_stack.items.len),
+                        .restart_base = restart_base,
+                        .handler_depth = @intCast(vm.handler_stack.items.len),
+                    });
+                },
+                // zepo-g120: discard the top `count` restarts on normal body exit.
+                .POP_RESTARTS => {
+                    const count = bytecode.decodeBC(instr);
+                    var k: u16 = 0;
+                    while (k < count and vm.restart_stack.items.len > 0) : (k += 1)
+                        _ = vm.restart_stack.pop();
                 },
             }
         }
@@ -1541,6 +1653,7 @@ pub const VM = struct {
             error.FiberYielded => false,
             error.OutOfMemory => false,
             error.StackOverflow => false,
+            error.RestartInvoked => false, // zepo-g120: internal restart transfer
             else => true,
         };
     }
@@ -1549,10 +1662,28 @@ pub const VM = struct {
     /// the call stack to the handler's recorded depth, install the handler
     /// closure as a freshly-pushed frame, and return `true` so the caller
     /// re-enters dispatch. Returns `false` to mean "propagate `err`".
-    fn tryHandle(vm: *VM, err: LispError) LispError!bool {
+    fn tryHandle(vm: *VM, err: LispError, my_floor: usize) LispError!bool {
         if (!isCatchable(err)) return false;
-        if (vm.handler_stack.items.len == 0) return false;
-        const hf = vm.handler_stack.pop().?;
+        // zepo-g120: find the topmost unwinding (with-exception-handler/guard)
+        // handler, skipping binding (handler-bind) frames — those run in place
+        // during `signal`, not by unwinding. PEEK first: if the target handler
+        // lives below this execFn's entry frame it belongs to an outer execFn
+        // (this happens when a binding handler, run via a nested execFn, raises
+        // a condition an outer handler must catch) — decline so it propagates.
+        var idx = vm.handler_stack.items.len;
+        const found: ?usize = blk: {
+            while (idx > 0) {
+                idx -= 1;
+                if (vm.handler_stack.items[idx].kind == .unwinding) break :blk idx;
+            }
+            break :blk null;
+        };
+        const sel = found orelse return false;
+        const hf = vm.handler_stack.items[sel];
+        if (hf.frame_depth < my_floor) return false; // belongs to an outer execFn
+        // Commit: drop this handler and everything above it (declined bindings).
+        vm.handler_stack.shrinkRetainingCapacity(sel);
+        vm.signal_ceiling = std.math.maxInt(usize); // zepo-g120: signal consumed
 
         // Build the exception value. raise/error sets vm.raised_val; for
         // synthetic errors (TypeError, ArityMismatch, ...) we wrap the
@@ -1577,6 +1708,10 @@ pub const VM = struct {
         // the protected body — they are out of dynamic extent once we escape.
         while (vm.dynamic_stack.items.len > hf.dynamic_depth) {
             _ = vm.dynamic_stack.pop();
+        }
+        // zepo-g120: discard restarts established inside the protected body.
+        while (vm.restart_stack.items.len > hf.restart_depth) {
+            _ = vm.restart_stack.pop();
         }
 
         // Caller frame resumes at the handler's resume_pc with the
@@ -1608,6 +1743,110 @@ pub const VM = struct {
         var args = [_]Value{exc_val};
         try vm.setupCallArgs(tgt, &args, new_base, false);
         return true;
+    }
+
+    /// zepo-g120: the signal protocol used by raise/error. Walk handler_stack
+    /// top-down. Binding (handler-bind) handlers run IN PLACE on the current
+    /// stack via callValue; returning normally = declined → keep searching
+    /// outward. A non-local transfer (invoke-restart → RestartInvoked, or an
+    /// enclosing unwinding handler that the handler itself triggers) propagates
+    /// out and we never return. When the walk reaches an unwinding handler (or
+    /// runs out of handlers), we return — the caller then returns error.UserError
+    /// so the existing tryHandle path performs the unwind-then-handle (it skips
+    /// the binding frames we already ran). signal_floor marks handlers that are
+    /// inactive while a binding handler runs, so nested signals skip them.
+    pub fn signal(vm: *VM, cond: Value) LispError!void {
+        const saved = vm.signal_ceiling;
+        defer vm.signal_ceiling = saved;
+        var i = @min(saved, vm.handler_stack.items.len);
+        while (i > 0) {
+            i -= 1;
+            // A handler we ran may have shrunk the stack (e.g. an inner guard
+            // caught something); skip indices that no longer exist.
+            if (i >= vm.handler_stack.items.len) continue;
+            const hf = vm.handler_stack.items[i];
+            if (hf.kind == .unwinding) {
+                // Hand off to the unwind-then-handle path (tryHandle skips the
+                // binding frames above this one).
+                return;
+            }
+            // Binding handler: run in place. While it runs, only handlers more
+            // outer than it (index < i) are active for a nested raise.
+            vm.signal_ceiling = i;
+            _ = try vm.callValue(hf.handler_val, &[_]Value{cond});
+            // Returned normally → declined → continue to the next outer handler.
+        }
+        // No active unwinding handler. As a last resort, give the debugger hook
+        // (if any) a chance — it runs here, at the signal site, so restarts are
+        // still live and it can invoke-restart. Guard re-entrancy so a condition
+        // raised by the debugger itself can't recurse into it.
+        if (!value_mod.isNil(vm.debugger_hook) and !vm.in_debugger) {
+            const hook = vm.debugger_hook;
+            vm.in_debugger = true;
+            defer vm.in_debugger = false;
+            _ = try vm.callValue(hook, &[_]Value{cond});
+        }
+        // Fall through to UserError; tryHandle finds no unwinding frame and
+        // declines, so it reaches the top level.
+    }
+
+    /// zepo-g120: perform a restart transfer recorded in vm.pending_restart.
+    /// Mirrors tryHandle's unwind-and-push, but the target is a restart-case
+    /// frame and the pushed frame applies the restart's clause closure to the
+    /// invoke args, landing the result in the restart-case's dst register. The
+    /// caller (an execFn/resumeExecFn trampoline) must have verified the target
+    /// is within its extent before calling this.
+    fn performRestart(vm: *VM) LispError!void {
+        const pr = vm.pending_restart.?;
+        vm.pending_restart = null;
+        vm.raised_val = value_mod.NIL;
+        if (vm.error_msg) |m| {
+            vm.allocator.free(m);
+            vm.error_msg = null;
+        }
+        // Unwind call frames / dynamic bindings to the restart-case frame.
+        while (vm.call_stack.frames.items.len > pr.frame_depth) {
+            _ = vm.call_stack.pop();
+        }
+        while (vm.dynamic_stack.items.len > pr.dynamic_depth) {
+            _ = vm.dynamic_stack.pop();
+        }
+        // zepo-g120: drop this restart-case's whole clause group plus any more
+        // recent (abandoned nested) restarts. resume_pc lands AFTER pop_restarts
+        // so there is no double-pop.
+        while (vm.restart_stack.items.len > pr.restart_base) {
+            _ = vm.restart_stack.pop();
+        }
+        // zepo-g120: drop handlers (e.g. handler-binds) established inside the
+        // abandoned body, so they don't fire on a later unrelated condition.
+        while (vm.handler_stack.items.len > pr.handler_depth) {
+            _ = vm.handler_stack.pop();
+        }
+        const top = vm.call_stack.currentFrame();
+        top.pc = pr.resume_pc;
+        top.func = pr.resume_func;
+
+        if (!objects.isClosure(pr.clause_fn)) return error.TypeError;
+        const fn_id = objects.closureCodePtr(pr.clause_fn);
+        if (fn_id >= vm.compiled_fns.len) return error.ContractViolation;
+        const tgt = vm.compiled_fns[@intCast(fn_id)];
+        const argc = vm.pending_restart_args.items.len;
+        if (tgt.keyword_params.len > 0 or tgt.has_rest) {
+            if (argc < tgt.arity) return error.ArityMismatch;
+        } else if (argc != tgt.arity) {
+            return error.ArityMismatch;
+        }
+        const new_base: u32 = @intCast(vm.call_stack.regs.items.len);
+        try vm.call_stack.pushFast(.{
+            .func = tgt,
+            .pc = 0,
+            .base = new_base,
+            .caller_base = top.base,
+            .closure_val = pr.clause_fn,
+            .dst_reg = pr.dst_reg,
+        }, tgt.num_regs);
+        try vm.setupCallArgs(tgt, vm.pending_restart_args.items, new_base, false);
+        vm.pending_restart_args.clearRetainingCapacity();
     }
 
     /// Invoke a callable Value (closure or prim) with the given args.

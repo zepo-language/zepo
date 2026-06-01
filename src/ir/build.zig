@@ -179,8 +179,9 @@ pub const Compiler = struct {
                 try ctx.func.emit(.{ .do_import = .{ .dst = r, .name = imp.name, .alias = alias, .only = only } });
                 break :blk r;
             },
-            .with_handler => |wh| c.lowerWithHandler(ctx, wh.handler, wh.body, tail),
+            .with_handler => |wh| c.lowerWithHandler(ctx, wh.handler, wh.body, wh.binding, tail),
             .parameterize => |pz| c.lowerParameterize(ctx, pz.params, pz.inits, pz.body, tail),
+            .restart_case => |rc| c.lowerRestartCase(ctx, rc.body, rc.names, rc.clauses, rc.reports, tail),
         };
     }
 
@@ -193,7 +194,7 @@ pub const Compiler = struct {
     ///   JUMP :end
     /// :resume   ; handler invocation lands here with the result in dst.
     /// :end
-    fn lowerWithHandler(c: *Compiler, ctx: *FnCtx, handler_id: NodeId, body_ids: []const NodeId, tail: bool) anyerror!Reg {
+    fn lowerWithHandler(c: *Compiler, ctx: *FnCtx, handler_id: NodeId, body_ids: []const NodeId, binding: bool, tail: bool) anyerror!Reg {
         // tail is intentionally ignored — we cannot tail-call out of a
         // protected body because POP_HANDLER must still fire on the way out.
         _ = tail;
@@ -210,6 +211,7 @@ pub const Compiler = struct {
             .handler = handler_reg,
             .dst = dst,
             .resume_label = resume_lbl,
+            .binding = binding, // zepo-g120
         } });
 
         // Body: evaluate each expression sequentially. The LAST one writes
@@ -288,6 +290,59 @@ pub const Compiler = struct {
         }
 
         try ctx.func.emit(.{ .pop_params = .{ .count = @intCast(params.len) } });
+        return dst;
+    }
+
+    /// zepo-g120: lower (restart-case BODY clause...). Emitted shape:
+    ///   PUSH_RESTART name1 clausefn1 report1 -> dst, resume=:end (idx 0)
+    ///   PUSH_RESTART ...                                        (idx 1)
+    ///   <body — last expr → dst>
+    ///   POP_RESTARTS count=N
+    ///   :end
+    /// On normal exit the body value is in dst and POP_RESTARTS clears the
+    /// group. On (invoke-restart) the VM transfers in, runs the clause closure
+    /// into dst, then resumes at :end (performRestart already cleared the group).
+    /// `tail` is ignored — POP_RESTARTS must fire on the normal path.
+    fn lowerRestartCase(c: *Compiler, ctx: *FnCtx, body: []const NodeId, names: []const Value, clauses: []const NodeId, reports: []const Value, tail: bool) anyerror!Reg {
+        _ = tail;
+        const dst = ctx.freshReg();
+        const end_lbl = ctx.func.newLabel();
+        const after_dst = dst + 1;
+
+        for (clauses, 0..) |clause_id, i| {
+            ctx.next_reg = after_dst; // reuse temp regs per clause
+            const name_reg = ctx.freshReg();
+            try ctx.func.emit(.{ .load_const = .{ .dst = name_reg, .val = names[i] } });
+            const report_reg = ctx.freshReg();
+            try ctx.func.emit(.{ .load_const = .{ .dst = report_reg, .val = reports[i] } });
+            const clause_reg = try c.lowerNode(ctx, clause_id); // lambda → closure
+            try ctx.func.emit(.{ .push_restart = .{
+                .name = name_reg,
+                .clause_fn = clause_reg,
+                .report = report_reg,
+                .dst = dst,
+                .resume_label = end_lbl,
+                .clause_index = @intCast(i),
+            } });
+        }
+
+        ctx.next_reg = after_dst;
+        const saved_reg = ctx.next_reg;
+        if (body.len == 0) {
+            try ctx.func.emit(.{ .load_nil = .{ .dst = dst } });
+        } else {
+            for (body[0 .. body.len - 1]) |bid| {
+                _ = try c.lowerNode(ctx, bid);
+                ctx.next_reg = saved_reg;
+            }
+            const last_r = try c.lowerNode(ctx, body[body.len - 1]);
+            if (last_r != dst) {
+                try ctx.func.emit(.{ .move = .{ .dst = dst, .src = last_r } });
+            }
+        }
+
+        try ctx.func.emit(.{ .pop_restarts = .{ .count = @intCast(clauses.len) } });
+        try ctx.func.emit(.{ .label = .{ .id = end_lbl } });
         return dst;
     }
 

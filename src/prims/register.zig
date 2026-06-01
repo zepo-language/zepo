@@ -89,6 +89,11 @@ const TABLE: []const Entry = &.{
     make("%set-binding-doc!", 2, eval_prim.primSetBindingDoc), // zepo-uney
     make("%global-ref", 1, eval_prim.primGlobalRef), // zepo-rdan
     make("%global-set!", 2, eval_prim.primGlobalSet), // zepo-rdan
+    make("invoke-restart", -1, eval_prim.primInvokeRestart), // zepo-g120
+    make("compute-restarts", 0, eval_prim.primComputeRestarts), // zepo-g120
+    make("find-restart", 1, eval_prim.primFindRestart), // zepo-g120
+    make("restart-report", 1, eval_prim.primRestartReport), // zepo-g120
+    make("%set-debugger-hook!", 1, eval_prim.primSetDebuggerHook), // zepo-g120
     make("documentation", 1, eval_prim.primDocumentation), // zepo-acu0
     make("values", -1, apply_mod.primValues),
     make("call-with-values", 2, apply_mod.primCallWithValues),

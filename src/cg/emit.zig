@@ -290,6 +290,8 @@ fn computeMaxReg(f: *Function) Reg {
             .pop_handler => {},
             .push_param => |x| { upd.go(x.param, &max_r); upd.go(x.value, &max_r); }, // zepo-6o3p
             .pop_params => {}, // zepo-6o3p
+            .push_restart => |x| { upd.go(x.name, &max_r); upd.go(x.clause_fn, &max_r); upd.go(x.report, &max_r); upd.go(x.dst, &max_r); }, // zepo-g120
+            .pop_restarts => {}, // zepo-g120
             .move => |x| { upd.go(x.dst, &max_r); upd.go(x.src, &max_r); },
             .branch, .label, .safepoint => {},
         }
@@ -546,7 +548,8 @@ const FnEmit = struct {
             // zepo-9bi: 2-word PUSH_HANDLER. Word1 carries handler_reg and
             // dst_reg; word2 is the absolute resume pc (patched after layout).
             .push_handler => |x| {
-                try c.emitInstr(bytecode.encode(.PUSH_HANDLER, c.phys(x.handler), c.phys(x.dst), 0));
+                // zepo-g120: C operand carries the binding flag (1 = handler-bind).
+                try c.emitInstr(bytecode.encode(.PUSH_HANDLER, c.phys(x.handler), c.phys(x.dst), @intFromBool(x.binding)));
                 // word2 placeholder; patched to the resolved resume_pc.
                 try c.fixups.append(c.e.allocator, .{
                     .instr_index = c.currentPc(),
@@ -559,6 +562,20 @@ const FnEmit = struct {
             // zepo-6o3p: dynamic binding push/pop.
             .push_param => |x| try c.emitInstr(bytecode.encode(.PUSH_PARAM, c.phys(x.param), c.phys(x.value), 0)),
             .pop_params => |x| try c.emitInstr(bytecode.encodeBC(.POP_PARAMS, 0, x.count)),
+            // zepo-g120: 3-word PUSH_RESTART (see bytecode.zig). word2 resume_pc
+            // is patched after layout; word3 packs name_reg | report_reg<<8.
+            .push_restart => |x| {
+                try c.emitInstr(bytecode.encode(.PUSH_RESTART, c.phys(x.clause_fn), c.phys(x.dst), 0));
+                try c.fixups.append(c.e.allocator, .{
+                    .instr_index = c.currentPc(),
+                    .label = x.resume_label,
+                    .kind = .raw_u32,
+                });
+                try c.emitInstr(0);
+                const packed_regs: u32 = @as(u32, c.phys(x.name)) | (@as(u32, c.phys(x.report)) << 8) | (@as(u32, x.clause_index) << 16);
+                try c.emitInstr(packed_regs);
+            },
+            .pop_restarts => |x| try c.emitInstr(bytecode.encodeBC(.POP_RESTARTS, 0, x.count)),
             .move => |x| try c.emitInstr(bytecode.encode(.MOVE, c.phys(x.dst), c.phys(x.src), 0)),
             .label => |x| {
                 try c.label_positions.put(x.id, c.currentPc());
