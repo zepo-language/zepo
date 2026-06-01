@@ -581,3 +581,32 @@
 
 (define (advised? name)
   (hash-contains? *advice-originals* name))
+
+; zepo-g120: default interactive debugger. The REPL installs it via
+; (%set-debugger-hook! %default-debugger); it is never called in non-interactive
+; runs. It runs at the signal site of an UNHANDLED condition — restarts are
+; still live — lists them, and lets the user pick one to invoke (no extra args).
+; Returning normally declines, so the condition propagates to the normal error
+; report. Restart clauses that need arguments can't be driven from here.
+(define (%debugger-list rs i)
+  (if (not (null? rs))
+      (begin
+        (display "  ") (display i) (display ": ") (display (car rs))
+        (let ((rep (restart-report (car rs))))
+          (if rep (begin (display "  — ") (display rep))))
+        (newline)
+        (%debugger-list (cdr rs) (+ i 1)))))
+
+(define (%default-debugger cond)
+  (let ((restarts (compute-restarts)))
+    (if (null? restarts)
+        cond
+        (begin
+          (display "Unhandled condition: ") (display cond) (newline)
+          (display "Available restarts:") (newline)
+          (%debugger-list restarts 0)
+          (display "Restart number (blank to abort): ")
+          (let ((n (string->number (read-line))))
+            (if (and n (>= n 0) (< n (length restarts)))
+                (invoke-restart (list-ref restarts n))
+                cond))))))

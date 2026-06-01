@@ -632,6 +632,43 @@ to others. Value expressions are evaluated in the outer dynamic environment
 the body (e.g. `raise` caught by an enclosing `guard`) unwinds the bindings,
 so the handler sees the restored values.
 
+### `handler-bind` and `restart-case`
+
+Restarts are named recovery points (Common-Lisp style). Unlike `guard` /
+`with-exception-handler` — which *unwind* the stack before the handler runs —
+`handler-bind` installs a **non-unwinding** handler that runs at the signal
+site, with the signaling context still live. That is what lets a handler choose
+a restart established *inside* the protected code.
+
+```scheme
+(restart-case
+  (handler-bind (lambda (cond) (invoke-restart 'use-default 0))
+    (error "no value"))
+  (use-default (v) :report "supply a default" v))
+; => 0
+```
+
+- `(restart-case BODY (NAME (param...) [:report STR] clause-body...) ...)`
+  evaluates BODY with the named restarts available. If BODY completes normally,
+  its value is returned and the clauses are ignored. If a handler calls
+  `(invoke-restart 'NAME arg...)`, control transfers into the matching clause
+  (bound to the args); `restart-case` then evaluates to the clause's value.
+- `(handler-bind HANDLER body...)` runs HANDLER `(HANDLER condition)` in place
+  when a condition is signaled in `body`. The handler either transfers
+  (`invoke-restart`, or lets an outer unwinding handler catch) or **declines**
+  by returning normally — then the condition propagates to the next handler.
+- `(invoke-restart 'NAME arg...)` transfers to the most-recent restart NAME.
+- `(compute-restarts)` → list of active restart names, most-recent first.
+  `(find-restart 'NAME)` → the name or `#f`. `(restart-report 'NAME)` → its
+  `:report` string or `#f`.
+
+Restarts are fiber-local and survive `(yield)` within the body. Use
+`guard`/`with-exception-handler` when you just want to catch-and-recover; reach
+for `handler-bind` + `restart-case` when the recovery decision belongs to an
+outer caller. The REPL surfaces active restarts interactively on an otherwise
+unhandled condition. (No `dynamic-wind`/cleanup runs during a restart transfer
+— Zepo has no `unwind-protect` yet; see ADR 0005.)
+
 ### `defmacro`
 
 Define a macro — a compile-time code transformer.

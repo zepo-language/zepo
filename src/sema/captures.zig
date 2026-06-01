@@ -75,6 +75,11 @@ pub const CaptureAnalyzer = struct {
                 for (pz.inits) |iid| try c.walk(iid);
                 for (pz.body) |bid| try c.walk(bid);
             },
+            .restart_case => |rc| {
+                // zepo-g120: body + each clause (a lambda over the enclosing scope).
+                for (rc.body) |bid| try c.walk(bid);
+                for (rc.clauses) |cid| try c.walk(cid);
+            },
         }
     }
 
@@ -321,6 +326,11 @@ pub const CaptureAnalyzer = struct {
                 for (pz.params) |pid| try c.collectFree(pid, params, free, mutated);
                 for (pz.inits) |iid| try c.collectFree(iid, params, free, mutated);
                 for (pz.body) |bid| try c.collectFree(bid, params, free, mutated);
+            },
+            .restart_case => |rc| {
+                // zepo-g120: body + clause lambdas; lambda arm propagates their free vars.
+                for (rc.body) |bid| try c.collectFree(bid, params, free, mutated);
+                for (rc.clauses) |cid| try c.collectFree(cid, params, free, mutated);
             },
         }
     }

@@ -145,6 +145,9 @@ pub const Builder = struct {
             }
             // zepo-6o3p: parameterize is always a special form (no fallback).
             if (std.mem.eql(u8, name, "parameterize")) return b.buildParameterize(pair);
+            // zepo-g120: handler-bind / restart-case are always special forms.
+            if (std.mem.eql(u8, name, "handler-bind")) return b.buildHandlerBind(pair);
+            if (std.mem.eql(u8, name, "restart-case")) return b.buildRestartCase(pair);
             // module/import/export are top-level-only forms handled by the
             // evaluation driver before the builder runs. Encountering one
             // here means it was nested inside another expression.
@@ -570,6 +573,13 @@ pub const Builder = struct {
         if (!objects.isPair(rest)) return BuildError.InvalidSpecialForm;
         const params_form = objects.pairCar(rest).*;
         const body_form = objects.pairCdr(rest).*;
+        return b.buildLambdaParts(params_form, body_form);
+    }
+
+    // zepo-g120: build a lambda node from an already-split (params . body),
+    // without an enclosing (lambda ...) pair. Used by restart-case to compile
+    // each clause as a closure. Mirrors buildLambda's parsing exactly.
+    fn buildLambdaParts(b: *Builder, params_form: Value, body_form: Value) BuildError!NodeId {
 
         var params = std.ArrayListUnmanaged([]const u8).empty;
         defer params.deinit(b.allocator);
@@ -943,6 +953,88 @@ pub const Builder = struct {
             .params = try b.arena.dupNodeIds(params.items),
             .inits = try b.arena.dupNodeIds(inits.items),
             .body = try b.arena.dupNodeIds(body_ids.items),
+            .span = b.current_span,
+        } });
+    }
+
+    // zepo-g120: (handler-bind HANDLER body...) — non-unwinding handler.
+    // Reuses the with_handler node with binding=true; HANDLER runs in place at
+    // the signal site (see vm.signal) and either declines (returns) or transfers
+    // (e.g. invoke-restart). Body is inline (no thunk wrapper).
+    fn buildHandlerBind(b: *Builder, pair: Value) BuildError!NodeId {
+        const rest = objects.pairCdr(pair).*;
+        if (!objects.isPair(rest)) return BuildError.InvalidSpecialForm;
+        const handler_form = objects.pairCar(rest).*;
+        const body_form = objects.pairCdr(rest).*;
+        const handler_id = try b.buildExpr(handler_form);
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
+        defer body_ids.deinit(b.allocator);
+        try b.collectBody(body_form, &body_ids);
+        if (body_ids.items.len == 0) return BuildError.InvalidSpecialForm;
+        return b.arena.add(.{ .with_handler = .{
+            .handler = handler_id,
+            .body = try b.arena.dupNodeIds(body_ids.items),
+            .span = b.current_span,
+            .binding = true,
+        } });
+    }
+
+    // zepo-g120: (restart-case BODY (NAME (param...) [:report STR] cbody...) ...)
+    fn buildRestartCase(b: *Builder, pair: Value) BuildError!NodeId {
+        const rest = objects.pairCdr(pair).*;
+        if (!objects.isPair(rest)) return BuildError.InvalidSpecialForm;
+        const body_expr = objects.pairCar(rest).*;
+        const clauses_form = objects.pairCdr(rest).*;
+
+        // The protected body is a single expression (wrap multiple in begin).
+        var body_ids = std.ArrayListUnmanaged(NodeId).empty;
+        defer body_ids.deinit(b.allocator);
+        try body_ids.append(b.allocator, try b.buildExpr(body_expr));
+
+        var names = std.ArrayListUnmanaged(Value).empty;
+        defer names.deinit(b.allocator);
+        var clauses = std.ArrayListUnmanaged(NodeId).empty;
+        defer clauses.deinit(b.allocator);
+        var reports = std.ArrayListUnmanaged(Value).empty;
+        defer reports.deinit(b.allocator);
+
+        var cur = clauses_form;
+        while (!value_mod.isNil(cur)) {
+            if (!objects.isPair(cur)) return BuildError.InvalidSpecialForm;
+            const clause = objects.pairCar(cur).*;
+            if (!objects.isPair(clause)) return BuildError.InvalidSpecialForm;
+            // NAME
+            const name_v = objects.pairCar(clause).*;
+            if (!objects.isSymbol(name_v)) return BuildError.InvalidSpecialForm;
+            // (param...)
+            const after_name = objects.pairCdr(clause).*;
+            if (!objects.isPair(after_name)) return BuildError.InvalidSpecialForm;
+            const params_form = objects.pairCar(after_name).*;
+            // optional :report STR, then clause body
+            var tail = objects.pairCdr(after_name).*;
+            var report_v: Value = value_mod.NIL;
+            if (objects.isPair(tail)) {
+                const head = objects.pairCar(tail).*;
+                if (objects.isSymbol(head) and std.mem.eql(u8, objects.symbolName(head), ":report")) {
+                    const rrest = objects.pairCdr(tail).*;
+                    if (!objects.isPair(rrest)) return BuildError.InvalidSpecialForm;
+                    report_v = objects.pairCar(rrest).*;
+                    tail = objects.pairCdr(rrest).*;
+                }
+            }
+            // Compile the clause as a closure (lambda (params...) cbody...).
+            const clause_fn = try b.buildLambdaParts(params_form, tail);
+            try names.append(b.allocator, name_v);
+            try clauses.append(b.allocator, clause_fn);
+            try reports.append(b.allocator, report_v);
+            cur = objects.pairCdr(cur).*;
+        }
+
+        return b.arena.add(.{ .restart_case = .{
+            .body = try b.arena.dupNodeIds(body_ids.items),
+            .names = try b.arena.dupValues(names.items),
+            .clauses = try b.arena.dupNodeIds(clauses.items),
+            .reports = try b.arena.dupValues(reports.items),
             .span = b.current_span,
         } });
     }

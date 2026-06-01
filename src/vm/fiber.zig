@@ -21,6 +21,11 @@ const CompiledFn = bytecode.CompiledFn;
 ///   either the body's normal result or the handler's return value.
 /// - `resume_pc` / `resume_func` is where the frame at `frame_depth - 1`
 ///   continues after the handler returns.
+// zepo-g120: an unwinding handler (with-exception-handler / guard) runs after
+// the stack is unwound to it; a binding handler (handler-bind) runs in place at
+// the signal site and may decline by returning. Restarts require binding.
+pub const HandlerKind = enum { unwinding, binding };
+
 pub const HandlerFrame = struct {
     handler_val: Value,
     frame_depth: u32,
@@ -30,6 +35,37 @@ pub const HandlerFrame = struct {
     // zepo-6o3p: dynamic_stack length when this handler was installed, so a
     // non-local exit through it truncates dynamic bindings established inside.
     dynamic_depth: u32,
+    // zepo-g120: kind of handler, and restart_stack length at install time so a
+    // non-local exit through it also unwinds restarts established inside.
+    kind: HandlerKind = .unwinding,
+    restart_depth: u32 = 0,
+};
+
+/// zepo-g120: one active restart established by restart-case. Top = most recent.
+/// `clause_fn` is the clause compiled as a closure over the restart-case's
+/// lexical scope; invoking the restart applies it to the invoke args and makes
+/// the restart-case evaluate to the result. frame_depth/resume_*/dst_reg locate
+/// the restart-case frame to transfer into (mirrors HandlerFrame). Lives
+/// per-fiber. report is the :report string (or NIL).
+pub const RestartFrame = struct {
+    name: Value,
+    clause_fn: Value,
+    report: Value,
+    frame_depth: u32,
+    dst_reg: u16,
+    resume_pc: u32,
+    resume_func: *CompiledFn,
+    dynamic_depth: u32,
+    // zepo-g120: restart_stack length before this restart-case pushed ANY of its
+    // clauses (shared by all clauses of one restart-case). On transfer, the
+    // restart_stack is truncated to this, dropping the whole group + anything
+    // more recent (abandoned nested restart-cases).
+    restart_base: u32,
+    // zepo-g120: handler_stack length when the restart-case was entered. On
+    // transfer we truncate handler_stack to this so handlers (e.g. a
+    // handler-bind) established inside the abandoned body don't linger and fire
+    // on a later, unrelated condition.
+    handler_depth: u32,
 };
 
 /// zepo-6o3p: one active dynamic (parameterize) binding. Top = most recent.
@@ -57,6 +93,8 @@ pub const FiberState = struct {
     handler_stack: std.ArrayListUnmanaged(HandlerFrame) = .empty,
     /// zepo-6o3p: per-fiber dynamic (parameterize) binding stack. Top = most recent.
     dynamic_stack: std.ArrayListUnmanaged(DynamicFrame) = .empty,
+    /// zepo-g120: per-fiber restart (restart-case) stack. Top = most recent.
+    restart_stack: std.ArrayListUnmanaged(RestartFrame) = .empty,
     status: FiberStatus,
     allocator: std.mem.Allocator,
     // zepo-i19: fibers blocked in (fiber-join) waiting for this fiber to finish.
@@ -87,6 +125,7 @@ pub const FiberState = struct {
         fs.call_stack.deinit();
         fs.handler_stack.deinit(alloc);
         fs.dynamic_stack.deinit(alloc); // zepo-6o3p
+        fs.restart_stack.deinit(alloc); // zepo-g120
         fs.waiters.deinit(alloc);
         alloc.destroy(fs);
     }

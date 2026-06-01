@@ -136,7 +136,9 @@ pub const Op = union(enum) {
     // where the body's (or handler's) result lands; resume_label is where
     // execution continues after the handler returns. POP_HANDLER undoes
     // the install on normal body exit.
-    push_handler: struct { handler: Reg, dst: Reg, resume_label: Label },
+    // zepo-g120: binding=true installs a handler-bind (non-unwinding) handler;
+    // false installs a with-exception-handler/guard (unwinding) handler.
+    push_handler: struct { handler: Reg, dst: Reg, resume_label: Label, binding: bool = false },
     pop_handler,
 
     // zepo-6o3p: push one dynamic (parameterize) binding onto the fiber
@@ -145,6 +147,14 @@ pub const Op = union(enum) {
     // converter at push time. pop_params discards `count` frames on body exit.
     push_param: struct { param: Reg, value: Reg },
     pop_params: struct { count: u16 },
+
+    // zepo-g120: push one restart onto the fiber restart_stack. name is the
+    // restart's symbol, clause_fn the clause compiled as a closure, report the
+    // :report string (or NIL); dst is where the restart-case's value lands and
+    // resume_label is where execution continues after the clause runs (the
+    // restart-case :end). pop_restarts discards `count` on normal body exit.
+    push_restart: struct { name: Reg, clause_fn: Reg, report: Reg, dst: Reg, resume_label: Label, clause_index: u16 },
+    pop_restarts: struct { count: u16 },
 
     /// zepo-9bi: explicit register-to-register move. Needed by the
     /// with-handler lowering to land the body's last expression into the

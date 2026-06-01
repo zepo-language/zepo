@@ -101,6 +101,85 @@ pub fn primGlobalSet(vm: *VM, args: []const Value) LispError!Value {
     return abi.value.NIL;
 }
 
+// zepo-g120: (invoke-restart 'NAME arg...) — transfer control into the most
+// recent restart named NAME, applying its clause to the args. Sets up
+// vm.pending_restart and returns the internal RestartInvoked signal; the
+// dispatch trampoline performs the actual stack transfer.
+pub fn primInvokeRestart(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len < 1) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    const want = objects.symbolName(args[0]);
+    var i = vm.restart_stack.items.len;
+    while (i > 0) {
+        i -= 1;
+        const rf = vm.restart_stack.items[i];
+        if (objects.isSymbol(rf.name) and std.mem.eql(u8, objects.symbolName(rf.name), want)) {
+            vm.pending_restart = rf;
+            vm.pending_restart_args.clearRetainingCapacity();
+            vm.pending_restart_args.appendSlice(vm.allocator, args[1..]) catch return error.OutOfMemory;
+            return error.RestartInvoked;
+        }
+    }
+    return error.ContractViolation; // no restart with that name is active
+}
+
+// zepo-g120: (compute-restarts) — list of active restart name symbols,
+// most-recent first.
+pub fn primComputeRestarts(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    var result: Value = abi.value.NIL;
+    var i: usize = 0;
+    while (i < vm.restart_stack.items.len) : (i += 1) {
+        // prepend each from the bottom up → most-recent ends at the head.
+        result = objects.makePair(vm.gc, vm.restart_stack.items[i].name, result) catch return error.OutOfMemory;
+    }
+    return result;
+}
+
+// zepo-g120: (find-restart 'NAME) — the name symbol if a restart named NAME is
+// active, else #f.
+pub fn primFindRestart(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    const want = objects.symbolName(args[0]);
+    var i = vm.restart_stack.items.len;
+    while (i > 0) {
+        i -= 1;
+        const rf = vm.restart_stack.items[i];
+        if (objects.isSymbol(rf.name) and std.mem.eql(u8, objects.symbolName(rf.name), want)) {
+            return args[0];
+        }
+    }
+    return abi.value.FALSE;
+}
+
+// zepo-g120: (restart-report 'NAME) — the :report string of the most recent
+// restart named NAME, or #f (no such restart / no report).
+pub fn primRestartReport(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    const want = objects.symbolName(args[0]);
+    var i = vm.restart_stack.items.len;
+    while (i > 0) {
+        i -= 1;
+        const rf = vm.restart_stack.items[i];
+        if (objects.isSymbol(rf.name) and std.mem.eql(u8, objects.symbolName(rf.name), want)) {
+            return rf.report; // string Value, or NIL if no :report
+        }
+    }
+    return abi.value.FALSE;
+}
+
+// zepo-g120: (%set-debugger-hook! FN) — install FN as the last-resort debugger
+// invoked at the signal site when a condition has no handler. FN is called as
+// (FN condition); it may invoke-restart or return to decline. The REPL sets
+// this; non-interactive runs leave it NIL.
+pub fn primSetDebuggerHook(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    vm.debugger_hook = args[0];
+    return abi.value.NIL;
+}
+
 pub fn primReadFromString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;

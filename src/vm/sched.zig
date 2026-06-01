@@ -141,14 +141,17 @@ pub const Scheduler = struct {
             // zepo-9bi: swap handler stacks too — they're fiber-local.
             vm.main_handler_snapshot = vm.handler_stack;
             vm.main_dynamic_snapshot = vm.dynamic_stack; // zepo-6o3p
+            vm.main_restart_snapshot = vm.restart_stack; // zepo-g120
         } else {
             vm.fibers.items[active_idx].?.call_stack = vm.call_stack;
             vm.fibers.items[active_idx].?.handler_stack = vm.handler_stack;
             vm.fibers.items[active_idx].?.dynamic_stack = vm.dynamic_stack; // zepo-6o3p
+            vm.fibers.items[active_idx].?.restart_stack = vm.restart_stack; // zepo-g120
         }
         vm.call_stack = CallStack.init(vm.allocator);
         vm.handler_stack = .empty;
         vm.dynamic_stack = .empty; // zepo-6o3p
+        vm.restart_stack = .empty; // zepo-g120
     }
 
     fn loadFiber(sched: *Scheduler, target_idx: usize) void {
@@ -157,6 +160,7 @@ pub const Scheduler = struct {
         vm.call_stack.deinit();
         vm.handler_stack.deinit(vm.allocator);
         vm.dynamic_stack.deinit(vm.allocator); // zepo-6o3p
+        vm.restart_stack.deinit(vm.allocator); // zepo-g120
         if (target_idx == MAIN_FIBER) {
             vm.call_stack = vm.main_cs_snapshot;
             vm.main_cs_snapshot = CallStack.init(vm.allocator);
@@ -164,6 +168,8 @@ pub const Scheduler = struct {
             vm.main_handler_snapshot = .empty;
             vm.dynamic_stack = vm.main_dynamic_snapshot; // zepo-6o3p
             vm.main_dynamic_snapshot = .empty;
+            vm.restart_stack = vm.main_restart_snapshot; // zepo-g120
+            vm.main_restart_snapshot = .empty;
         } else {
             vm.call_stack = vm.fibers.items[target_idx].?.call_stack;
             vm.fibers.items[target_idx].?.call_stack = CallStack.init(vm.allocator);
@@ -171,6 +177,8 @@ pub const Scheduler = struct {
             vm.fibers.items[target_idx].?.handler_stack = .empty;
             vm.dynamic_stack = vm.fibers.items[target_idx].?.dynamic_stack; // zepo-6o3p
             vm.fibers.items[target_idx].?.dynamic_stack = .empty;
+            vm.restart_stack = vm.fibers.items[target_idx].?.restart_stack; // zepo-g120
+            vm.fibers.items[target_idx].?.restart_stack = .empty;
         }
         vm.current_fiber_idx = if (target_idx == MAIN_FIBER) 0 else target_idx + 1;
     }

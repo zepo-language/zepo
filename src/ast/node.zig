@@ -106,6 +106,9 @@ pub const Node = union(enum) {
         handler: NodeId,
         body: []NodeId,
         span: Span,
+        // zepo-g120: true for (handler-bind H body...) — a non-unwinding handler
+        // that runs in place at the signal site; false for with-exception-handler.
+        binding: bool = false,
     },
     /// zepo-6o3p: (parameterize ((p1 v1) (p2 v2) ...) body...). `params` and
     /// `inits` are parallel arrays (same length); each (pi vi) installs a
@@ -115,6 +118,18 @@ pub const Node = union(enum) {
         params: []NodeId,
         inits: []NodeId,
         body: []NodeId,
+        span: Span,
+    },
+    /// zepo-g120: (restart-case BODY (NAME (param...) [:report STR] cbody...) ...).
+    /// `names`/`clauses`/`reports` are parallel arrays (one per restart clause);
+    /// each `clauses[i]` is a lambda node (the clause compiled as a closure over
+    /// the restart-case's lexical scope). `reports[i]` is the :report string
+    /// Value or NIL. Compiles to PUSH_RESTART ... POP_RESTARTS.
+    restart_case: struct {
+        body: []NodeId,
+        names: []Value,
+        clauses: []NodeId,
+        reports: []Value,
         span: Span,
     },
 };
@@ -135,6 +150,7 @@ pub const NodeArena = struct {
     clause_lists: std.ArrayList([]CondClause),
     binding_lists: std.ArrayList([]LetBinding),
     kw_param_lists: std.ArrayList([]KwParam),
+    value_lists: std.ArrayList([]Value), // zepo-g120: restart-case names/reports
 
     pub fn init(allocator: std.mem.Allocator) NodeArena {
         return .{
@@ -146,6 +162,7 @@ pub const NodeArena = struct {
             .clause_lists = std.ArrayListUnmanaged([]CondClause).empty,
             .binding_lists = std.ArrayListUnmanaged([]LetBinding).empty,
             .kw_param_lists = std.ArrayListUnmanaged([]KwParam).empty,
+            .value_lists = std.ArrayListUnmanaged([]Value).empty, // zepo-g120
         };
     }
 
@@ -162,6 +179,8 @@ pub const NodeArena = struct {
         a.binding_lists.deinit(a.allocator);
         for (a.kw_param_lists.items) |l| a.allocator.free(l);
         a.kw_param_lists.deinit(a.allocator);
+        for (a.value_lists.items) |l| a.allocator.free(l); // zepo-g120
+        a.value_lists.deinit(a.allocator);
         a.nodes.deinit(a.allocator);
     }
 
@@ -210,6 +229,12 @@ pub const NodeArena = struct {
     pub fn dupKwParams(a: *NodeArena, kps: []const KwParam) ![]KwParam {
         const copy = try a.allocator.dupe(KwParam, kps);
         try a.kw_param_lists.append(a.allocator, copy);
+        return copy;
+    }
+
+    pub fn dupValues(a: *NodeArena, vals: []const Value) ![]Value { // zepo-g120
+        const copy = try a.allocator.dupe(Value, vals);
+        try a.value_lists.append(a.allocator, copy);
         return copy;
     }
 };
