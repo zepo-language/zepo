@@ -87,6 +87,8 @@ const TABLE: []const Entry = &.{
     make("eval", 1, eval_prim.primEval), // zepo-ksw
     make("read-from-string", 1, eval_prim.primReadFromString), // zepo-dheb
     make("%set-binding-doc!", 2, eval_prim.primSetBindingDoc), // zepo-uney
+    make("%global-ref", 1, eval_prim.primGlobalRef), // zepo-rdan
+    make("%global-set!", 2, eval_prim.primGlobalSet), // zepo-rdan
     make("documentation", 1, eval_prim.primDocumentation), // zepo-acu0
     make("values", -1, apply_mod.primValues),
     make("call-with-values", 2, apply_mod.primCallWithValues),

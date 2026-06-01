@@ -1476,6 +1476,57 @@ message string become the condition's *irritants*.
 
 ---
 
+### Advice and dynamic hooks
+
+Two ways to inject cross-cutting behaviour (logging, timing, instrumentation)
+into existing functions.
+
+**Production idiom — a parameterize'd hook.** Hold the hook in a
+[parameter](#make-parameter) and switch it on for a dynamic extent. No global
+mutation, composes cleanly, and is fiber-local. Prefer this in library code.
+
+```scheme
+(define *trace* (make-parameter #f))
+
+(define (http-get url)
+  (when (*trace*) (display (string-append "GET " url "\n")))
+  (do-fetch url))
+
+(parameterize ((*trace* #t))
+  (http-get "/a")        ; traced
+  (http-get "/b"))       ; traced
+(http-get "/c")          ; not traced — *trace* restored to #f
+```
+
+**REPL / debug idiom — `advise`.** `(advise 'name wrapper)` replaces the global
+function bound to `name` with a wrapper. The wrapper is called as
+`(wrapper orig arg ...)` — `orig` is the function bound just before this advise;
+call it with `(apply orig args)`. Advice **stacks**; `(unadvise 'name)` restores
+the original (pre-advice) function and drops all advice on it. Because `advise`
+mutates the global binding, it is best for interactive debugging and
+instrumentation, not library code — reach for the parameterize hook there.
+
+```scheme
+(define (greet name) (string-append "Hello, " name))
+
+(advise 'greet
+  (lambda (orig . args)
+    (string-append "[" (apply orig args) "]")))
+(greet "Ann")            ; => "[Hello, Ann]"
+
+(advised? 'greet)        ; => #t
+(unadvise 'greet)
+(greet "Ann")            ; => "Hello, Ann"
+```
+
+| Function | Description |
+|----------|-------------|
+| `(advise 'name wrapper)` | Wrap the global `name`; `wrapper` is called `(wrapper orig arg ...)`. Stacks. |
+| `(unadvise 'name)` | Restore the original function and drop all advice on `name`. |
+| `(advised? 'name)` | True if `name` currently has advice installed. |
+
+---
+
 ## Standard Library
 
 All functions below are defined in `lib/stdlib.lisp` and are always available.

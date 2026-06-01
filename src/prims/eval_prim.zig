@@ -69,6 +69,38 @@ pub fn primDocumentation(vm: *VM, args: []const Value) LispError!Value {
     return abi.value.FALSE;
 }
 
+// zepo-rdan: (%global-ref SYMBOL) — current value of the global binding for
+// SYMBOL, searching the current module env then the top-level fallback.
+// Raises UnboundVariable if no binding exists. Backs the advise/unadvise
+// helpers, which must read/write a global named by a runtime symbol (something
+// (set! ...) can't do — it resolves names at compile time).
+pub fn primGlobalRef(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    if (vm.globals.lookup(args[0])) |v| return v;
+    if (vm.fallback_globals) |fb| {
+        if (fb.lookup(args[0])) |v| return v;
+    }
+    return error.UnboundVariable;
+}
+
+// zepo-rdan: (%global-set! SYMBOL VALUE) — mutate the EXISTING global binding
+// for SYMBOL (current module env, else top-level fallback). Raises
+// UnboundVariable if no binding exists — it never creates one (use define for
+// that). Global value slots are GC roots, so no write barrier is needed.
+pub fn primGlobalSet(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!objects.isSymbol(args[0])) return error.TypeError;
+    vm.globals.set(args[0], args[1]) catch {
+        if (vm.fallback_globals) |fb| {
+            fb.set(args[0], args[1]) catch return error.UnboundVariable;
+            return abi.value.NIL;
+        }
+        return error.UnboundVariable;
+    };
+    return abi.value.NIL;
+}
+
 pub fn primReadFromString(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;
