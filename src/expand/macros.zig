@@ -31,7 +31,7 @@ fn expandForm(v: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
             const rest = objects.pairCdr(v).*;
             if (!objects.isPair(rest)) return error.InvalidSpecialForm;
             const template = objects.pairCar(rest).*;
-            return expandQQ(template, symbols, gc);
+            return expandQQ(template, symbols, gc, 1);
         }
     }
 
@@ -53,8 +53,11 @@ fn expandList(v: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
     return objects.makePairFromSlots(gc, car_slot, cdr_slot);
 }
 
-// Expand a quasiquote template (one level).
-fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
+// Expand a quasiquote template. `level` is the quasiquote nesting depth (1 =
+// outermost). zepo-y2br: R7RS level tracking — a nested (quasiquote X) raises
+// the level and is preserved as data; (unquote X)/(unquote-splicing X) lower it
+// and only SUBSTITUTE at level 1, otherwise they too are preserved as data.
+fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC, level: u32) anyerror!Value {
     if (!objects.isPair(template)) {
         return makeQuote(template, symbols, gc);
     }
@@ -62,17 +65,37 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
     const head = objects.pairCar(template).*;
     const tail = objects.pairCdr(template).*;
 
-    // (unquote expr) → expr  (evaluated at call site)
-    if (objects.isSymbol(head) and std.mem.eql(u8, objects.symbolName(head), "unquote")) {
-        if (!objects.isPair(tail)) return error.InvalidSpecialForm;
-        // zepo-vmol: desugar inside the unquoted expression too, so a nested
-        // quasiquote there (e.g. `(... ,(map (lambda (n) `(f ,n)) xs))`) is
-        // expanded. Without this it survives as a literal (quasiquote ...) and
-        // fails at eval with "unbound variable: quasiquote".
-        return try expandForm(objects.pairCar(tail).*, symbols, gc);
+    if (objects.isSymbol(head)) {
+        const hn = objects.symbolName(head);
+        // (unquote expr)
+        if (std.mem.eql(u8, hn, "unquote")) {
+            if (!objects.isPair(tail)) return error.InvalidSpecialForm;
+            const operand = objects.pairCar(tail).*;
+            if (level == 1) {
+                // Substitute: evaluate at the call site. zepo-vmol: desugar
+                // inside it too so a nested quasiquote there is expanded.
+                return try expandForm(operand, symbols, gc);
+            }
+            // level > 1: preserve as data → (list 'unquote <expandQQ operand level-1>)
+            var scope = HandleScope{};
+            gc.roots.pushHandleScope(&scope);
+            defer gc.roots.popHandleScope();
+            const inner = scope.push(try expandQQ(operand, symbols, gc, level - 1));
+            return makeQQTag(symbols, gc, "unquote", inner.*);
+        }
+        // (quasiquote expr) → raise level, preserve as data
+        if (std.mem.eql(u8, hn, "quasiquote")) {
+            if (!objects.isPair(tail)) return error.InvalidSpecialForm;
+            const operand = objects.pairCar(tail).*;
+            var scope = HandleScope{};
+            gc.roots.pushHandleScope(&scope);
+            defer gc.roots.popHandleScope();
+            const inner = scope.push(try expandQQ(operand, symbols, gc, level + 1));
+            return makeQQTag(symbols, gc, "quasiquote", inner.*);
+        }
     }
 
-    // ((unquote-splicing expr) . rest) → (append expr (expandQQ rest))
+    // ((unquote-splicing expr) . rest)
     if (objects.isPair(head)) {
         const hcar = objects.pairCar(head).*;
         if (objects.isSymbol(hcar) and
@@ -84,13 +107,20 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
             var scope = HandleScope{};
             gc.roots.pushHandleScope(&scope);
             defer gc.roots.popHandleScope();
-            // Root both splice_expr and tail before expandQQ can trigger GC.
             const splice_slot = scope.push(splice_expr);
             const tail_slot = scope.push(tail);
-            // zepo-vmol: expand inside the spliced expression too (see unquote).
-            splice_slot.* = try expandForm(splice_slot.*, symbols, gc);
-            tail_slot.* = try expandQQ(tail_slot.*, symbols, gc);
-            return makeCall2(symbols, gc, "append", splice_slot.*, tail_slot.*);
+            if (level == 1) {
+                // (append <expandForm splice_expr> <expandQQ rest level>)
+                splice_slot.* = try expandForm(splice_slot.*, symbols, gc); // zepo-vmol
+                tail_slot.* = try expandQQ(tail_slot.*, symbols, gc, level);
+                return makeCall2(symbols, gc, "append", splice_slot.*, tail_slot.*);
+            }
+            // level > 1: preserve as data →
+            //   (cons (list 'unquote-splicing <expandQQ splice level-1>) <expandQQ rest level>)
+            splice_slot.* = try expandQQ(splice_slot.*, symbols, gc, level - 1);
+            splice_slot.* = try makeQQTag(symbols, gc, "unquote-splicing", splice_slot.*);
+            tail_slot.* = try expandQQ(tail_slot.*, symbols, gc, level);
+            return makeCall2(symbols, gc, "cons", splice_slot.*, tail_slot.*);
         }
     }
 
@@ -99,12 +129,27 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
     gc.roots.pushHandleScope(&scope);
     defer gc.roots.popHandleScope();
 
-    // Root tail before expandQQ(head, ...) can trigger GC.
     const h_slot = scope.push(head);
     const t_slot = scope.push(tail);
-    h_slot.* = try expandQQ(h_slot.*, symbols, gc);
-    t_slot.* = try expandQQ(t_slot.*, symbols, gc);
+    h_slot.* = try expandQQ(h_slot.*, symbols, gc, level);
+    t_slot.* = try expandQQ(t_slot.*, symbols, gc, level);
     return makeCall2(symbols, gc, "cons", h_slot.*, t_slot.*);
+}
+
+// zepo-y2br: build code producing the 2-element data list (TAG INNER), i.e.
+//   (cons (quote TAG) (cons INNER (quote ())))
+// Used to preserve unquote/unquote-splicing/quasiquote forms as DATA at
+// nesting levels > 1.
+fn makeQQTag(symbols: *SymbolTable, gc: *GC, tag_name: []const u8, inner: Value) !Value {
+    var scope = HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const inner_slot = scope.push(inner);
+    const tag_sym = scope.push(try symbols.intern(tag_name));
+    const qtag = scope.push(try makeQuote(tag_sym.*, symbols, gc));
+    const qnil = scope.push(try makeQuote(value_mod.NIL, symbols, gc));
+    const inner_pair = scope.push(try makeCall2(symbols, gc, "cons", inner_slot.*, qnil.*));
+    return makeCall2(symbols, gc, "cons", qtag.*, inner_pair.*);
 }
 
 fn makeQuote(val: Value, symbols: *SymbolTable, gc: *GC) !Value {
