@@ -606,30 +606,22 @@
        (eq? (vector-ref x 0) '%struct)
        (eq? (vector-ref x 1) type)))
 
-; Built with explicit list construction (not quasiquote) to avoid nested
-; quasiquote in the per-field accessor loop.
 (defmacro defstruct (name . fields)
   (let ((mk (string->symbol (string-append "make-" (symbol->string name))))
         (pred (string->symbol (string-append (symbol->string name) "?"))))
-    (let ((accessors
-            (let loop ((fs fields) (i 2) (acc '()))
-              (if (null? fs)
-                  (reverse acc)
-                  (loop (cdr fs) (+ i 1)
-                        (cons (list 'define
-                                    (list (string->symbol
-                                            (string-append (symbol->string name) "-"
-                                                           (symbol->string (car fs))))
-                                          's)
-                                    (list 'vector-ref 's i))
-                              acc))))))
-      (append
-        (list 'begin
-              (list 'define (cons mk fields)
-                    (list '%make-struct (list 'quote name) (cons 'list fields)))
-              (list 'define (list pred 'x)
-                    (list '%struct-is? 'x (list 'quote name))))
-        accessors))))
+    `(begin
+       (define (,mk ,@fields) (%make-struct ',name (list ,@fields)))
+       (define (,pred x) (%struct-is? x ',name))
+       ,@(let loop ((fs fields) (i 2) (acc '()))
+           (if (null? fs)
+               (reverse acc)
+               (loop (cdr fs) (+ i 1)
+                     (cons `(define (,(string->symbol
+                                       (string-append (symbol->string name) "-"
+                                                      (symbol->string (car fs))))
+                                     s)
+                              (vector-ref s ,i))
+                           acc)))))))
 
 ; Generic functions. *generics* maps a generic name to a hash-table of
 ; type-symbol -> method closure. Dispatch is on (type-of (car args)).
