@@ -460,26 +460,43 @@ Create a closure.
 
 ### Keyword arguments
 
-Functions can accept keyword arguments by including `#:name` in the parameter list.
+A keyword parameter is written `:name DEFAULT` in the parameter list, where
+DEFAULT is a literal (string/number/boolean/`'()`). Inside the body the
+parameter is referred to by the bare `name`. At a call, pass `:name value`.
 
 ```scheme
-(define (greet name #:greeting msg)
-  (string-append msg ", " name "!"))
+(define (greet name :greeting "Hello")
+  (string-append greeting ", " name "!"))
 
-(greet "Alice")                              ; error: missing keyword #:greeting
-(greet "Alice" #:greeting "Hello")           ; => "Hello, Alice!"
-(greet "Bob" #:greeting "Hi")                ; => "Hi, Bob!"
+(greet "Alice")                            ; => "Hello, Alice!"   (default)
+(greet "Alice" :greeting "Hi")             ; => "Hi, Alice!"
+
+(define (configure port :host "localhost" :debug #f)
+  (list host port debug))
+(configure 8080 :host "example.com")       ; => ("example.com" 8080 #f)
 ```
 
-Keyword arguments are required unless a default value is provided (via
-`define` shorthand):
+By default an **unknown** keyword is an error:
 
 ```scheme
-(define (configure port #:host h #:debug d)
-  (display (string-append "Host: " h " Port: " (number->string port))))
-
-(configure 8080 #:host "localhost" #:debug #t)
+(greet "Alice" :loud #t)                    ; error: unknown keyword
 ```
+
+**Keyword tolerance / forwarding.** Add a rest parameter after the keyword
+params and the *unrecognized* keyword pairs are collected into it as a flat
+plist — so a function can handle some keys and forward the rest:
+
+```scheme
+(define (open-window x :title "" . rest)
+  (set-title! x title)
+  (apply make-widget x rest))              ; forward the keys it didn't handle
+
+(define (f x :a 0 . rest) (list x a rest))
+(f 1 :a 2 :zzz 9)                          ; => (1 2 (:zzz 9))   :a bound, :zzz forwarded
+```
+
+Without a rest parameter, unknown keywords still error — the tolerance is
+opt-in by declaring `. rest`.
 
 ### `if`
 

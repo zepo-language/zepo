@@ -440,6 +440,9 @@ pub const VM = struct {
             for (tgt.keyword_params) |kp| {
                 vm.call_stack.regs.items[base + kp.slot] = kp.default_value;
             }
+            // Pass 1: bind known keys (no allocation). An unknown key errors
+            // UNLESS a rest param is present, in which case it is forwarded
+            // (pass 2). zepo-iv6k.
             var ki: usize = tgt.arity;
             while (ki < args_len) : (ki += 2) {
                 const key_sym = args_src[ki];
@@ -454,7 +457,47 @@ pub const VM = struct {
                         break;
                     }
                 }
-                if (!found) return error.UnknownKeyword;
+                if (!found and !tgt.has_rest) return error.UnknownKeyword;
+            }
+            // zepo-iv6k: Pass 2 — forward UNKNOWN keyword pairs into the rest
+            // param as a flat plist (key val key val ...), in order. Enables the
+            // tolerant / forwarding API pattern: (apply inner x rest).
+            if (tgt.has_rest) {
+                const span = args_len - tgt.arity;
+                const pair_bytes: usize = 24;
+                if (!args_in_regs) {
+                    const mut: [*]Value = @constCast(args_src.ptr);
+                    const prev_extra = vm.gc.roots.extra.items.len;
+                    vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, span) catch return error.OutOfMemory;
+                    for (tgt.arity..args_len) |ri| vm.gc.roots.extra.appendAssumeCapacity(&mut[ri]);
+                    vm.gc.reserveNursery(pair_bytes * span) catch {
+                        vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                        return error.OutOfMemory;
+                    };
+                    vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
+                } else {
+                    vm.gc.reserveNursery(pair_bytes * span) catch return error.OutOfMemory;
+                }
+                var rest_kw: Value = value_mod.NIL;
+                var k: usize = args_len;
+                while (k > tgt.arity) {
+                    k -= 2;
+                    const key_sym = args_src[k];
+                    const key_name = objects.symbolName(key_sym);
+                    const bare = if (key_name.len > 0 and key_name[0] == ':') key_name[1..] else key_name;
+                    var known = false;
+                    for (tgt.keyword_params) |kp| {
+                        if (std.mem.eql(u8, bare, kp.name)) {
+                            known = true;
+                            break;
+                        }
+                    }
+                    if (!known) {
+                        rest_kw = objects.makePair(vm.gc, args_src[k + 1], rest_kw) catch return error.OutOfMemory;
+                        rest_kw = objects.makePair(vm.gc, args_src[k], rest_kw) catch return error.OutOfMemory;
+                    }
+                }
+                vm.call_stack.regs.items[base + tgt.arity] = rest_kw;
             }
         } else if (tgt.has_rest) {
             const rest_count = args_len - tgt.arity;
