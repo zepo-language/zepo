@@ -65,7 +65,11 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
     // (unquote expr) → expr  (evaluated at call site)
     if (objects.isSymbol(head) and std.mem.eql(u8, objects.symbolName(head), "unquote")) {
         if (!objects.isPair(tail)) return error.InvalidSpecialForm;
-        return objects.pairCar(tail).*;
+        // zepo-vmol: desugar inside the unquoted expression too, so a nested
+        // quasiquote there (e.g. `(... ,(map (lambda (n) `(f ,n)) xs))`) is
+        // expanded. Without this it survives as a literal (quasiquote ...) and
+        // fails at eval with "unbound variable: quasiquote".
+        return try expandForm(objects.pairCar(tail).*, symbols, gc);
     }
 
     // ((unquote-splicing expr) . rest) → (append expr (expandQQ rest))
@@ -83,6 +87,8 @@ fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
             // Root both splice_expr and tail before expandQQ can trigger GC.
             const splice_slot = scope.push(splice_expr);
             const tail_slot = scope.push(tail);
+            // zepo-vmol: expand inside the spliced expression too (see unquote).
+            splice_slot.* = try expandForm(splice_slot.*, symbols, gc);
             tail_slot.* = try expandQQ(tail_slot.*, symbols, gc);
             return makeCall2(symbols, gc, "append", splice_slot.*, tail_slot.*);
         }
