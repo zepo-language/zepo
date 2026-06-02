@@ -2406,16 +2406,20 @@ Import with an alias to create a namespace:
 
 ### Import inside function bodies
 
-`import` can appear inside function bodies, executing at runtime via the
-`IMPORT` opcode:
+`import` can syntactically appear inside function bodies, executing at runtime
+via the `IMPORT` opcode:
 
 ```scheme
 (define (use-math)
-  (import math/core)
-  (sqrt 16))   ; => 4
-
-(use-math)
+  (import math/core (only clamp))
+  (clamp 42 0 10))
 ```
+
+> **Known limitation:** runtime import currently fails to resolve modules from
+> the library search path — calling a function that performs an `import` raises
+> `ModuleNotFound` (affects every installed module, not just `math/core`).
+> Import at the **top level** instead, where resolution works. Tracked in the
+> issue tracker.
 
 ### Rules
 
@@ -3266,9 +3270,23 @@ Math functionality is organized into modules under `lib/math/`:
 
 ### math/core
 
-Mathematical primitives and constants.
+Mathematical constants and derived helpers, layered on top of the built-in math
+primitives.
 
-**Constants:**
+> **No import needed for the primitives.** The trig/elementary/rounding/predicate
+> functions below (`sqrt`, `sin`, `cos`, `pow`, `ln`, `floor`, `nan?`, `zero?`,
+> `even?`, `odd?`, etc.) are registered **global primitives** — they work in any
+> file with no import. `math/core` adds what the primitives don't provide: the
+> **constants** and the **derived helpers** (marked below). Those are the only
+> things that genuinely require the import.
+>
+> **Import it aliased or selectively, not bare.** Because `math/core` re-exports
+> the builtin predicates (`zero?`, `even?`...), a bare `(import math/core)` raises
+> an `ImportNameConflict` — those names are already global. Use
+> `(import math/core as m)` and reach names via `m.pi`, or
+> `(import math/core (only pi clamp ...))` to bind specific names unqualified.
+
+**Constants:** *(require `(import math/core)`)*
 - `pi`, `tau`, `e`, `phi`, `epsilon`, `inf`, `neg-inf`, `nan`
 
 **Trigonometry:**
@@ -3280,22 +3298,22 @@ Mathematical primitives and constants.
 **Rounding:**
 `floor`, `ceiling`, `round`, `truncate`, `frac` (fractional part)
 
-**Predicates:**
+**Predicates:** *(all global primitives — no import needed)*
 `number?`, `integer?`, `float?`, `finite?`, `infinite?`, `nan?`, `zero?`, `positive?`, `negative?`, `even?`, `odd?`
 
-**Comparison:**
+**Comparison:** *(require the import)*
 `sign`, `clamp`, `between?`, `almost-eq?`, `abs-close?`, `rel-close?`
 
-**Utilities:**
-`abs`, `min`, `max`, `deg->rad`, `rad->deg`, `square`, `cube`, `copy-sign`, `lerp`, `invlerp`, `normalize-range`
+**Utilities:** `abs`, `min`, `max` *(global primitives)*; `deg->rad`, `rad->deg`, `square`, `cube`, `copy-sign`, `lerp`, `invlerp`, `normalize-range`, `log-base`, `frac` *(require the import)*
 
 ```scheme
-(import math/core)
+(sin 0)                    ; => 0   — primitive, no import needed
+(sqrt 16)                  ; => 4   — primitive, no import needed
 
-(sin 0)                    ; => 0
-(sqrt 16)                  ; => 4
-(between? 5 1 10)         ; => #t
-(almost-eq? 1.0 1.0000000001) ; => #t
+(import math/core as m)
+m.pi                       ; => 3.141592653589793   — constant, needs import
+(m.between? 5 1 10)        ; => #t  — derived helper, needs import
+(m.almost-eq? 1.0 1.0000000001) ; => #t
 ```
 
 ### math/linear

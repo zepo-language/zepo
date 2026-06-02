@@ -420,11 +420,12 @@ Import can also appear inside function bodies, executing at runtime:
 
 ```lisp
 (define (use-math)
-  (import math/core)
-  (sqrt 16))
-
-(use-math)    ; => 4
+  (import math/core (only clamp))
+  (clamp 42 0 10))   ; clamp is provided by math/core
 ```
+
+> **Known limitation:** runtime import currently fails to resolve installed
+> modules (`ModuleNotFound`) — import at the top level instead. See the issue tracker.
 
 Scaffold new components with `zepo new`:
 
@@ -455,15 +456,24 @@ Directives: `~a` (display), `~s` (write/quoted), `~%` (newline), `~~` (literal t
 ---
 
 `lib/math/` — mathematics modules:
-- `math/core` — math primitives, constants, predicates (sin, cos, sqrt, etc.)
+- `math/core` — constants (`pi`, `e`, `tau`, `phi`, `inf`...) and derived helpers (`clamp`, `square`, `deg->rad`, `log-base`, `lerp`...). Note: the math primitives like `sqrt`, `sin`, `cos`, `pow`, `ln`, and the predicates `zero?`/`even?`/`odd?` are **built-in globals** — they work with no import. `math/core` only adds the constants and helpers on top.
 - `math/linear` — vector and matrix operations
 - `math/numeric/fit` — curve fitting (linear and quadratic regression)
 - `math/numeric/integrate` — numerical integration
 - `math/numeric/roots` — root finding (bisection, Newton, secant)
 
 ```lisp
-(import math/core)
-(sqrt 16)     ; => 4
+(sqrt 16)     ; => 4   — sqrt is a built-in primitive, no import needed
+
+; math/core re-exports the builtin predicates (zero?, even?...), which already
+; exist as globals, so a BARE (import math/core) raises an import-name conflict.
+; Import it aliased, or selectively pull the names you want:
+(import math/core as m)
+m.pi          ; => 3.141592653589793   — constant, needs the import
+(m.square 8)  ; => 64                  — derived helper, needs the import
+
+(import math/core (only pi clamp square))   ; unqualified, no conflict
+(clamp 42 0 10)   ; => 10
 
 (import math/numeric/fit)
 (fit-linear xs ys)  ; linear regression
