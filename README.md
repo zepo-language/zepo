@@ -570,6 +570,62 @@ Configure in VS Code (with a generic LSP client extension):
 }
 ```
 
+### Neovim (lazy.nvim)
+
+Zepo is not in `nvim-lspconfig`'s registry, so register the client yourself.
+On Neovim 0.11+ the smallest working setup uses `vim.lsp.start` — drop this in a
+file under your lazy plugins directory (e.g. `~/.config/nvim/lua/plugins/zepo.lua`):
+
+```lua
+return {
+  "neovim/nvim-lspconfig", -- only needed for its filetype plumbing; the start call is plain core LSP
+  ft = "lisp",
+  config = function()
+    vim.api.nvim_create_autocmd({ "BufRead", "BufNewFile" }, {
+      pattern = "*.lisp",
+      callback = function(args)
+        vim.lsp.start({
+          name = "zepo",
+          cmd = { "zepo", "lsp" }, -- must be on PATH; or an absolute path like vim.fn.expand("~/.local/bin/zepo")
+          root_dir = vim.fs.root(args.buf, { "project.lisp", ".git" }),
+        })
+      end,
+    })
+  end,
+}
+```
+
+`vim.lsp.start` deduplicates by `{name, root_dir, cmd}`, so reopening buffers in
+the same project reuses the one server. Verify the binary works first with
+`echo '' | zepo lsp` — it should block waiting on stdin (Ctrl-C to exit).
+
+Notes:
+
+- **PATH** — `cmd` runs `zepo lsp`. If `zepo` isn't on Neovim's PATH, use an
+  absolute path: `cmd = { vim.fn.expand("~/.local/bin/zepo"), "lsp" }`.
+- **Filetype collision** — Zepo sources use the `.lisp` extension, which Neovim
+  also detects as builtin `lisp`/`commonlisp`. The config above is safe because
+  it gates on the `*.lisp` pattern directly. To give Zepo its own filetype
+  instead, add `vim.filetype.add({ extension = { lisp = "zepo" } })` and change
+  both `ft` and `pattern` to `"zepo"`.
+- **Keymaps** — wire `gd`, `K`, etc. on `LspAttach`:
+
+  ```lua
+  vim.api.nvim_create_autocmd("LspAttach", {
+    callback = function(ev)
+      local opts = { buffer = ev.buf }
+      vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+      vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+      vim.keymap.set("n", "grn", vim.lsp.buf.rename, opts)
+      vim.keymap.set("n", "grr", vim.lsp.buf.references, opts)
+    end,
+  })
+  ```
+
+All capabilities in the table above (diagnostics, hover, goto-def, completion,
+references, rename, document/workspace symbols, semantic tokens, format-on-save)
+are served over this one stdio connection.
+
 ## Regex
 
 POSIX Extended Regular Expressions delegating to the system libc `regcomp`/`regexec` implementation:
