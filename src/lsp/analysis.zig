@@ -208,6 +208,10 @@ pub const Analysis = struct {
     /// Each entry is a slice into the document text. The linter uses these
     /// to detect dead exports (named but never defined).
     exports: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// zepo-2nwd: byte offset of each line start (line 0 = 0, then one past
+    /// every '\n'). Built once in analyze(); makes offset→position O(log n)
+    /// instead of the O(offset) rescan-from-0 that made analyze() O(n²).
+    line_starts: std.ArrayListUnmanaged(usize) = .empty,
 
     pub fn deinit(a: *Analysis) void {
         a.defines.deinit(a.alloc);
@@ -216,7 +220,33 @@ pub const Analysis = struct {
         for (a.only_arena.items) |slc| a.alloc.free(slc);
         a.only_arena.deinit(a.alloc);
         a.exports.deinit(a.alloc); // zepo-j3oe: slices borrow text, no per-entry free
+        a.line_starts.deinit(a.alloc); // zepo-2nwd
         if (a.real) |*r| r.deinit();
+    }
+
+    // zepo-2nwd: line containing byte `off` via binary search of line_starts.
+    fn lineOf(a: *const Analysis, off: usize) u32 {
+        const starts = a.line_starts.items;
+        // starts is sorted and starts[0] == 0, so there is always a candidate.
+        var lo: usize = 0;
+        var hi: usize = starts.len;
+        while (lo + 1 < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (starts[mid] <= off) lo = mid else hi = mid;
+        }
+        return @intCast(lo);
+    }
+
+    // zepo-2nwd: byte (utf-8) Pos for `off`, O(log n). Matches offsetToPos: for
+    // utf-8 the column is the byte distance from the line start.
+    fn posOf(a: *const Analysis, off: usize) Pos {
+        const line = a.lineOf(off);
+        return .{ .line = line, .character = @intCast(off - a.line_starts.items[line]) };
+    }
+
+    // zepo-2nwd: index-backed replacement for Range.fromOffsets (utf-8 bytes).
+    fn rangeOf(a: *const Analysis, start_off: usize, end_off: usize) Range {
+        return .{ .start = a.posOf(start_off), .end = a.posOf(end_off) };
     }
 
     /// Find the symbol hit covering byte offset `off`, or null. Ranges stored
@@ -350,6 +380,13 @@ fn isKeyword(s: []const u8) bool {
 pub fn analyze(alloc: std.mem.Allocator, text: []const u8) !Analysis {
     var a: Analysis = .{ .alloc = alloc };
 
+    // zepo-2nwd: precompute line-start offsets once (O(n)) so every
+    // offset→position below is O(log n) instead of rescanning from 0.
+    try a.line_starts.append(alloc, 0);
+    for (text, 0..) |c, i| {
+        if (c == '\n') try a.line_starts.append(alloc, i + 1);
+    }
+
     var sc = Scanner{ .src = text };
 
     // First pass: record every symbol token.
@@ -372,7 +409,7 @@ pub fn analyze(alloc: std.mem.Allocator, text: []const u8) !Analysis {
         };
         try a.symbols.append(alloc, .{
             .text = txt,
-            .range = Range.fromOffsets(text, t.start, t.end),
+            .range = a.rangeOf(t.start, t.end),
             .dot_at = dot_at,
         });
     }
@@ -501,8 +538,8 @@ fn handleDefine(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
         try a.defines.append(alloc, .{
             .name = text[nt.start..nt.end],
             .kind = .define,
-            .name_range = Range.fromOffsets(text, nt.start, nt.end),
-            .form_range = Range.fromOffsets(text, lparen_start, form_end),
+            .name_range = a.rangeOf(nt.start, nt.end),
+            .form_range = a.rangeOf(lparen_start, form_end),
             .docstring = docstring,
         });
     }
@@ -538,8 +575,8 @@ fn handleModule(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
         try a.defines.append(alloc, .{
             .name = text[nt.start..nt.end],
             .kind = .module,
-            .name_range = Range.fromOffsets(text, nt.start, nt.end),
-            .form_range = Range.fromOffsets(text, lparen_start, form_end),
+            .name_range = a.rangeOf(nt.start, nt.end),
+            .form_range = a.rangeOf(lparen_start, form_end),
             .docstring = docstring,
         });
     }
@@ -608,9 +645,9 @@ fn handleImport(alloc: std.mem.Allocator, sc: *Scanner, text: []const u8, a: *An
     const form_end = try skipUntilCloseAndReturnEnd(sc, text);
     try a.imports.append(alloc, .{
         .module = mod_text,
-        .module_range = Range.fromOffsets(text, mod.start, mod.end),
+        .module_range = a.rangeOf(mod.start, mod.end),
         .selection = selection,
-        .form_range = Range.fromOffsets(text, lparen_start, form_end),
+        .form_range = a.rangeOf(lparen_start, form_end),
     });
 }
 
