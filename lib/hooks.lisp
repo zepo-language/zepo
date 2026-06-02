@@ -1,65 +1,44 @@
+; lib/hooks.lisp — generic extension-point hooks.
+;
+; A hook is a NAMED LIST OF FUNCTIONS. A library exposes a hook name; users
+; register functions on it; the library runs them at the relevant point. This
+; is the canonical Lisp extension-point pattern.
+;
+;   ;; library side:
+;   (run-hooks 'before-save doc)        ; call every registered handler with doc
+;
+;   ;; user side:
+;   (add-hook 'before-save (lambda (doc) (validate doc)))
+;
+; Handlers run in REGISTRATION order and each receives the args passed to
+; run-hooks. See also: the `advise`/`unadvise` convention in the prelude for
+; wrapping an existing function (a different mechanism); and the testing
+; framework's before-each/after-each/before-all/after-all, which are a
+; DELIBERATELY SEPARATE, specialized abstraction (per-describe scope tree +
+; lifecycle ordering) rather than generic named lists.
 (module hooks
-  (export add-hook remove-hook run-hooks run-hooks/results
-          defadvice remove-advice advised?)
-
-  ; ── Hooks ────────────────────────────────────────────────────────────────────
+  (export add-hook remove-hook run-hooks run-hooks/results clear-hooks)
 
   (define *hooks* (make-hash-table))
 
+  ; Register fn under `name`, appended so handlers run in registration order.
   (define (add-hook name fn)
-    (hash-set! *hooks* name
-               (cons fn (hash-get *hooks* name '()))))
+    (hash-set! *hooks* name (append (hash-get *hooks* name '()) (list fn))))
 
   (define (remove-hook name fn)
     (hash-set! *hooks* name
                (filter (lambda (f) (not (eq? f fn)))
                        (hash-get *hooks* name '()))))
 
-  (define (run-hooks name)
-    (for-each (lambda (f) (f))
+  ; Call every handler registered under `name`, each with `args`.
+  (define (run-hooks name . args)
+    (for-each (lambda (f) (apply f args))
               (hash-get *hooks* name '())))
 
-  (define (run-hooks/results name)
-    (map (lambda (f) (f))
+  ; Like run-hooks but returns the list of handler results (in order).
+  (define (run-hooks/results name . args)
+    (map (lambda (f) (apply f args))
          (hash-get *hooks* name '())))
 
-  ; ── Advice ───────────────────────────────────────────────────────────────────
-
-  (define *advice-registry* (make-hash-table))
-
-  (define (%make-wrapper orig type advice-fn)
-    (cond
-      ((equal? type ':before)
-       (lambda args
-         (apply advice-fn args)
-         (apply orig args)))
-      ((equal? type ':after)
-       (lambda args
-         (let ((result (apply orig args)))
-           (apply advice-fn (cons result args))
-           result)))
-      ((equal? type ':around)
-       (lambda args
-         (apply advice-fn (cons orig args))))
-      ((equal? type ':override)
-       advice-fn)
-      (else (error "unknown advice type" type))))
-
-  ; defadvice wraps an existing global function.
-  ; type: ':before ':after ':around ':override
-  ; :before  — (advice-fn . original-args), return value ignored
-  ; :after   — (advice-fn result . original-args), return value ignored
-  ; :around  — (advice-fn original-fn . args), must call original-fn explicitly
-  ; :override — advice-fn replaces the function entirely
-  (defmacro defadvice (name type fn-expr)
-    `(let ((%orig ,name))
-       (define ,name (%make-wrapper %orig ,type ,fn-expr))
-       (hash-set! *advice-registry* ',name %orig)))
-
-  (defmacro remove-advice (name)
-    `(when (hash-contains? *advice-registry* ',name)
-       (define ,name (hash-get *advice-registry* ',name #f))
-       (hash-delete! *advice-registry* ',name)))
-
-  (define (advised? name)
-    (hash-contains? *advice-registry* name)))
+  (define (clear-hooks name)
+    (hash-set! *hooks* name '())))

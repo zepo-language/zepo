@@ -1660,6 +1660,45 @@ instrumentation, not library code — reach for the parameterize hook there.
 | `(unadvise 'name)` | Restore the original function and drop all advice on `name`. |
 | `(advised? 'name)` | True if `name` currently has advice installed. |
 
+### Hooks (extension points)
+
+A **hook** is a named list of functions — the canonical way for a library to
+expose an extension point. The library runs the hook at the relevant moment;
+users register functions on it. Provided by the `hooks` library:
+
+```scheme
+(import hooks (add-hook remove-hook run-hooks run-hooks/results clear-hooks))
+
+;; --- library side: expose and run a hook ---
+(define (save-document doc)
+  (run-hooks 'before-save doc)        ; call every handler with the document
+  (write-to-disk doc))
+
+;; --- user side: register a handler ---
+(add-hook 'before-save (lambda (doc) (validate doc)))
+(add-hook 'before-save (lambda (doc) (log "saving" doc)))
+```
+
+| Function | Description |
+|----------|-------------|
+| `(add-hook name fn)` | Register `fn` under `name` (runs in registration order). |
+| `(remove-hook name fn)` | Unregister `fn` from `name`. |
+| `(run-hooks name arg...)` | Call every handler under `name` with `arg...`. |
+| `(run-hooks/results name arg...)` | Like `run-hooks` but returns the list of results. |
+| `(clear-hooks name)` | Remove all handlers under `name`. |
+
+Handlers run in registration order and each receives the args passed to
+`run-hooks`. This is distinct from two related mechanisms:
+
+- [`advise`/`unadvise`](#advice-and-dynamic-hooks) *wraps an existing function*
+  (you don't control its call sites); hooks are *explicit extension points* the
+  author placed with `run-hooks`.
+- The testing framework's `before-each`/`after-each`/`before-all`/`after-all`
+  are **intentionally a separate** abstraction: they are scoped to the
+  `describe` tree and run with lifecycle ordering (outer→inner before, inner→
+  outer after), not a flat named list — so they live in the testing library,
+  not here.
+
 ---
 
 ## Standard Library
