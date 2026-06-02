@@ -374,9 +374,20 @@ A module file declares what it exports:
 (import :modules (mymod) :libs (json))
 ```
 
-**Legacy bare form** (still supported — searches all project paths). Note that a
-bare `(import mymod)` loads the module but does **not** bind its exports into the
-current scope; select the names you want (or alias the module) to call them:
+**Legacy bare form** (still supported — searches all project paths). A bare
+`(import mymod)` binds **all of `mymod`'s exported names** into the current scope
+— a convenient catch-all for quick prototyping. (It also binds the namespace
+alias `mymod.name` for qualified access, and never exposes non-exported
+internals unqualified.)
+
+```lisp
+(import mymod)                ; binds every export of mymod
+(display (greet "world"))
+```
+
+For anything beyond throwaway scripts prefer a **selective** import — it
+documents exactly what you depend on and avoids name clashes between modules
+(two bare imports that export the same name will conflict):
 
 ```lisp
 (import mymod (only greet))   ; or: (import mymod (greet))
@@ -574,10 +585,10 @@ POSIX Extended Regular Expressions delegating to the system libc `regcomp`/`rege
 (regex-replace-all "o" "f_o_o" "0")              ; => "f_0_0"  (every match)
 ```
 
-The module also exports `regex-find` and `regex-split`. A
-bare `(import regex)` loads the module but does not bring its names into scope —
-use a selective import as above, or alias it with `(import regex as rx)` and call
-`(rx.regex-match? …)`.
+The module also exports `regex-find` and `regex-split`. A bare `(import regex)`
+binds all of these names at once (handy for prototyping); the selective import
+above is the tidier form for real code, and `(import regex as rx)` exposes them
+under a namespace as `(rx.regex-match? …)`.
 
 ## Documentation
 

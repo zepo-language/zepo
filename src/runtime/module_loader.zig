@@ -1041,18 +1041,38 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     const active = ctx.currentEnv();
 
     if (value_mod.isNil(tail)) {
-        // zepo-y1a4: `(import M)` (bare, no selective list, no :as) NO LONGER
-        // flat-dumps exports into the importer's unqualified scope. It binds
-        // only the namespace alias keyed on M's full path. Callers wanting
-        // unqualified names must say so explicitly via
-        //   (import M (name1 name2 ...))   — selective unqualified
-        //   (import M :as A)                — namespace alias under a chosen name
-        // or reach for the auto-bound namespace alias `M.name` directly.
-        //
-        // The old flat-dump behavior is preserved on a privacy-conscious
-        // basis: only `(export ...)` names ever leaked, but the leak itself
-        // was the bug we eliminated. zepo-zc0 already fixed the transitive
-        // version. Now the local-import version follows.
+        // zepo-hior: `(import M)` (bare, no selective list, no :as) binds ALL
+        // of M's EXPORTED names into the importer's unqualified scope. This is
+        // a deliberate convenience for lazy / broad-prototyping use: grab a
+        // module wholesale, experiment, then refactor to a selective
+        // `(import M (a b))` once the surface stabilizes (encouraged, not
+        // required). Only `(export ...)` names are bound; private bindings
+        // stay reachable solely through the qualified `home/path.name`
+        // namespace alias built below — so this re-enables the export-only
+        // flat-dump that zepo-y1a4 had removed, WITHOUT reintroducing the
+        // zepo-zc0 leak of non-exports.
+        for (target.env.entries.items) |entry| {
+            const nm = runtime_objects.symbolName(entry.sym_slot.*);
+            if (!target.isExported(nm)) continue;
+            active.importEntry(entry) catch |e| switch (e) {
+                error.ImportNameConflict => {
+                    if (active.findEntry(entry.sym_slot.*)) |existing| {
+                        if (existing.val_slot.* == entry.val_slot.*) {} else {
+                            // zepo-hior: same cross-module collision diagnostic
+                            // the selective form gives, adapted for bare import.
+                            var buf: [256]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&buf,
+                                "error: import-name conflict: '{s}' is already bound (cannot bare-import it from '{s}')\n" ++
+                                "       hint: alias the module with (import {s} :as <alias>) and reach it via <alias>.{s}, or selectively import the names you need\n",
+                                .{ nm, mod_name, mod_name, nm }) catch "";
+                            _ = std.c.write(2, msg.ptr, msg.len);
+                            return error.ImportNameConflict;
+                        }
+                    } else return error.ImportNameConflict;
+                },
+                else => return e,
+            };
+        }
         const path_sym = try ctx.symbols.intern(mod_name);
         if (active.findEntry(path_sym) == null) {
             const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;

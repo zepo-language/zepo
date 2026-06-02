@@ -126,10 +126,13 @@ test "ExportOutsideModule: export at top level" {
     ));
 }
 
-test "full import conflict: existing binding wins, second import silently skipped" {
-    // zepo-y1a4: post-flat-dump-removal, bare (import a) and (import b)
-    // don't conflict — neither defines `x` in unqualified scope. Each one
-    // binds its own namespace alias (a, b) and they're independent.
+test "bare import binds exports unqualified; overlapping names conflict" {
+    // zepo-hior: bare (import M) flat-binds M's EXPORTED names into the
+    // importer's unqualified scope (a lazy-prototyping convenience). So
+    // (import a) binds `x`=1 unqualified; a following (import b) that also
+    // exports `x` collides and raises ImportNameConflict — same rule the
+    // selective form enforces. Each import still also binds its namespace
+    // alias (a.x, b.x) for qualified access.
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
     _ = try rig.eval(
@@ -139,10 +142,28 @@ test "full import conflict: existing binding wins, second import silently skippe
         \\(module b (export x) (define x 2))
     );
     _ = try rig.eval("(import a)");
-    _ = try rig.eval("(import b)");
-    // Both modules' x are reachable via their own namespace alias.
+    // Bare import bound `x` unqualified from module a.
+    const x = try rig.eval("x");
+    try std.testing.expect(x != 0);
+    // Namespace alias still works.
     const ax = try rig.eval("a.x");
-    const bx = try rig.eval("b.x");
     try std.testing.expect(ax != 0);
-    try std.testing.expect(bx != 0);
+    // Second bare import of an overlapping export collides.
+    try std.testing.expectError(error.ImportNameConflict, rig.eval("(import b)"));
+}
+
+test "bare import of non-overlapping modules binds both unqualified" {
+    // zepo-hior: distinct export names from two bare imports coexist.
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(module a (export ax) (define ax 1))
+    );
+    _ = try rig.eval(
+        \\(module b (export bx) (define bx 2))
+    );
+    _ = try rig.eval("(import a)");
+    _ = try rig.eval("(import b)");
+    try std.testing.expect((try rig.eval("ax")) != 0);
+    try std.testing.expect((try rig.eval("bx")) != 0);
 }
