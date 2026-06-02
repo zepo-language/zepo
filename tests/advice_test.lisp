@@ -60,4 +60,45 @@
           (compute 3))                                  ; restored
     '(9 109 9)))
 
+; ── typed advice (zepo-k17w) ────────────────────────────────────────────────────
+
+(deftest advise/before
+  (define (f x) (* x 10))
+  (define log '())
+  (advise 'f :before (lambda (x) (set! log (cons x log))))
+  (let ((r (f 5)))
+    (unadvise 'f)
+    (is (= r 50))                ; result unchanged
+    (=check log '(5))))          ; before-fn saw the arg
+
+(deftest advise/after-sees-result
+  (define (g x) (+ x 1))
+  (define seen #f)
+  (advise 'g :after (lambda (r x) (set! seen (list r x))))
+  (let ((r (g 4)))
+    (unadvise 'g)
+    (is (= r 5))                 ; orig's result returned
+    (=check seen '(5 4))))       ; after-fn saw (result arg)
+
+(deftest advise/around-explicit
+  (define (h x) x)
+  (advise 'h :around (lambda (orig x) (* 2 (orig x))))
+  (let ((r (h 21)))
+    (unadvise 'h)
+    (=check r 42)))
+
+(deftest advise/override
+  (define (k x) x)
+  (advise 'k :override (lambda (x) 'replaced))
+  (let ((r (k 9)))
+    (unadvise 'k)
+    (=check r 'replaced)))
+
+(deftest advise/default-is-around
+  (define (m x) x)
+  (advise 'm (lambda (orig x) (+ 100 (orig x))))   ; 2-arg form
+  (let ((r (m 1)))
+    (unadvise 'm)
+    (=check r 101)))
+
 (run-tests)

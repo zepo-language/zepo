@@ -566,12 +566,34 @@
 ; reference ("Advice and dynamic hooks") for the production idiom.
 (define *advice-originals* (make-hash-table))
 
-(define (advise name wrapper)
-  (unless (hash-contains? *advice-originals* name)
-    (hash-set! *advice-originals* name (%global-ref name)))
-  (let ((current (%global-ref name)))
-    (%global-set! name (lambda args (apply wrapper current args))))
-  name)
+; zepo-k17w: build the wrapper for a typed advice. `orig` is the function being
+; advised (the value just before this advise, so advice stacks); `fn` is the
+; advice function. Types:
+;   :before   fn runs before orig, called (fn arg...); its result is ignored
+;   :after    orig runs, then (fn result arg...); orig's result is returned
+;   :around   fn is called (fn orig arg...) and calls orig itself
+;   :override fn replaces orig entirely
+(define (%advice-wrapper orig type fn)
+  (cond
+    ((eq? type ':before)
+     (lambda args (apply fn args) (apply orig args)))
+    ((eq? type ':after)
+     (lambda args (let ((r (apply orig args))) (apply fn (cons r args)) r)))
+    ((eq? type ':around)
+     (lambda args (apply fn (cons orig args))))
+    ((eq? type ':override) fn)
+    (else (error "unknown advice type:" type))))
+
+; (advise 'name fn)            — :around (fn is called (fn orig arg...))
+; (advise 'name :type fn)      — typed advice (:before/:after/:around/:override)
+(define (advise name . rest)
+  (let ((type (if (= (length rest) 2) (car rest) ':around))
+        (fn   (if (= (length rest) 2) (car (cdr rest)) (car rest))))
+    (unless (hash-contains? *advice-originals* name)
+      (hash-set! *advice-originals* name (%global-ref name)))
+    (let ((current (%global-ref name)))
+      (%global-set! name (%advice-wrapper current type fn)))
+    name))
 
 (define (unadvise name)
   (when (hash-contains? *advice-originals* name)
