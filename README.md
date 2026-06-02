@@ -374,10 +374,12 @@ A module file declares what it exports:
 (import :modules (mymod) :libs (json))
 ```
 
-**Legacy bare form** (still supported — searches all project paths):
+**Legacy bare form** (still supported — searches all project paths). Note that a
+bare `(import mymod)` loads the module but does **not** bind its exports into the
+current scope; select the names you want (or alias the module) to call them:
 
 ```lisp
-(import mymod)
+(import mymod (only greet))   ; or: (import mymod (greet))
 (display (greet "world"))
 ```
 
@@ -480,7 +482,7 @@ returns the docstring string (or `#f`) without needing the import.
 positionals, subcommands, type coercion, and typo suggestions.
 
 ```lisp
-(import clap)
+(import clap (make-program make-command make-option opt-set cmd-add-option run))
 
 (define cmd
   (cmd-add-option
@@ -562,12 +564,20 @@ Configure in VS Code (with a generic LSP client extension):
 POSIX Extended Regular Expressions delegating to the system libc `regcomp`/`regexec` implementation:
 
 ```lisp
-(import regex)
+(import regex (regex-match? regex-find-all regex-replace regex-replace-all))
 
-(re-match "^hello" "hello world")      ; => #t
-(re-find-all "[0-9]+" "abc 123 def 456") ; => ("123" "456")
-(re-replace "o+" "f_o_o" "0")           ; => "f_0_0"
+(regex-match? "^hello" "hello world")            ; => #t
+(regex-find-all "[0-9]+" "abc 123 def 456")      ; => list of match alists:
+                                                 ;    (((match . "123") (start . 4) (end . 7) (groups))
+                                                 ;     ((match . "456") (start . 12) (end . 15) (groups)))
+(regex-replace     "o" "f_o_o" "0")              ; => "f_0_o"  (first match only)
+(regex-replace-all "o" "f_o_o" "0")              ; => "f_0_0"  (every match)
 ```
+
+The module also exports `regex-find` and `regex-split`. A
+bare `(import regex)` loads the module but does not bring its names into scope —
+use a selective import as above, or alias it with `(import regex as rx)` and call
+`(rx.regex-match? …)`.
 
 ## Documentation
 
