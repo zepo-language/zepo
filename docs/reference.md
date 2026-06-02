@@ -1654,9 +1654,22 @@ instrumentation, not library code — reach for the parameterize hook there.
 (greet "Ann")            ; => "Hello, Ann"
 ```
 
+An optional **advice type** selects how the advice combines with the original:
+
+```scheme
+(advise 'f :before  (lambda (x) (log x)))         ; run before; result ignored
+(advise 'f :after   (lambda (result x) (log result))) ; run after; orig's result returned
+(advise 'f :around  (lambda (orig x) (* 2 (orig x)))) ; wrap; call orig yourself
+(advise 'f :override (lambda (x) 'stubbed))        ; replace entirely
+```
+
 | Function | Description |
 |----------|-------------|
-| `(advise 'name wrapper)` | Wrap the global `name`; `wrapper` is called `(wrapper orig arg ...)`. Stacks. |
+| `(advise 'name fn)` | Wrap the global `name`; `fn` is called `(fn orig arg ...)` (i.e. `:around`). Stacks. |
+| `(advise 'name :before fn)` | Run `(fn arg ...)` before the original; its result is ignored. |
+| `(advise 'name :after fn)` | Run `(fn result arg ...)` after; the original's result is returned. |
+| `(advise 'name :around fn)` | `fn` receives `(orig arg ...)` and calls `orig` itself. |
+| `(advise 'name :override fn)` | `fn` replaces the original entirely. |
 | `(unadvise 'name)` | Restore the original function and drop all advice on `name`. |
 | `(advised? 'name)` | True if `name` currently has advice installed. |
 
