@@ -7,6 +7,7 @@ const value_mod = abi.value;
 
 const runtime = @import("../runtime/mod.zig");
 const objects = runtime.objects;
+const hashtable = runtime.hashtable; // zepo-fa3a
 
 const vm_mod = @import("../vm/dispatch.zig");
 const VM = vm_mod.VM;
@@ -104,40 +105,79 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
             try out.appendSlice(allocator, "#<parameter>");
             return;
         }
-    }
-    if (value_mod.isPtr(v) and objects.isForeign(v)) {
-        const tag = objects.foreignTypeTag(v);
-        if (tag == net_prims.TAG_TCP_CONN) {
-            try out.appendSlice(allocator, "#<tcp-socket>");
-            return;
-        }
-        if (tag == net_prims.TAG_TCP_SERVER) {
-            try out.appendSlice(allocator, "#<tcp-server>");
-            return;
-        }
-        if (tag == regex_prims.TAG_REGEX) {
-            try out.appendSlice(allocator, "#<regex>");
-            return;
-        }
-        if (tag == TAG_STRING_PORT) {
-            try out.appendSlice(allocator, "#<string-port>");
-            return;
-        }
-        // zepo-s4p
-        if (tag == TAG_INPUT_PORT) {
-            try out.appendSlice(allocator, "#<input-port>");
-            return;
-        }
-        // zepo-wgt
-        if (tag == process_prims.TAG_PROCESS) {
-            const pp: *process_prims.ProcessPayload = @alignCast(@ptrCast(objects.foreignPayload(v)));
-            const s = try std.fmt.allocPrint(allocator, "#<process:{d}>", .{pp.pid});
-            defer allocator.free(s);
+        // zepo-fa3a: render the remaining heap kinds instead of #<unknown>.
+        if (hashtable.isHashTable(v)) {
+            var b: [40]u8 = undefined;
+            const s = try std.fmt.bufPrint(&b, "#<hash-table {d}>", .{hashtable.size(v)});
             try out.appendSlice(allocator, s);
             return;
         }
-        try out.appendSlice(allocator, "#<foreign>");
-        return;
+        if (objects.isBytevector(v)) {
+            try out.appendSlice(allocator, "#u8(");
+            const bytes = objects.bytevectorBytes(v);
+            for (bytes, 0..) |byte, i| {
+                if (i > 0) try out.append(allocator, ' ');
+                var nb: [3]u8 = undefined;
+                const s = try std.fmt.bufPrint(&nb, "{d}", .{byte});
+                try out.appendSlice(allocator, s);
+            }
+            try out.append(allocator, ')');
+            return;
+        }
+        if (objects.isFiber(v)) {
+            const label = switch (objects.fiberStatus(v)) {
+                objects.FIBER_RUNNING => "#<fiber running>",
+                objects.FIBER_DONE => "#<fiber done>",
+                objects.FIBER_ERRORED => "#<fiber errored>",
+                else => "#<fiber>",
+            };
+            try out.appendSlice(allocator, label);
+            return;
+        }
+        if (objects.isBox(v)) {
+            try out.appendSlice(allocator, "#<box>");
+            return;
+        }
+        if (objects.isEnvFrame(v)) {
+            try out.appendSlice(allocator, "#<env-frame>");
+            return;
+        }
+        // isForeign already guards isPtr (isKind), so the outer isPtr test above
+        // is the only one needed — no redundant re-check.
+        if (objects.isForeign(v)) {
+            const tag = objects.foreignTypeTag(v);
+            if (tag == net_prims.TAG_TCP_CONN) {
+                try out.appendSlice(allocator, "#<tcp-socket>");
+                return;
+            }
+            if (tag == net_prims.TAG_TCP_SERVER) {
+                try out.appendSlice(allocator, "#<tcp-server>");
+                return;
+            }
+            if (tag == regex_prims.TAG_REGEX) {
+                try out.appendSlice(allocator, "#<regex>");
+                return;
+            }
+            if (tag == TAG_STRING_PORT) {
+                try out.appendSlice(allocator, "#<string-port>");
+                return;
+            }
+            // zepo-s4p
+            if (tag == TAG_INPUT_PORT) {
+                try out.appendSlice(allocator, "#<input-port>");
+                return;
+            }
+            // zepo-wgt
+            if (tag == process_prims.TAG_PROCESS) {
+                const pp: *process_prims.ProcessPayload = @alignCast(@ptrCast(objects.foreignPayload(v)));
+                const s = try std.fmt.allocPrint(allocator, "#<process:{d}>", .{pp.pid});
+                defer allocator.free(s);
+                try out.appendSlice(allocator, s);
+                return;
+            }
+            try out.appendSlice(allocator, "#<foreign>");
+            return;
+        }
     }
     try out.appendSlice(allocator, "#<unknown>");
 }
