@@ -259,6 +259,8 @@ pub fn build(b: *std.Build) void {
     });
     const module_tests = b.addTest(.{ .root_module = module_test_mod });
     const run_module_tests = b.addRunArtifact(module_tests);
+    const module_test_step = b.step("module_test", "Run module-system tests");
+    module_test_step.dependOn(&run_module_tests.step);
 
     const macros_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/runtime/macros_test.zig"),

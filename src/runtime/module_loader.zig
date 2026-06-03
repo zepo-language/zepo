@@ -650,10 +650,34 @@ pub fn doImportByName(
     alias: ?[]const u8,
     only: ?[]const []const u8,
 ) @import("errors.zig").LispError!void {
-    // NOTE: auto-loading is intentionally omitted here. Calling evalString from
-    // inside a VM IMPORT callback overwrites ctx.vm and GC roots, corrupting
-    // the outer VM's frame stack. Modules must be pre-loaded (e.g. imported at
-    // top level) before they can be (re-)imported inside a function body.
+    // zepo-d5o2: re-entrancy-safe auto-load. This runs inside the VM IMPORT
+    // opcode callback while the importing function is live on vm.call_stack.
+    // Auto-loading evaluates the target module's body forms; doing that via the
+    // VM's run() (a fresh Scheduler) would corrupt the outer frames, which is
+    // why it was previously omitted. Instead we set ctx.nested_exec so the body
+    // forms execute via execFn on the current call stack, and save/restore the
+    // VM's globals pointers (compileFormToFnId rewrites them per loaded form).
+    if (ctx.registry.get(mod_name) == null) {
+        const saved_nested = ctx.nested_exec;
+        const saved_globals = if (ctx.vm) |*v| v.globals else null;
+        const saved_fallback = if (ctx.vm) |*v| v.fallback_globals else null;
+        ctx.nested_exec = true;
+        defer {
+            ctx.nested_exec = saved_nested;
+            if (ctx.vm) |*v| {
+                if (saved_globals) |g| v.globals = g;
+                v.fallback_globals = saved_fallback;
+            }
+        }
+        // tryAutoLoad has an inferred (global) error set. Module body forms it
+        // evaluates only ever raise LispError members; narrow back explicitly.
+        // A module whose top level yields/spawns a fiber can't be loaded from
+        // this nested context (no scheduler) — surface that as ContractViolation.
+        tryAutoLoad(ctx, mod_name) catch |e| switch (e) {
+            error.FiberYielded => return error.ContractViolation,
+            else => |narrow| return @as(@import("errors.zig").LispError, @errorCast(narrow)),
+        };
+    }
     const target = ctx.registry.get(mod_name) orelse return error.ModuleNotFound;
     if (!target.initialized) return error.ImportBeforeInitialization;
     const active = ctx.currentEnv();

@@ -422,10 +422,23 @@ Import can also appear inside function bodies, executing at runtime:
 (define (use-math)
   (import math/core (only clamp))
   (clamp 42 0 10))   ; clamp is provided by math/core
+
+(use-math)    ; => 10
 ```
 
-> **Known limitation:** runtime import currently fails to resolve installed
-> modules (`ModuleNotFound`) — import at the top level instead. See the issue tracker.
+A runtime import auto-loads the module from the search path on first execution,
+just like a top-level import — so conditional/lazy imports work:
+
+```lisp
+(define (maybe-square x)
+  (if x
+      (begin (import math/core (only square)) (square x))
+      0))
+```
+
+> One caveat: a module whose **top-level body spawns a fiber** can't be loaded
+> from inside a running function (there's no scheduler at that nested level) —
+> it raises `ContractViolation`. Import such modules at the top level.
 
 Scaffold new components with `zepo new`:
 

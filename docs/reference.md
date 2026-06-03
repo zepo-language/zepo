@@ -2406,20 +2406,23 @@ Import with an alias to create a namespace:
 
 ### Import inside function bodies
 
-`import` can syntactically appear inside function bodies, executing at runtime
-via the `IMPORT` opcode:
+`import` can appear inside function bodies, executing at runtime via the
+`IMPORT` opcode. On first execution it auto-loads the module from the search
+path (exactly like a top-level import), so conditional/lazy imports work:
 
 ```scheme
 (define (use-math)
   (import math/core (only clamp))
-  (clamp 42 0 10))
+  (clamp 42 0 10))   ; => 10
+
+(use-math)
 ```
 
-> **Known limitation:** runtime import currently fails to resolve modules from
-> the library search path — calling a function that performs an `import` raises
-> `ModuleNotFound` (affects every installed module, not just `math/core`).
-> Import at the **top level** instead, where resolution works. Tracked in the
-> issue tracker.
+The module's body forms are evaluated on the current call stack (via `execFn`,
+not a fresh scheduler) so the outer VM frame is preserved. One consequence: a
+module whose **top-level body yields or spawns a fiber** cannot be auto-loaded
+from this nested context and raises `ContractViolation` — import such modules at
+the top level instead.
 
 ### Rules
 

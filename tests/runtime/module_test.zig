@@ -428,3 +428,38 @@ test "import :libs selective sublist — namespace alias still bound" {
     const vb = try rig.eval("mq.b");
     try expectInt(vb, 200);
 }
+
+// zepo-d5o2: runtime (in-function-body) import must auto-load from the search
+// path, exactly like a top-level import. Previously doImportByName skipped
+// auto-loading and raised ModuleNotFound for any not-yet-loaded module.
+test "module: runtime in-function import auto-loads from search path" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "mathlite.lisp",
+        .data = "(module mathlite (export answer) (define answer 42))",
+    });
+
+    const saved_fd = std.c.open(".", .{ .DIRECTORY = true }, @as(std.c.mode_t, 0));
+    if (saved_fd < 0) return error.OpenCwdFailed;
+    defer _ = std.c.close(saved_fd);
+    if (std.c.fchdir(tmp.dir.handle) != 0) return error.FchdirFailed;
+    defer _ = std.c.fchdir(saved_fd);
+
+    const paths = [_][]const u8{"."};
+    rig.ctx.module_path = &paths;
+
+    // mathlite is NOT imported at top level — the import inside the function
+    // body must trigger auto-load when get-answer is first called.
+    const v = try rig.eval(
+        \\(define (get-answer)
+        \\  (import mathlite (only answer))
+        \\  answer)
+        \\(get-answer)
+    );
+    try expectInt(v, 42);
+}

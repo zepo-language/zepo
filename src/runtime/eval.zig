@@ -112,6 +112,12 @@ pub const EvalContext = struct {
     // etc.) and only processes import/module/load/include. Used by `zepo build`
     // to discover module dependencies without running user code.
     discovery_mode: bool = false,
+    // zepo-d5o2: when true, evalNonModuleForm executes thunks on the CURRENT
+    // call stack via execFn instead of spinning a fresh Scheduler via run().
+    // Set during re-entrant module auto-load (triggered from the VM IMPORT
+    // opcode callback) so loading a module's body forms does not corrupt the
+    // outer VM's in-flight call stack.
+    nested_exec: bool = false,
 
     pub fn init(
         gc: *GC,
@@ -449,6 +455,12 @@ pub const EvalContext = struct {
 
     pub fn evalNonModuleForm(ctx: *EvalContext, form: Value) !Value {
         const actual_fn_id = try ctx.compileFormToFnId(form);
+        // zepo-d5o2: nested execution (re-entrant module auto-load) must run on
+        // the current call stack — run() spins a fresh Scheduler that clobbers
+        // the outer VM's frames. execFn pushes onto the existing call_stack.
+        if (ctx.nested_exec) {
+            return ctx.vm.?.execFn(ctx.vm.?.compiled_fns[actual_fn_id], value_mod.NIL, &.{});
+        }
         return ctx.vm.?.run(actual_fn_id, &.{});
     }
 
