@@ -304,7 +304,7 @@ const FormStyle = enum {
 fn classifyHead(text: []const u8) FormStyle {
     const body2_forms = [_][]const u8{
         "define", "lambda", "begin", "when", "unless",
-        "defmacro", "module",  "do",
+        "defmacro", "module",
     };
     const let_forms = [_][]const u8{ "let", "let*", "letrec" };
     const if_forms = [_][]const u8{"if"};
