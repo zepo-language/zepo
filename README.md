@@ -152,14 +152,23 @@ zepo test                      # discovers and runs tests/**/*_test.lisp
 zepo test tests/foo_test.lisp  # runs one test file
 ```
 
-Test files use the built-in `test` form:
+Test files import the `test` module and define cases with `deftest`. A bare
+`(import test)` binds every export unqualified — `deftest`, `is`, `=check`,
+`throws`, `run-tests`, `make-suite`:
 
 ```lisp
 (import test)
 
-(test "addition"
-  (assert-equal 4 (+ 2 2)))
+(deftest addition
+  (=check (+ 2 2) 4))    ; assert equality
+
+(deftest membership
+  (is (memq 'b '(a b c))))  ; assert truthy
 ```
+
+`zepo test` discovers `tests/**/*_test.lisp`, runs every registered `deftest`,
+and reports a summary — you don't call `run-tests` yourself. (Call it
+explicitly only when running a file standalone with `zepo run`.)
 
 ## REPL
 

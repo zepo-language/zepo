@@ -2678,7 +2678,49 @@ Format epoch milliseconds as a string using strftime-style format. Supported dir
 
 ## Test Framework
 
-The test framework is provided by `lib/stdlib.lisp` and available without import.
+The test framework is the `test` module (`lib/test.lisp`). Import it first — a
+bare `(import test)` binds every export unqualified:
+
+```scheme
+(import test)   ; deftest is =check throws run-tests run-tests/tap clear-tests! make-suite
+```
+
+`zepo test` discovers `tests/**/*_test.lisp`, runs every registered `deftest`,
+and prints a summary — you do **not** call `run-tests` yourself in discovered
+files (call it explicitly only when running a file with `zepo run`).
+
+#### `(deftest name body...)`
+Register a test case. `name` is a symbol or string; `body` runs when tests
+execute. Use `is` / `=check` / `throws` inside for assertions.
+```scheme
+(deftest addition
+  (=check (+ 2 2) 4))
+```
+
+#### `(is expr)`
+Assert that `expr` is truthy; records a failure with the source form otherwise.
+```scheme
+(is (memq 'b '(a b c)))
+```
+
+#### `(=check actual expected)`
+Assert `actual` equals `expected`; reports both values on mismatch.
+```scheme
+(=check (* 6 7) 42)
+```
+
+#### `(throws expr)`
+Assert that evaluating `expr` raises an error.
+```scheme
+(throws (error "boom"))
+```
+
+#### `(run-tests [name])`
+Run all registered tests and print a `Summary: N passed, M failed` line. Called
+automatically by `zepo test`.
+```scheme
+(run-tests)
+```
 
 #### `(clear-tests!)`
 Reset the global test registry. Useful for multi-file test isolation.
@@ -2693,7 +2735,7 @@ Create an isolated test suite. Returns a pair `(cons register! run!)` containing
 (define (register! test-fn) ((car my-suite) test-fn))
 (define (run! [name]) ((cdr my-suite) name))
 
-(register! (lambda () (assert-equal 1 1)))
+(register! (lambda () (is (= 1 1))))
 (run!)   ; run the isolated suite
 ```
 
