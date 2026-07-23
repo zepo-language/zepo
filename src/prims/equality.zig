@@ -19,6 +19,25 @@ pub fn primEqQ(vm: *VM, args: []const Value) LispError!Value {
     return if (args[0] == args[1]) value_mod.TRUE else value_mod.FALSE;
 }
 
+// zepo-rddw: eqv? — identity, plus value equality for numbers WITHOUT crossing
+// the exact/inexact boundary. Two distinct boxed floats are eqv? iff they have
+// the same bit pattern; this matches hashValue (which hashes floats by bits),
+// so equal-keys-hash-equally holds. Fixnums/chars/booleans/nil/interned symbols
+// are immediates, so identity (a == b) already decides them.
+pub fn eqv(a: Value, b: Value) bool {
+    if (a == b) return true;
+    if (value_mod.isPtr(a) and value_mod.isPtr(b) and objects.isFloat(a) and objects.isFloat(b)) {
+        return @as(u64, @bitCast(objects.floatVal(a))) == @as(u64, @bitCast(objects.floatVal(b)));
+    }
+    return false;
+}
+
+pub fn primEqvQ(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 2) return error.ArityMismatch;
+    return if (eqv(args[0], args[1])) value_mod.TRUE else value_mod.FALSE;
+}
+
 pub fn primEqualQ(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 2) return error.ArityMismatch;
     var visited = std.AutoHashMap([2]usize, void).init(vm.allocator);
@@ -31,11 +50,10 @@ pub fn primEqualQ(vm: *VM, args: []const Value) LispError!Value {
 
 pub fn structuralEqual(vm: *VM, a: Value, b: Value, visited: *std.AutoHashMap([2]usize, void)) error{OutOfMemory}!bool {
     if (a == b) return true;
-    // Numbers: compare int/float with promotion.
+    // zepo-rddw: equal? on numbers reduces to eqv? — exactness-aware, NOT f64
+    // promotion, so (equal? 1 1.0) is #f and equal? agrees with the hasher.
     if (objects.isNumber(a) and objects.isNumber(b)) {
-        const af = toFloat(a);
-        const bf = toFloat(b);
-        return af == bf;
+        return eqv(a, b);
     }
     if (!value_mod.isPtr(a) or !value_mod.isPtr(b)) return false;
 
@@ -57,9 +75,4 @@ pub fn structuralEqual(vm: *VM, a: Value, b: Value, visited: *std.AutoHashMap([2
         return std.mem.eql(u8, objects.symbolName(a), objects.symbolName(b));
     }
     return false;
-}
-
-fn toFloat(v: Value) f64 {
-    if (value_mod.isFixnum(v)) return @floatFromInt(value_mod.fixnumVal(v));
-    return objects.floatVal(v);
 }
