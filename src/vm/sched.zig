@@ -276,6 +276,67 @@ pub const Scheduler = struct {
         }
     }
 
+    // zepo-nwaw: print a diagnostic for a fiber that died from an unhandled
+    // condition with no one joined to observe it, and flag the VM so the
+    // process exits non-zero. `raise` rendered the payload into vm.error_msg.
+    fn reportUnhandledFiber(sched: *Scheduler, idx: usize, e: anyerror) void {
+        const vm = sched.vm;
+        vm.unhandled_fiber_error = true;
+        var buf: [640]u8 = undefined;
+        const label: []const u8 = if (vm.error_msg) |m| m else @errorName(e);
+        const msg = std.fmt.bufPrint(
+            &buf,
+            "error: unhandled condition in fiber {d}: {s}\n",
+            .{ idx, label },
+        ) catch "error: unhandled condition in a fiber\n";
+        _ = std.c.write(2, msg.ptr, msg.len);
+    }
+
+    // zepo-nwaw: after the program's final form, give any still-runnable fibers
+    // (spawned but never scheduled because the spawning form did not yield) one
+    // cooperative run to completion, so an unhandled error in an un-joined fiber
+    // surfaces instead of being silently dropped. Blocked/sleeping fibers are
+    // abandoned — nothing will wake them once the program is exiting.
+    pub fn drainRunnable(sched: *Scheduler) !void {
+        const vm = sched.vm;
+        try vm.call_stack.regs.ensureTotalCapacity(vm.allocator, vm.max_regs);
+        try vm.call_stack.frames.ensureTotalCapacity(vm.allocator, 4096);
+        for (vm.fibers.items, 0..) |maybe_fs, i| {
+            if (maybe_fs) |fs| {
+                if (fs.status == .runnable) try sched.run_queue.append(sched.allocator, i);
+            }
+        }
+        while (sched.run_queue.items.len > 0) {
+            const next = sched.run_queue.orderedRemove(0);
+            sched.loadFiber(next);
+            const step: ?Value = vm.resumeExecFn() catch |e| blk: {
+                if (e == error.FiberYielded) {
+                    sched.saveCurrent(next);
+                    if (!vm.block_on_yield) try sched.run_queue.append(sched.allocator, next);
+                    vm.block_on_yield = false;
+                    vm.park_on_yield = false;
+                    break :blk null;
+                }
+                const fs_err = vm.fibers.items[next].?;
+                fs_err.status = .errored;
+                if (fs_err.waiters.items.len == 0) sched.reportUnhandledFiber(next, e);
+                objects.fiberComplete(vm.gc, fs_err.handle, objects.FIBER_ERRORED, vm.raised_val);
+                for (fs_err.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
+                vm.call_stack.frames.clearRetainingCapacity();
+                vm.call_stack.regs.shrinkRetainingCapacity(0);
+                vm.reapFiber(next);
+                break :blk null;
+            };
+            if (step) |v| {
+                const fs = vm.fibers.items[next].?;
+                fs.status = .done;
+                objects.fiberComplete(vm.gc, fs.handle, objects.FIBER_DONE, v);
+                for (fs.waiters.items) |w| try sched.run_queue.append(sched.allocator, w);
+                vm.reapFiber(next);
+            }
+        }
+    }
+
     // ── Main entry ───────────────────────────────────────────────────────────
 
     pub fn runMain(sched: *Scheduler, fn_id: u32, initial_args: []const Value) LispError!Value {
@@ -348,10 +409,15 @@ pub const Scheduler = struct {
                     break :blk null;
                 }
                 // Real error.
-                std.debug.print("[sched] fiber {} error: {}\n", .{ next, e });
-                if (next == MAIN_FIBER) return e;
+                if (next == MAIN_FIBER) return e; // propagates to the top-level diagnostic
                 const fs_err = vm.fibers.items[next].?;
                 fs_err.status = .errored;
+                // zepo-nwaw: an un-joined fiber killed by an unhandled condition
+                // used to vanish silently (exit 0). Report it and flag the VM so
+                // the process exits non-zero. A joined fiber delivers its error
+                // to the waiter via fiber-errored?/fiber-result, so only the
+                // truly un-joined case is reported here.
+                if (fs_err.waiters.items.len == 0) sched.reportUnhandledFiber(next, e);
                 // zepo-4d6: record terminal state on the handle, then reap.
                 objects.fiberComplete(vm.gc, fs_err.handle, objects.FIBER_ERRORED, vm.raised_val);
                 // zepo-i19: wake fibers blocked in (fiber-join) on this one

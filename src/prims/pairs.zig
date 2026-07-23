@@ -7,6 +7,7 @@ const value_mod = abi.value;
 
 const runtime = @import("../runtime/mod.zig");
 const objects = runtime.objects;
+const io = @import("io.zig"); // zepo-nwaw: render a raised payload for diagnostics
 
 const vm_mod = @import("../vm/dispatch.zig");
 const VM = vm_mod.VM;
@@ -296,6 +297,22 @@ pub fn primError(vm: *VM, args: []const Value) LispError!Value {
 pub fn primRaise(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     vm.raised_val = args[0];
+    // zepo-nwaw: render the raised object into error_msg so an UNHANDLED raise —
+    // at top level or in a fiber — reports the payload instead of a bare
+    // "UserError". A caught raise ignores this (with-exception-handler prefers
+    // raised_val and frees error_msg), so it only surfaces when nothing handles.
+    if (!objects.isString(args[0])) {
+        var msgbuf = std.ArrayListUnmanaged(u8).empty;
+        defer msgbuf.deinit(vm.allocator);
+        io.displayValue(&msgbuf, vm.allocator, args[0]) catch {};
+        if (msgbuf.items.len > 0) {
+            if (vm.error_msg) |old| vm.allocator.free(old);
+            vm.error_msg = vm.allocator.dupe(u8, msgbuf.items) catch null;
+        }
+    } else {
+        if (vm.error_msg) |old| vm.allocator.free(old);
+        vm.error_msg = vm.allocator.dupe(u8, objects.stringBytes(args[0])) catch null;
+    }
     try vm.signal(args[0]); // run handler-bind handlers in place (see primError)
     return error.UserError;
 }

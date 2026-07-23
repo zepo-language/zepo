@@ -52,6 +52,30 @@ test "sema: hash-table keys are consistent with equal?" {
     try helpers.expectString(try r.eval(src), "(x nf y)");
 }
 
+// zepo-nwaw: an unhandled condition in an un-joined fiber used to vanish
+// silently (exit 0). It is now detected and flagged when the fiber is drained
+// at program end. (drainFibers writes a diagnostic to stderr; that is expected.)
+test "sema: unhandled error in an un-joined fiber is detected" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // The fiber is spawned but not scheduled while main runs.
+    _ = try r.eval("(spawn (lambda () (raise 'boom)))");
+    try std.testing.expect(!r.ctx.vm.?.unhandled_fiber_error);
+    // Draining runs it; its unhandled raise is caught and flagged.
+    try r.ctx.vm.?.drainFibers();
+    try std.testing.expect(r.ctx.vm.?.unhandled_fiber_error);
+}
+
+// zepo-nwaw: an unhandled raise now records the rendered payload in error_msg,
+// so the diagnostic shows it instead of a bare "UserError".
+test "sema: unhandled raise records its payload for the diagnostic" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try std.testing.expectError(error.UserError, r.eval("(raise 'my-error)"));
+    try std.testing.expect(r.ctx.vm.?.error_msg != null);
+    try std.testing.expectEqualStrings("my-error", r.ctx.vm.?.error_msg.?);
+}
+
 test "sema: lexical shadowing" {
     const r = try Rig.init(alloc);
     defer r.deinit();
