@@ -21,11 +21,11 @@ fn toInt(v: Value) LispError!i64 {
     return error.TypeError;
 }
 
-/// Encode an i64 result back as a fixnum (fits in i63) or raise ContractViolation.
+/// Encode an i64 result back as a fixnum when it fits the fixnum range,
+/// otherwise box it as a float.
 fn fromInt(vm: *VM, n: i64) LispError!Value {
-    const max_i63: i64 = (@as(i64, 1) << 62) - 1;
-    const min_i63: i64 = -(@as(i64, 1) << 62);
-    if (n >= min_i63 and n <= max_i63) {
+    // zepo-9usm: single source of truth for the fixnum range.
+    if (value_mod.fixnumFits(n)) {
         return value_mod.fixnum(@intCast(n));
     }
     // Overflow: store as float boxed object.

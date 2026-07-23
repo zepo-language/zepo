@@ -63,18 +63,16 @@ fn marshalJson(vm: *VM, jv: std.json.Value) LispError!Value {
         .null => return nullSym(vm),
         .bool => |b| return if (b) value_mod.TRUE else value_mod.FALSE,
         .integer => |n| {
-            const max_fixnum: i64 = (1 << 62) - 1;
-            const min_fixnum: i64 = -(1 << 62);
-            if (n <= max_fixnum and n >= min_fixnum) return value_mod.fixnum(@intCast(n));
+            // zepo-9usm: promote out-of-range integers to float.
+            if (value_mod.fixnumFits(n)) return value_mod.fixnum(@intCast(n));
             return objects.makeFloat(vm.gc, @floatFromInt(n)) catch return error.OutOfMemory;
         },
         .float => |f| return objects.makeFloat(vm.gc, f) catch return error.OutOfMemory,
         .number_string => |s| {
             // Fallback path: try i64 then f64.
             if (std.fmt.parseInt(i64, s, 10)) |n| {
-                const max_fixnum: i64 = (1 << 62) - 1;
-                const min_fixnum: i64 = -(1 << 62);
-                if (n <= max_fixnum and n >= min_fixnum) return value_mod.fixnum(@intCast(n));
+                // zepo-9usm: promote out-of-range integers to float.
+                if (value_mod.fixnumFits(n)) return value_mod.fixnum(@intCast(n));
                 return objects.makeFloat(vm.gc, @floatFromInt(n)) catch return error.OutOfMemory;
             } else |_| {}
             if (std.fmt.parseFloat(f64, s)) |f| {

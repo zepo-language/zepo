@@ -32,9 +32,8 @@ fn makeNum(vm: *VM, is_float: bool, int_v: i64, float_v: f64) LispError!Value {
     if (is_float) {
         return objects.makeFloat(vm.gc, float_v) catch error.OutOfMemory;
     }
-    // Fit into i63.
-    if (int_v > (@as(i64, 1) << 62) - 1 or int_v < -(@as(i64, 1) << 62)) {
-        // Overflow: promote to float.
+    // zepo-9usm: promote to float when the result exceeds the fixnum range.
+    if (!value_mod.fixnumFits(int_v)) {
         return objects.makeFloat(vm.gc, @floatFromInt(int_v)) catch error.OutOfMemory;
     }
     return value_mod.fixnum(@intCast(int_v));
@@ -57,11 +56,10 @@ inline fn bothFixnum(a: Value, b: Value) bool {
     return ((a ^ 1) | (b ^ 1)) & 7 == 0;
 }
 
-// Encode an i64 as fixnum if it fits in i63 range; otherwise return null.
+// Encode an i64 as a fixnum if it fits the fixnum range; otherwise return null.
 inline fn tryEncodeFixnum(n: i64) ?Value {
-    const max_i63: i64 = (@as(i64, 1) << 62) - 1;
-    const min_i63: i64 = -(@as(i64, 1) << 62);
-    if (n > max_i63 or n < min_i63) return null;
+    // zepo-9usm: single source of truth for the fixnum range.
+    if (!value_mod.fixnumFits(n)) return null;
     return value_mod.fixnum(@intCast(n));
 }
 

@@ -73,8 +73,23 @@ pub inline fn isEof(v: Value) bool {
     return v == EOF_VAL;
 }
 
+// zepo-9usm: the fixnum payload occupies bits 63:3 — a 61-bit two's-complement
+// field — so the exact representable range is [-2^60, 2^60-1], NOT the i63 the
+// encoder parameter suggests (the i63 type + a since-removed 1-bit-tag design
+// left that mismatch behind). Every producer of a fixnum — the encoder below,
+// the arithmetic overflow guards, the reader, and the FFI marshallers — MUST
+// gate on this range and promote anything outside it to a boxed float. Use
+// fixnumFits as the single source of truth for that bound.
+pub const FIXNUM_MAX: i64 = (1 << 60) - 1;
+pub const FIXNUM_MIN: i64 = -(1 << 60);
+
+pub inline fn fixnumFits(n: i64) bool {
+    return n >= FIXNUM_MIN and n <= FIXNUM_MAX;
+}
+
 pub inline fn fixnum(n: i63) Value {
-    // Encode i63 into bits 63:3. Low 3 bits are the fixnum tag (001).
+    // Encode into bits 63:3. Low 3 bits are the fixnum tag (001).
+    std.debug.assert(fixnumFits(@as(i64, n))); // zepo-9usm: out-of-range = producer bug
     const u: u63 = @bitCast(n);
     const wide: u64 = @as(u64, u);
     return (wide << 3) | @intFromEnum(Tag.fixnum);
@@ -121,12 +136,26 @@ test "immediates" {
 }
 
 test "fixnums" {
-    const nums = [_]i63{ 0, 1, -1, 42, -42, 1 << 30, -(1 << 30) };
+    // zepo-9usm: include the true payload boundaries — the round-trip must hold
+    // exactly at FIXNUM_MAX/FIXNUM_MIN, which is the whole range the encoder
+    // can represent.
+    const nums = [_]i63{ 0, 1, -1, 42, -42, 1 << 30, -(1 << 30), @intCast(FIXNUM_MAX), @intCast(FIXNUM_MIN) };
     for (nums) |n| {
         const v = fixnum(n);
         try std.testing.expect(isFixnum(v));
         try std.testing.expectEqual(n, fixnumVal(v));
     }
+}
+
+test "fixnumFits bounds" {
+    // zepo-9usm: the guard the whole codebase keys off of.
+    try std.testing.expect(fixnumFits(FIXNUM_MAX));
+    try std.testing.expect(fixnumFits(FIXNUM_MIN));
+    try std.testing.expect(fixnumFits(0));
+    try std.testing.expect(!fixnumFits(FIXNUM_MAX + 1));
+    try std.testing.expect(!fixnumFits(FIXNUM_MIN - 1));
+    try std.testing.expect(!fixnumFits(std.math.maxInt(i64)));
+    try std.testing.expect(!fixnumFits(std.math.minInt(i64)));
 }
 
 test "chars" {

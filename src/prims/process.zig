@@ -17,7 +17,10 @@ fn toFloat(v: Value) f64 {
 }
 
 fn makeInt(n: i64) Value {
-    if (n >= -(@as(i64, 1) << 62) and n <= (@as(i64, 1) << 62) - 1)
+    // zepo-9usm: gate on the real fixnum range (process values — pids, fds,
+    // exit codes — are always tiny, so the clamp fallback is unreachable in
+    // practice; the point is never to hand fixnum() an out-of-range value).
+    if (value_mod.fixnumFits(n))
         return value_mod.fixnum(@intCast(n));
     return value_mod.fixnum(0);
 }
