@@ -198,7 +198,7 @@ pub const Builder = struct {
 
         var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
-        try b.collectBody(body_form, &body_ids);
+        try b.collectScopedBody(body_form, &body_ids);
 
         const bindings_owned = try b.arena.dupBindings(bindings.items);
         const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -245,7 +245,7 @@ pub const Builder = struct {
 
         var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
-        try b.collectBody(body_form, &body_ids);
+        try b.collectScopedBody(body_form, &body_ids);
 
         // Build inner lambda: (lambda (params...) body...)
         const inner_params = try b.arena.dupNames(params.items);
@@ -331,7 +331,7 @@ pub const Builder = struct {
 
         var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
-        try b.collectBody(body_form, &body_ids);
+        try b.collectScopedBody(body_form, &body_ids);
 
         const bindings_owned = try b.arena.dupBindings(bindings.items);
         const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -392,7 +392,7 @@ pub const Builder = struct {
             try inner_seq.append(b.allocator, set_id);
         }
         // Append body exprs.
-        try b.collectBody(body_form, &inner_seq);
+        try b.collectScopedBody(body_form, &inner_seq);
 
         const seq_owned = try b.arena.dupNodeIds(inner_seq.items);
         const body_seq = try b.arena.add(.{ .sequence = .{
@@ -638,7 +638,7 @@ pub const Builder = struct {
 
         var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
-        try b.collectBody(peeled.rest, &body_ids);
+        try b.collectScopedBody(peeled.rest, &body_ids);
 
         const params_owned = try b.arena.dupNames(params.items);
         const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -664,6 +664,133 @@ pub const Builder = struct {
             try out.append(b.allocator, id);
             cur = objects.pairCdr(cur).*;
         }
+    }
+
+    // zepo-3dtd: a parsed internal definition — the bound name and the AST node
+    // for its value. `(define x e)` yields (x, <e>); `(define (f a) body)`
+    // yields (f, <(lambda (a) body)>).
+    const InternalDefine = struct { name: []const u8, value: NodeId };
+
+    // zepo-3dtd: if `form` is a `(define ...)`, parse it into its name and value
+    // node WITHOUT emitting a global-scope `.define` node; otherwise return
+    // null. Mirrors buildDefine's parsing of both define shapes.
+    fn internalDefineParts(b: *Builder, form: Value) BuildError!?InternalDefine {
+        if (!objects.isPair(form)) return null;
+        const head = objects.pairCar(form).*;
+        if (!objects.isSymbol(head)) return null;
+        if (!std.mem.eql(u8, objects.symbolName(head), "define")) return null;
+
+        const rest = objects.pairCdr(form).*;
+        if (!objects.isPair(rest)) return BuildError.InvalidSpecialForm;
+        const target = objects.pairCar(rest).*;
+        const tail = objects.pairCdr(rest).*;
+
+        if (objects.isSymbol(target)) {
+            // (define name [:documentation "..."] expr)
+            const peeled = try peelDocumentation(b.arena, tail);
+            const tail2 = peeled.rest;
+            if (!objects.isPair(tail2)) return BuildError.InvalidSpecialForm;
+            const expr = objects.pairCar(tail2).*;
+            if (!value_mod.isNil(objects.pairCdr(tail2).*)) return BuildError.InvalidSpecialForm;
+            const name = try b.arena.dupString(objects.symbolName(target));
+            const value_id = try b.buildExpr(expr);
+            return InternalDefine{ .name = name, .value = value_id };
+        }
+
+        if (objects.isPair(target)) {
+            // (define (name params...) body...) => name, (lambda (params...) body...)
+            const name_val = objects.pairCar(target).*;
+            if (!objects.isSymbol(name_val)) return BuildError.InvalidSpecialForm;
+            const name = try b.arena.dupString(objects.symbolName(name_val));
+            const params_form = objects.pairCdr(target).*;
+            const peeled = try peelDocumentation(b.arena, tail);
+            const value_id = try b.buildLambdaParts(params_form, peeled.rest);
+            return InternalDefine{ .name = name, .value = value_id };
+        }
+
+        return BuildError.InvalidSpecialForm;
+    }
+
+    // zepo-3dtd: collect a lambda/let-family <body>. Per R7RS a body is zero or
+    // more internal definitions followed by expressions, and those definitions
+    // are letrec*-scoped locals — NOT globals (the old path lowered every
+    // define, at any nesting, to store_global, so internal defines leaked to
+    // the top level and same-named helpers in different functions clobbered
+    // one another). Peel the leading run of defines and desugar them exactly
+    // like `letrec` (see buildDefineScope). With no leading defines this is
+    // byte-identical to collectBody.
+    fn collectScopedBody(b: *Builder, body_form: Value, out: *std.ArrayList(NodeId)) BuildError!void {
+        var defines = std.ArrayListUnmanaged(InternalDefine).empty;
+        defer defines.deinit(b.allocator);
+
+        var cur = body_form;
+        while (objects.isPair(cur)) {
+            const form = objects.pairCar(cur).*;
+            const parts = (try b.internalDefineParts(form)) orelse break;
+            try defines.append(b.allocator, parts);
+            cur = objects.pairCdr(cur).*;
+        }
+
+        if (defines.items.len == 0) {
+            return b.collectBody(body_form, out);
+        }
+
+        const scope_id = try b.buildDefineScope(defines.items, cur);
+        try out.append(b.allocator, scope_id);
+    }
+
+    // zepo-3dtd: desugar peeled internal defines plus the remaining body into a
+    // letrec* scope, reusing the shape buildLetrec produces:
+    //   ((lambda (n1 n2 ...) (set! n1 v1) (set! n2 v2) rest...) #f #f ...)
+    // The names become lambda params (fresh locals), so references resolve to
+    // local slots instead of globals and mutual recursion still works (all
+    // names are in scope before any initializer runs). `rest_body` begins at
+    // the first non-define form and carries no leading defines.
+    fn buildDefineScope(b: *Builder, defines: []const InternalDefine, rest_body: Value) BuildError!NodeId {
+        var inner_seq = std.ArrayListUnmanaged(NodeId).empty;
+        defer inner_seq.deinit(b.allocator);
+
+        for (defines) |d| {
+            const set_id = try b.arena.add(.{ .set_bang = .{
+                .name = d.name,
+                .value = d.value,
+                .span = b.current_span,
+            } });
+            try inner_seq.append(b.allocator, set_id);
+        }
+        try b.collectBody(rest_body, &inner_seq);
+
+        const seq_owned = try b.arena.dupNodeIds(inner_seq.items);
+        const body_seq = try b.arena.add(.{ .sequence = .{
+            .exprs = seq_owned,
+            .span = b.current_span,
+        } });
+
+        var names = std.ArrayListUnmanaged([]const u8).empty;
+        defer names.deinit(b.allocator);
+        for (defines) |d| try names.append(b.allocator, d.name);
+        const params_owned = try b.arena.dupNames(names.items);
+        const body_ids = try b.arena.dupNodeIds(&[_]NodeId{body_seq});
+        const lambda_id = try b.arena.add(.{ .lambda = .{
+            .params = params_owned,
+            .rest_param = null,
+            .body = body_ids,
+            .span = b.current_span,
+        } });
+
+        var arg_ids = std.ArrayListUnmanaged(NodeId).empty;
+        defer arg_ids.deinit(b.allocator);
+        for (defines) |_| {
+            const fid = try b.arena.add(.{ .literal = .{ .val = .{ .boolean = false }, .span = b.current_span } });
+            try arg_ids.append(b.allocator, fid);
+        }
+        const args_owned = try b.arena.dupNodeIds(arg_ids.items);
+
+        return b.arena.add(.{ .application = .{
+            .func = lambda_id,
+            .args = args_owned,
+            .span = b.current_span,
+        } });
     }
 
     // zepo-uney: If `doc` is non-null, wrap `define_id` in a sequence that
@@ -774,7 +901,7 @@ pub const Builder = struct {
 
             var body_ids = std.ArrayListUnmanaged(NodeId).empty;
             defer body_ids.deinit(b.allocator);
-            try b.collectBody(peeled.rest, &body_ids);
+            try b.collectScopedBody(peeled.rest, &body_ids);
 
             const params_owned = try b.arena.dupNames(params.items);
             const body_owned = try b.arena.dupNodeIds(body_ids.items);
@@ -945,7 +1072,7 @@ pub const Builder = struct {
 
         var body_ids = std.ArrayListUnmanaged(NodeId).empty;
         defer body_ids.deinit(b.allocator);
-        try b.collectBody(body_form, &body_ids);
+        try b.collectScopedBody(body_form, &body_ids);
         if (body_ids.items.len == 0) return BuildError.InvalidSpecialForm;
 
         return b.arena.add(.{ .parameterize = .{
