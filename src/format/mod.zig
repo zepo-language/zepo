@@ -96,7 +96,9 @@ const Tokenizer = struct {
                 while (self.pos < self.src.len) {
                     const ch = self.src[self.pos];
                     if (ch == '\\') {
-                        self.pos += 2; // skip escape
+                        // zepo-hdhl: a lone backslash at EOF must not advance
+                        // past the end (that produced an out-of-bounds slice).
+                        self.pos = @min(self.pos + 2, self.src.len);
                     } else if (ch == '"') {
                         self.pos += 1;
                         break;
@@ -107,6 +109,15 @@ const Tokenizer = struct {
                 return .{ .kind = .string, .text = self.src[start..self.pos] };
             },
             else => {
+                // zepo-hdhl: a character literal #\<c> takes its next byte
+                // verbatim — even a delimiter like ( ) ; " — so consume it
+                // before the delimiter scan (otherwise #\( split into the atom
+                // "#\" plus a stray '(', corrupting structure). Trailing letters
+                // of named chars (#\space, #\newline) are picked up by the loop.
+                if (self.pos + 1 < self.src.len and self.src[self.pos] == '#' and self.src[self.pos + 1] == '\\') {
+                    self.pos += 2; // past #\
+                    if (self.pos < self.src.len) self.pos += 1; // the literal char (any byte)
+                }
                 // atom: read until delimiter
                 while (self.pos < self.src.len) {
                     const ch = self.src[self.pos];
@@ -218,8 +229,11 @@ const Parser = struct {
                 return Node.initList(slice);
             },
             .rparen => {
-                _ = self.consume();
-                return null; // unmatched, skip
+                // zepo-hdhl: an unmatched top-level ')' is a syntax error, NOT
+                // end-of-input. Returning null here made parseAll stop and
+                // silently drop every form after it. Error out so the caller
+                // refuses to rewrite the (malformed) file.
+                return error.UnmatchedRparen;
             },
             .quote => {
                 _ = self.consume();
@@ -563,6 +577,23 @@ fn needsBlankLineBefore(forms: []const Node, i: usize) bool {
 // Format a single source string
 // ---------------------------------------------------------------------------
 
+// zepo-hdhl: a formatter must only ever change whitespace. Tokenize both the
+// input and the formatted output and require an identical (kind, text) token
+// stream — comments included. This is a hard guarantee that reformatting can
+// never silently corrupt or drop code; on any mismatch the caller keeps the
+// original file untouched.
+fn tokenStreamsMatch(a: []const u8, b: []const u8) bool {
+    var ta = Tokenizer.init(a);
+    var tb = Tokenizer.init(b);
+    while (true) {
+        const x = ta.next();
+        const y = tb.next();
+        if (x.kind != y.kind) return false;
+        if (x.kind == .eof) return true;
+        if (!std.mem.eql(u8, x.text, y.text)) return false;
+    }
+}
+
 pub fn formatSource(alloc: std.mem.Allocator, src: []const u8) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
@@ -573,7 +604,14 @@ pub fn formatSource(alloc: std.mem.Allocator, src: []const u8) ![]u8 {
 
     var printer = Printer.init(alloc);
     try printer.printForms(forms);
-    return printer.toOwnedSlice();
+    const formatted = try printer.toOwnedSlice();
+
+    // zepo-hdhl: refuse to emit output that isn't token-identical to the input.
+    if (!tokenStreamsMatch(src, formatted)) {
+        alloc.free(formatted);
+        return error.FormatWouldCorrupt;
+    }
+    return formatted;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,3 +619,43 @@ pub fn formatSource(alloc: std.mem.Allocator, src: []const u8) ![]u8 {
 // ---------------------------------------------------------------------------
 
 // zepo-n3h
+
+// ---------------------------------------------------------------------------
+// Tests (zepo-hdhl)
+// ---------------------------------------------------------------------------
+
+test "format: char literals incl. delimiters survive verbatim" {
+    const a = std.testing.allocator;
+    const out = try formatSource(a, "(list #\\( #\\) #\\; #\\\" #\\space #\\newline #\\a)");
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "#\\(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "#\\)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "#\\;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "#\\space") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "#\\newline") != null);
+}
+
+test "format: unmatched close paren errors instead of truncating" {
+    const a = std.testing.allocator;
+    // (foo)) (bar) used to format to just "(foo)" — dropping (bar).
+    try std.testing.expectError(error.UnmatchedRparen, formatSource(a, "(foo)) (bar)"));
+}
+
+test "format: unterminated string does not corrupt or panic" {
+    const a = std.testing.allocator;
+    // trailing lone backslash at EOF inside an unterminated string
+    try std.testing.expectError(error.FormatWouldCorrupt, formatSource(a, "(define s \"abc\\"));
+}
+
+test "format: valid code is token-preserving and idempotent" {
+    const a = std.testing.allocator;
+    const src = "(define (f x)\n(if (< x 0) 'neg (list #\\( x)))\n; keep me\n";
+    const out1 = try formatSource(a, src);
+    defer a.free(out1);
+    // token-identical to the input (the round-trip guard would have errored)
+    try std.testing.expect(tokenStreamsMatch(src, out1));
+    // and stable under a second pass
+    const out2 = try formatSource(a, out1);
+    defer a.free(out2);
+    try std.testing.expectEqualStrings(out1, out2);
+}
