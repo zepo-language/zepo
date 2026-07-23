@@ -8,7 +8,32 @@ const ProjectConfig = project_config.ProjectConfig;
 
 extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
 extern "c" fn ftell(stream: *std.c.FILE) c_long;
-extern "c" fn system(cmd: [*:0]const u8) c_int;
+// zepo-imna: process spawning goes through fork+execvp, never a shell, so a
+// metacharacter in any argument (an attacker-controlled output name or path)
+// is inert. This replaces the previous `system()` shell calls.
+extern "c" fn fork() c_int;
+extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+extern "c" fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
+extern "c" fn chdir(path: [*:0]const u8) c_int;
+
+// zepo-imna: fork + execvp a command with NO shell. argv is passed to execvp
+// verbatim, so shell metacharacters in any argument are never interpreted.
+// Optionally chdir into `cwd` first. Returns the child's exit code, or -1 if
+// fork/waitpid failed.
+fn execSync(argv: [*:null]const ?[*:0]const u8, cwd: ?[*:0]const u8) c_int {
+    const pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        if (cwd) |dir| {
+            if (chdir(dir) != 0) std.process.exit(127);
+        }
+        _ = execvp(argv[0].?, argv);
+        std.process.exit(127); // execvp only returns on failure
+    }
+    var status: c_int = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return (status >> 8) & 0xff;
+}
 
 fn writeMsg(fd: c_int, s: []const u8) void {
     _ = std.c.write(fd, s.ptr, s.len);
@@ -55,8 +80,10 @@ fn makePath(path: []const u8) void {
 
 fn deleteTree(path: []const u8) void {
     var buf: [4096]u8 = undefined;
-    const cmd = std.fmt.bufPrintZ(&buf, "rm -rf {s}", .{path}) catch return;
-    _ = system(cmd);
+    // zepo-imna: `path` is a single argv element to `rm`, never a shell word.
+    const path_z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return;
+    const argv = [_:null]?[*:0]const u8{ "rm", "-rf", path_z };
+    _ = execSync(&argv, null);
 }
 
 // build.zig written into the temp dir. Placeholders: {s}=src_dir, {s}=binary_name.
@@ -326,12 +353,15 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
     // ── Run zig build ─────────────────────────────────────────────────────────
     const out_prefix = try std.fmt.allocPrint(alloc, "{s}/out", .{tmp_path});
     defer alloc.free(out_prefix);
-    var zig_cmd_buf: [4096]u8 = undefined;
-    const zig_cmd = std.fmt.bufPrintZ(&zig_cmd_buf,
-        "cd {s} && zig build -p {s} -Doptimize=ReleaseFast",
-        .{ tmp_path, out_prefix }) catch return error.NoSpaceLeft;
-    const status = system(zig_cmd.ptr);
-    const exit_code: c_int = (status >> 8) & 0xff;
+    // zepo-imna: run `zig build` via argv exec with cwd = the temp dir, instead
+    // of a `cd {s} && zig build -p {s}` shell string. No shell means the
+    // interpolated paths can never inject a command.
+    var op_buf: [4096]u8 = undefined;
+    const out_prefix_z = std.fmt.bufPrintZ(&op_buf, "{s}", .{out_prefix}) catch return error.NoSpaceLeft;
+    var tp_buf: [4096]u8 = undefined;
+    const tmp_path_z = std.fmt.bufPrintZ(&tp_buf, "{s}", .{tmp_path}) catch return error.NoSpaceLeft;
+    const zig_argv = [_:null]?[*:0]const u8{ "zig", "build", "-p", out_prefix_z, "-Doptimize=ReleaseFast" };
+    const exit_code = execSync(&zig_argv, tmp_path_z);
     if (exit_code != 0) {
         writeMsg(2, "error: zig build failed\n");
         std.process.exit(1);
@@ -349,10 +379,14 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
         writeMsg(2, "error: cannot write output binary\n");
         std.process.exit(1);
     }
-    // chmod +x
-    var chbuf: [256]u8 = undefined;
-    const chmod_cmd = std.fmt.bufPrintZ(&chbuf, "chmod +x {s}", .{output_path}) catch return;
-    _ = system(chmod_cmd);
+    // chmod +x — zepo-imna: direct chmod(2), not `system("chmod +x " ++ name)`.
+    // output_path comes from `-o` or project.lisp's name, so a value like
+    // `x; rm -rf ~` must never reach a shell.
+    var chbuf: [4096]u8 = undefined;
+    const output_path_z = std.fmt.bufPrintZ(&chbuf, "{s}", .{output_path}) catch return error.NoSpaceLeft;
+    if (std.c.chmod(output_path_z, @as(std.c.mode_t, 0o755)) != 0) {
+        writeMsg(2, "warning: could not set +x on output binary\n");
+    }
     deleteTree(tmp_path);
 
     var mbuf: [256]u8 = undefined;
