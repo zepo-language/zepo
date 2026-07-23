@@ -126,7 +126,11 @@ pub fn primAbs(vm: *VM, args: []const Value) LispError!Value {
     const v = args[0];
     if (value_mod.isFixnum(v)) {
         const n = value_mod.fixnumVal(v);
-        return value_mod.fixnum(@intCast(if (n < 0) -n else n));
+        // zepo-9usm: -FIXNUM_MIN (2^60) overflows the fixnum range — promote it
+        // to a float rather than wrapping.
+        const a: i64 = if (n < 0) -@as(i64, n) else @as(i64, n);
+        if (value_mod.fixnumFits(a)) return value_mod.fixnum(@intCast(a));
+        return mkf(vm, @floatFromInt(a));
     }
     if (objects.isFloat(v)) return mkf(vm, @abs(objects.floatVal(v)));
     return error.TypeError;

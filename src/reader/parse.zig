@@ -147,7 +147,10 @@ pub const Parser = struct {
             .boolean => return if (tok.bool_val) value_mod.TRUE else value_mod.FALSE,
             .integer => {
                 const n = tok.int_val;
-                if (n < -(@as(i64, 1) << 62) or n > ((@as(i64, 1) << 62) - 1)) {
+                // zepo-9usm: an integer literal wider than the fixnum range has
+                // no exact representation (no bignum tower) — reject it rather
+                // than silently wrap into a corrupted fixnum.
+                if (!value_mod.fixnumFits(n)) {
                     return p.setDiag(error.OverflowInt, tok.span);
                 }
                 return value_mod.fixnum(@intCast(n));

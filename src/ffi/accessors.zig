@@ -25,14 +25,15 @@ fn requireForeign(v: Value, expected_tag: u64) LispError!u64 {
 }
 
 pub fn primFfiInt(vm: *VM, args: []const Value) LispError!Value {
-    _ = vm;
     if (args.len != 1) return error.ArityMismatch;
     const bits = try requireForeign(args[0], tags.I64);
     const n: i64 = @bitCast(bits);
-    // Fixnum is i63 — range check.
-    const max_fixnum: i64 = (1 << 62) - 1;
-    const min_fixnum: i64 = -(1 << 62);
-    if (n > max_fixnum or n < min_fixnum) return error.ContractViolation;
+    // zepo-9usm: an i64 from FFI can exceed the fixnum range; promote it to a
+    // float (as json marshalling and arithmetic overflow do) rather than
+    // erroring or silently wrapping.
+    if (!value_mod.fixnumFits(n)) {
+        return objects.makeFloat(vm.gc, @floatFromInt(n)) catch return error.OutOfMemory;
+    }
     return value_mod.fixnum(@intCast(n));
 }
 

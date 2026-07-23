@@ -24,6 +24,37 @@ test "prims: float promotion" {
     try helpers.expectFloat(v, 2.5, 1e-9);
 }
 
+// zepo-9usm: fixnum payload is a 61-bit field (range [-2^60, 2^60-1]).
+// Arithmetic that lands inside the range stays an exact fixnum; anything
+// that steps outside must promote to a boxed float, never silently wrap.
+test "prims: fixnum overflow promotes to float, no silent wrap" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // 2^60-1 is the largest fixnum — reaching it exactly stays exact.
+    try helpers.expectInt(try r.eval("(+ 1152921504606846974 1)"), 1152921504606846975);
+    // One past the top must promote (was corrupting to -1152921504606846976).
+    try helpers.expectFloat(try r.eval("(+ 1152921504606846975 1)"), 1152921504606846976.0, 512.0);
+    // Formatting-independent proof it did not wrap negative.
+    try helpers.expectTrue(try r.eval("(> (+ 1152921504606846975 1) 0)"));
+    // MUL2 fast path: 2^30 * 2^30 = 2^60 overflows the fixnum range.
+    try helpers.expectFloat(try r.eval("(* 1073741824 1073741824)"), 1152921504606846976.0, 512.0);
+    // Below the floor (-2^60) must promote too.
+    try helpers.expectFloat(try r.eval("(- -1152921504606846976 1)"), -1152921504606846977.0, 512.0);
+    // abs / negate of the most-negative fixnum (-2^60) is +2^60, one past the
+    // top — must promote, not wrap back to a negative fixnum.
+    try helpers.expectFloat(try r.eval("(abs -1152921504606846976)"), 1152921504606846976.0, 512.0);
+    try helpers.expectFloat(try r.eval("(- -1152921504606846976)"), 1152921504606846976.0, 512.0);
+}
+
+// zepo-9usm: an integer literal wider than the fixnum range has no exact
+// representation and must be rejected, not silently wrapped.
+test "reader: over-range integer literal is rejected" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try std.testing.expectError(error.OverflowInt, r.eval("1152921504606846976"));
+    try std.testing.expectError(error.OverflowInt, r.eval("4611686018427387903"));
+}
+
 test "prims: comparison operators" {
     const r = try Rig.init(alloc);
     defer r.deinit();

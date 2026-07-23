@@ -1245,9 +1245,16 @@ pub const VM = struct {
                     const va = vm.call_stack.reg(b).*;
                     const vb = vm.call_stack.reg(c).*;
                     if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
-                        const r = @addWithOverflow(va, vb);
-                        if (r[1] == 0) {
-                            vm.call_stack.reg(a).* = r[0] - 1;
+                        // zepo-9usm: the raw-tagged add caught only u64 overflow,
+                        // never fixnum-range overflow — a sum past 2^60 wrapped
+                        // into a corrupted (often sign-flipped) fixnum. Decode,
+                        // add in i64 (both operands are < 2^60 so this cannot
+                        // overflow), then range-check before re-encoding.
+                        const av: i64 = @as(i64, @bitCast(va)) >> 3;
+                        const bv: i64 = @as(i64, @bitCast(vb)) >> 3;
+                        const sum = av + bv;
+                        if (value_mod.fixnumFits(sum)) {
+                            vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(sum));
                             continue;
                         }
                     }
@@ -1261,9 +1268,14 @@ pub const VM = struct {
                     const va = vm.call_stack.reg(b).*;
                     const vb = vm.call_stack.reg(c).*;
                     if (((va ^ 1) | (vb ^ 1)) & 7 == 0) {
-                        const r = @subWithOverflow(va, vb);
-                        if (r[1] == 0) {
-                            vm.call_stack.reg(a).* = r[0] + 1;
+                        // zepo-9usm: range-check the difference (see ADD2). The
+                        // raw-tagged subtract only caught u64 overflow, letting a
+                        // result past ±2^60 wrap into a corrupted fixnum.
+                        const av: i64 = @as(i64, @bitCast(va)) >> 3;
+                        const bv: i64 = @as(i64, @bitCast(vb)) >> 3;
+                        const diff = av - bv;
+                        if (value_mod.fixnumFits(diff)) {
+                            vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(diff));
                             continue;
                         }
                     }
@@ -1281,9 +1293,8 @@ pub const VM = struct {
                         const bv: i64 = @as(i64, @bitCast(vb)) >> 3;
                         const r = @mulWithOverflow(av, bv);
                         if (r[1] == 0) {
-                            const max_i63: i64 = (@as(i64, 1) << 62) - 1;
-                            const min_i63: i64 = -(@as(i64, 1) << 62);
-                            if (r[0] <= max_i63 and r[0] >= min_i63) {
+                            // zepo-9usm: single source of truth for the fixnum range.
+                            if (value_mod.fixnumFits(r[0])) {
                                 vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(r[0]));
                                 continue;
                             }
@@ -1451,9 +1462,8 @@ pub const VM = struct {
                             vm.call_stack.reg(a).* = try arith_prims.primAdd(vm, args[0..]);
                             continue;
                         };
-                        const max_i63: i64 = (@as(i64, 1) << 62) - 1;
-                        const min_i63: i64 = -(@as(i64, 1) << 62);
-                        if (r <= max_i63 and r >= min_i63) {
+                        // zepo-9usm: single source of truth for the fixnum range.
+                        if (value_mod.fixnumFits(r)) {
                             vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(r));
                             continue;
                         }
@@ -1474,9 +1484,8 @@ pub const VM = struct {
                             vm.call_stack.reg(a).* = try arith_prims.primSub(vm, args[0..]);
                             continue;
                         };
-                        const max_i63: i64 = (@as(i64, 1) << 62) - 1;
-                        const min_i63: i64 = -(@as(i64, 1) << 62);
-                        if (r <= max_i63 and r >= min_i63) {
+                        // zepo-9usm: single source of truth for the fixnum range.
+                        if (value_mod.fixnumFits(r)) {
                             vm.call_stack.reg(a).* = value_mod.fixnum(@intCast(r));
                             continue;
                         }
