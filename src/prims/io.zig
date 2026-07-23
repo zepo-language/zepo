@@ -17,8 +17,45 @@ const regex_prims = @import("regex.zig");
 const process_prims = @import("process.zig"); // zepo-wgt
 const LispError = errs.LispError;
 
+// zepo-s2o4: bounds recursion when rendering cyclic or pathologically deep
+// structures, so a self-referential value (e.g. a vector holding itself, made
+// via vector-set!/hash-set!) cannot overflow the native stack and crash the
+// VM. Tracks the chain of container pointers currently being rendered — the
+// ancestors on the recursion path; revisiting one is a cycle. A full stack is
+// treated as "too deep". No allocation. List/vector spines are already
+// iterated, so this only bounds nesting depth, not element count.
+pub const RENDER_MAX_DEPTH = 256;
+pub const RenderGuard = struct {
+    ancestors: [RENDER_MAX_DEPTH]Value = undefined,
+    depth: usize = 0,
+
+    /// True if `v` is already an ancestor (cycle) or the depth cap is reached —
+    /// the caller emits a marker and does NOT recurse. Otherwise pushes `v`;
+    /// caller must pair a successful push with pop().
+    pub fn push(g: *RenderGuard, v: Value) bool {
+        if (g.depth >= RENDER_MAX_DEPTH) return true;
+        var i: usize = 0;
+        while (i < g.depth) : (i += 1) {
+            if (g.ancestors[i] == v) return true;
+        }
+        g.ancestors[g.depth] = v;
+        g.depth += 1;
+        return false;
+    }
+    pub fn pop(g: *RenderGuard) void {
+        g.depth -= 1;
+    }
+};
+
+const CYCLE_MARKER = "...";
+
 /// Render `v` into `out` as an appendable stream of bytes.
 pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value) !void {
+    var guard = RenderGuard{};
+    return displayInner(out, allocator, v, &guard);
+}
+
+fn displayInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value, guard: *RenderGuard) !void {
     if (value_mod.isNil(v)) {
         try out.appendSlice(allocator, "()");
         return;
@@ -64,18 +101,23 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
             return;
         }
         if (objects.isPair(v)) {
+            if (guard.push(v)) { // zepo-s2o4
+                try out.appendSlice(allocator, CYCLE_MARKER);
+                return;
+            }
+            defer guard.pop();
             try out.appendSlice(allocator, "(");
             var cur = v;
             var first = true;
             while (true) {
                 if (!first) try out.appendSlice(allocator, " ");
                 first = false;
-                try displayValue(out, allocator, objects.pairCar(cur).*);
+                try displayInner(out, allocator, objects.pairCar(cur).*, guard);
                 const rest = objects.pairCdr(cur).*;
                 if (value_mod.isNil(rest)) break;
                 if (!objects.isPair(rest)) {
                     try out.appendSlice(allocator, " . ");
-                    try displayValue(out, allocator, rest);
+                    try displayInner(out, allocator, rest, guard);
                     break;
                 }
                 cur = rest;
@@ -84,11 +126,16 @@ pub fn displayValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Va
             return;
         }
         if (objects.isVector(v)) {
+            if (guard.push(v)) { // zepo-s2o4
+                try out.appendSlice(allocator, CYCLE_MARKER);
+                return;
+            }
+            defer guard.pop();
             try out.appendSlice(allocator, "#(");
             const len = objects.vectorLen(v);
             for (0..len) |i| {
                 if (i > 0) try out.append(allocator, ' ');
-                try displayValue(out, allocator, objects.vectorGet(v, i));
+                try displayInner(out, allocator, objects.vectorGet(v, i), guard);
             }
             try out.append(allocator, ')');
             return;
@@ -203,6 +250,11 @@ pub fn primNewline(vm: *VM, args: []const Value) LispError!Value {
 }
 
 pub fn writeValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value) !void {
+    var guard = RenderGuard{};
+    return writeInner(out, allocator, v, &guard);
+}
+
+fn writeInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value, guard: *RenderGuard) !void {
     if (value_mod.isChar(v)) {
         const cp = value_mod.charVal(v);
         var buf: [4]u8 = undefined;
@@ -221,18 +273,23 @@ pub fn writeValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Valu
         return;
     }
     if (value_mod.isPtr(v) and objects.isPair(v)) {
+        if (guard.push(v)) { // zepo-s2o4
+            try out.appendSlice(allocator, CYCLE_MARKER);
+            return;
+        }
+        defer guard.pop();
         try out.append(allocator, '(');
         var cur = v;
         var first = true;
         while (true) {
             if (!first) try out.append(allocator, ' ');
             first = false;
-            try writeValue(out, allocator, objects.pairCar(cur).*);
+            try writeInner(out, allocator, objects.pairCar(cur).*, guard);
             const rest = objects.pairCdr(cur).*;
             if (value_mod.isNil(rest)) break;
             if (!objects.isPair(rest)) {
                 try out.appendSlice(allocator, " . ");
-                try writeValue(out, allocator, rest);
+                try writeInner(out, allocator, rest, guard);
                 break;
             }
             cur = rest;
@@ -241,16 +298,23 @@ pub fn writeValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Valu
         return;
     }
     if (value_mod.isPtr(v) and objects.isVector(v)) {
+        if (guard.push(v)) { // zepo-s2o4
+            try out.appendSlice(allocator, CYCLE_MARKER);
+            return;
+        }
+        defer guard.pop();
         try out.appendSlice(allocator, "#(");
         const len = objects.vectorLen(v);
         for (0..len) |i| {
             if (i > 0) try out.append(allocator, ' ');
-            try writeValue(out, allocator, objects.vectorGet(v, i));
+            try writeInner(out, allocator, objects.vectorGet(v, i), guard);
         }
         try out.append(allocator, ')');
         return;
     }
-    try displayValue(out, allocator, v);
+    // zepo-s2o4: leaves (symbols, numbers, hashtables rendered non-recursively)
+    // — share the guard so depth accounting is continuous across write→display.
+    try displayInner(out, allocator, v, guard);
 }
 
 pub fn primWrite(vm: *VM, args: []const Value) LispError!Value {
