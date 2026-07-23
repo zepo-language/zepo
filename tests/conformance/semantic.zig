@@ -7,6 +7,51 @@ const Rig = helpers.Rig;
 
 const alloc = std.testing.allocator;
 
+// zepo-rddw: eqv? was unbound; equal? on numbers wrongly promoted to f64
+// ((equal? 1 1.0) => #t) which disagreed with the hasher and broke the
+// equal-keys-hash-equally invariant. equal? on numbers now reduces to eqv?
+// (exactness-aware), consistent with hashValue.
+test "sema: eqv? identity and number exactness" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(eqv? 1 1)"));
+    try helpers.expectFalse(try r.eval("(eqv? 1 1.0)")); // exact vs inexact
+    try helpers.expectTrue(try r.eval("(eqv? 1.0 1.0)"));
+    try helpers.expectFalse(try r.eval("(eqv? 1.0 2.0)"));
+    try helpers.expectTrue(try r.eval("(eqv? 'a 'a)"));
+    try helpers.expectFalse(try r.eval("(eqv? 'a 'b)"));
+    try helpers.expectTrue(try r.eval("(eqv? #\\x #\\x)"));
+    try helpers.expectTrue(try r.eval("(eqv? '() '())"));
+    try helpers.expectTrue(try r.eval("(eqv? #t #t)"));
+}
+
+test "sema: equal? on numbers is exactness-aware" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectFalse(try r.eval("(equal? 1 1.0)")); // the fix (was #t)
+    try helpers.expectTrue(try r.eval("(equal? 1 1)"));
+    try helpers.expectTrue(try r.eval("(equal? 1.0 1.0)"));
+    try helpers.expectFalse(try r.eval("(equal? 1 2)"));
+    // compound / string equality unchanged
+    try helpers.expectTrue(try r.eval("(equal? (list 1 2 3) (list 1 2 3))"));
+    try helpers.expectTrue(try r.eval("(equal? \"ab\" \"ab\")"));
+    // numeric = still promotes across exactness
+    try helpers.expectTrue(try r.eval("(= 1 1.0)"));
+}
+
+test "sema: hash-table keys are consistent with equal?" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const src =
+        \\(define h (make-hash-table))
+        \\(hash-set! h 1 'x)
+        \\(hash-set! h 2.0 'y)
+        \\(display-to-string (list (hash-get h 1 'nf) (hash-get h 1.0 'nf) (hash-get h 2.0 'nf)))
+    ;
+    // 1 hits; 1.0 is a distinct key (not equal? to 1) → miss; float key 2.0 hits.
+    try helpers.expectString(try r.eval(src), "(x nf y)");
+}
+
 test "sema: lexical shadowing" {
     const r = try Rig.init(alloc);
     defer r.deinit();

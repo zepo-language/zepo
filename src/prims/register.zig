@@ -70,6 +70,7 @@ const TABLE: []const Entry = &.{
     make("type-of", 1, predicates.primTypeOf), // zepo-gz21
 
     make("eq?", 2, equality.primEqQ),
+    make("eqv?", 2, equality.primEqvQ), // zepo-rddw
     make("equal?", 2, equality.primEqualQ),
 
     make("+", -1, arith.primAdd),
