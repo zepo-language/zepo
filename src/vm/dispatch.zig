@@ -77,6 +77,10 @@ pub const VM = struct {
     /// Lisp value being propagated by `raise` or `error`. NIL when no exception
     /// is in flight. Visited as a GC root so it survives stack unwind.
     raised_val: Value = value_mod.NIL,
+    /// zepo-nwaw: set when an un-joined fiber died from an unhandled condition,
+    /// so the process can exit non-zero even though the error never reached the
+    /// main fiber.
+    unhandled_fiber_error: bool = false,
     /// zepo-6qx: countdown to next signal poll. Decrements each opcode;
     /// when it reaches zero pollSignals() is called and it resets to SIGNAL_POLL_INTERVAL.
     signal_poll_counter: u32 = SIGNAL_POLL_INTERVAL,
@@ -539,6 +543,14 @@ pub const VM = struct {
         var sched = sched_mod.Scheduler.init(vm);
         defer sched.deinit();
         return sched.runMain(fn_id, args);
+    }
+
+    // zepo-nwaw: at true program end, run any fibers left runnable (spawned but
+    // never scheduled). Their unhandled errors are reported by the scheduler.
+    pub fn drainFibers(vm: *VM) !void {
+        var sched = sched_mod.Scheduler.init(vm);
+        defer sched.deinit();
+        try sched.drainRunnable();
     }
 
     /// Execute a CompiledFn. Supports tail calls via a trampoline loop.

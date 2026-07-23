@@ -71,4 +71,11 @@ pub fn runRun(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, run_args
         ctx.printDiagnostic(StderrWriter{}, e);
         std.process.exit(1);
     };
+    // zepo-nwaw: give fibers spawned but never scheduled a turn to run, then
+    // exit non-zero if any died from an unhandled condition (the scheduler
+    // already printed its diagnostic).
+    if (ctx.vm) |*vm| {
+        vm.drainFibers() catch {};
+        if (vm.unhandled_fiber_error) std.process.exit(1);
+    }
 }
