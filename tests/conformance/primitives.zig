@@ -55,6 +55,59 @@ test "reader: over-range integer literal is rejected" {
     try std.testing.expectError(error.OverflowInt, r.eval("4611686018427387903"));
 }
 
+// zepo-s2o4: rendering a cyclic or pathologically deep structure must not
+// overflow the native stack (it used to SIGBUS). Cycles render as a marker;
+// json-stringify errors rather than crash.
+test "prims: display of a self-referential vector terminates with a marker" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(define v (make-vector 1 0)) (vector-set! v 0 v) (display-to-string v)"),
+        "#(...)",
+    );
+}
+
+test "prims: cycle through vector+list renders the back-edge as a marker" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(define v (make-vector 1 0)) (vector-set! v 0 (list 1 v 3)) (display-to-string v)"),
+        "#((1 ... 3))",
+    );
+}
+
+test "prims: shared (acyclic) structure is rendered fully, not truncated" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // `x` appears twice as siblings — the guard tracks ancestors on the path,
+    // not a global seen-set, so a DAG is not mistaken for a cycle.
+    try helpers.expectString(
+        try r.eval("(define x (list 1 2)) (display-to-string (list x x))"),
+        "((1 2) (1 2))",
+    );
+}
+
+test "prims: a long flat list renders fully (spine is iterated, not recursed)" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const src =
+        \\(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+        \\(> (string-length (display-to-string (build 10000 (list)))) 40000)
+    ;
+    try helpers.expectTrue(try r.eval(src));
+}
+
+test "prims: json-stringify of a cyclic structure errors, does not crash" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // json-stringify returns a result object; a cycle yields an (err ...) tag,
+    // and — the point — eval completes instead of overflowing the stack.
+    try helpers.expectString(
+        try r.eval("(define v (make-vector 1 0)) (vector-set! v 0 v) (display-to-string (car (json-stringify v)))"),
+        "err",
+    );
+}
+
 test "prims: comparison operators" {
     const r = try Rig.init(alloc);
     defer r.deinit();

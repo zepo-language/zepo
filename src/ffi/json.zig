@@ -160,7 +160,36 @@ pub fn primJsonNullQ(vm: *VM, args: []const Value) LispError!Value {
 
 // ───────────────── Lisp → JSON string ─────────────────
 
+// zepo-s2o4: cycle/depth guard (see io.RenderGuard; kept local to avoid a
+// prims<-ffi import). A cyclic or pathologically deep structure has no valid
+// JSON encoding, so writeJson errors — primJsonStringify catches it into an
+// (err ...) result — instead of recursing until the native stack overflows
+// and crashes the VM.
+const JSON_MAX_DEPTH = 256;
+const RenderGuard = struct {
+    ancestors: [JSON_MAX_DEPTH]Value = undefined,
+    depth: usize = 0,
+    fn push(g: *RenderGuard, v: Value) bool {
+        if (g.depth >= JSON_MAX_DEPTH) return true;
+        var i: usize = 0;
+        while (i < g.depth) : (i += 1) {
+            if (g.ancestors[i] == v) return true;
+        }
+        g.ancestors[g.depth] = v;
+        g.depth += 1;
+        return false;
+    }
+    fn pop(g: *RenderGuard) void {
+        g.depth -= 1;
+    }
+};
+
 fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
+    var guard = RenderGuard{};
+    return writeJsonInner(buf, a, v, &guard);
+}
+
+fn writeJsonInner(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value, guard: *RenderGuard) !void {
     // Order of checks matters — check null sym first before generic symbol.
     if (value_mod.isFixnum(v)) {
         var tmp_fx: [32]u8 = undefined;
@@ -201,6 +230,8 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
         return;
     }
     if (objects.isVector(v)) {
+        if (guard.push(v)) return error.CyclicStructure; // zepo-s2o4
+        defer guard.pop();
         const h = value_mod.ptrVal(v);
         const body: [*]u64 = @ptrFromInt(@intFromPtr(h) + 8);
         const len: usize = @intCast(body[0]);
@@ -209,16 +240,18 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
         while (i < len) : (i += 1) {
             if (i > 0) try buf.append(a, ',');
             const slot: *Value = @ptrFromInt(@intFromPtr(h) + 8 + (i + 1) * 8);
-            try writeJson(buf, a, slot.*);
+            try writeJsonInner(buf, a, slot.*, guard);
         }
         try buf.append(a, ']');
         return;
     }
     const ht_mod = @import("../runtime/hashtable.zig");
     if (ht_mod.isHashTable(v)) {
+        if (guard.push(v)) return error.CyclicStructure; // zepo-s2o4
+        defer guard.pop();
         try buf.append(a, '{');
-        const Ctx = struct { buf: *std.ArrayList(u8), a: std.mem.Allocator, first: bool, err: ?anyerror };
-        var ctx2 = Ctx{ .buf = buf, .a = a, .first = true, .err = null };
+        const Ctx = struct { buf: *std.ArrayList(u8), a: std.mem.Allocator, guard: *RenderGuard, first: bool, err: ?anyerror };
+        var ctx2 = Ctx{ .buf = buf, .a = a, .guard = guard, .first = true, .err = null };
         // zepo-a72: forEach now takes a slot. JSON stringify is purely
         // read-only (visitor only formats into a byte buffer; no Lisp
         // allocation), so a local pointer is safe.
@@ -229,9 +262,9 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
                 if (c.err != null) return;
                 if (!c.first) c.buf.append(c.a, ',') catch { c.err = error.OutOfMemory; return; };
                 c.first = false;
-                writeJson(c.buf, c.a, k) catch |e| { c.err = e; return; };
+                writeJsonInner(c.buf, c.a, k, c.guard) catch |e| { c.err = e; return; };
                 c.buf.append(c.a, ':') catch { c.err = error.OutOfMemory; return; };
-                writeJson(c.buf, c.a, val) catch |e| { c.err = e; return; };
+                writeJsonInner(c.buf, c.a, val, c.guard) catch |e| { c.err = e; return; };
             }
         }.visit);
         if (ctx2.err) |e| return e;
@@ -239,6 +272,8 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
         return;
     }
     if (objects.isPair(v)) {
+        if (guard.push(v)) return error.CyclicStructure; // zepo-s2o4
+        defer guard.pop();
         // Alist fallback: ((key . val) ...).
         try buf.append(a, '{');
         var cur = v;
@@ -251,9 +286,9 @@ fn writeJson(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value) !void {
             if (!objects.isString(key)) return error.UnexpectedShape;
             if (!first) try buf.append(a, ',');
             first = false;
-            try writeJson(buf, a, key);
+            try writeJsonInner(buf, a, key, guard);
             try buf.append(a, ':');
-            try writeJson(buf, a, val);
+            try writeJsonInner(buf, a, val, guard);
             cur = objects.pairCdr(cur).*;
         }
         try buf.append(a, '}');
