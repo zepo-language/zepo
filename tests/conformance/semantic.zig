@@ -14,6 +14,68 @@ test "sema: lexical shadowing" {
     try helpers.expectInt(v, 2);
 }
 
+// zepo-3dtd: an internal define is a letrec*-scoped local, not a global.
+test "sema: internal define does not leak to global" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // The function itself sees its internal binding.
+    try helpers.expectInt(try r.eval("(define (f) (define secret 99) secret) (f)"), 99);
+    // ...but after calling it, the name is NOT visible at top level.
+    try std.testing.expectError(error.UnboundVariable, r.eval("(f) secret"));
+}
+
+test "sema: internal defines in two functions do not clobber each other" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    _ = try r.eval("(define (a) (define h 1) h)");
+    _ = try r.eval("(define (b) (define h 2) h)");
+    // Each call returns its own local, regardless of interleaving.
+    try helpers.expectInt(try r.eval("(a)"), 1);
+    try helpers.expectInt(try r.eval("(b)"), 1 + 1);
+    try helpers.expectInt(try r.eval("(a)"), 1);
+    // And neither leaked `h` to the global environment.
+    try std.testing.expectError(error.UnboundVariable, r.eval("h"));
+}
+
+test "sema: internal define supports mutual recursion (letrec*)" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    const src =
+        \\(define (test)
+        \\  (define (ev? n) (if (= n 0) #t (od? (- n 1))))
+        \\  (define (od? n) (if (= n 0) #f (ev? (- n 1))))
+        \\  (ev? 10))
+        \\(test)
+    ;
+    try helpers.expectTrue(try r.eval(src));
+}
+
+test "sema: internal define initializer sees an earlier internal define" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // letrec* is sequential: b's initializer may reference a.
+    try helpers.expectInt(try r.eval("(define (h) (define a 10) (define b (+ a 5)) b) (h)"), 15);
+}
+
+test "sema: nested helper via internal define" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(define (g) (define (helper x) (* x 2)) (helper 21)) (g)"), 42);
+}
+
+test "sema: closure captures an internal define" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(define (make) (define n 7) (lambda () n)) ((make))"), 7);
+}
+
+test "sema: internal define in a let body does not leak" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(let () (define x 5) (+ x 1))"), 6);
+    try std.testing.expectError(error.UnboundVariable, r.eval("(let () (define leaky 7) leaky) leaky"));
+}
+
 test "sema: let shadowing" {
     const r = try Rig.init(alloc);
     defer r.deinit();
