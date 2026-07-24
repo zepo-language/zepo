@@ -84,6 +84,28 @@ pub fn floatVal(v: Value) f64 {
     return @bitCast(bits);
 }
 
+/// zepo-mckx: render an f64 in R7RS external form into `buf`. An inexact real
+/// always carries a decimal point (or exponent) so it reads back as inexact and
+/// is not mistaken for an integer (`1.0` not `1`); non-finite values use the
+/// R7RS `+inf.0` / `-inf.0` / `+nan.0` syntax. `buf` should be at least 32 bytes.
+pub fn formatFloat(buf: []u8, f: f64) []const u8 {
+    if (std.math.isNan(f)) return "+nan.0";
+    if (std.math.isPositiveInf(f)) return "+inf.0";
+    if (std.math.isNegativeInf(f)) return "-inf.0";
+    const s = std.fmt.bufPrint(buf, "{d}", .{f}) catch return "?";
+    // {d} prints 1.0 as "1"; make sure a '.' or exponent is present so the value
+    // round-trips as inexact.
+    for (s) |c| {
+        if (c == '.' or c == 'e' or c == 'E') return s;
+    }
+    if (s.len + 2 <= buf.len) {
+        buf[s.len] = '.';
+        buf[s.len + 1] = '0';
+        return buf[0 .. s.len + 2];
+    }
+    return s;
+}
+
 // -------------------- Box --------------------
 
 pub fn makeBox(gc: *GC, val: Value) !Value {

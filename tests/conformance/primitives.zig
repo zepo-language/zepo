@@ -108,6 +108,30 @@ test "prims: json-stringify of a cyclic structure errors, does not crash" {
     );
 }
 
+// zepo-mckx: inexact reals render with a decimal point (so 1.0 is not shown as
+// the integer 1 and round-trips), and non-finite values use R7RS syntax.
+test "prims: float external representation" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectString(try r.eval("(display-to-string 1.0)"), "1.0");
+    try helpers.expectString(try r.eval("(display-to-string 100.0)"), "100.0");
+    try helpers.expectString(try r.eval("(display-to-string 3.14)"), "3.14");
+    try helpers.expectString(try r.eval("(display-to-string -0.5)"), "-0.5");
+    try helpers.expectString(try r.eval("(number->string 2.0)"), "2.0");
+    try helpers.expectString(try r.eval("(display-to-string (prim-inf))"), "+inf.0");
+    try helpers.expectString(try r.eval("(display-to-string (prim-neg-inf))"), "-inf.0");
+    try helpers.expectString(try r.eval("(display-to-string (prim-nan))"), "+nan.0");
+}
+
+test "prims: json-stringify errors on non-finite floats" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // finite floats are valid JSON
+    try helpers.expectString(try r.eval("(display-to-string (json-stringify 1.5))"), "(ok . 1.5)");
+    // NaN/Infinity have no JSON form → an (err ...) result, not invalid JSON
+    try helpers.expectString(try r.eval("(display-to-string (car (json-stringify (prim-inf))))"), "err");
+}
+
 test "prims: comparison operators" {
     const r = try Rig.init(alloc);
     defer r.deinit();

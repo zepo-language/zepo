@@ -209,8 +209,13 @@ fn writeJsonInner(buf: *std.ArrayList(u8), a: std.mem.Allocator, v: Value, guard
         return;
     }
     if (objects.isFloat(v)) {
+        const f = objects.floatVal(v);
+        // zepo-mckx: NaN/Infinity have no JSON representation — error (caught by
+        // primJsonStringify into an (err ...) result) rather than emit the bare
+        // `nan`/`inf` that Zig's {d} produces, which is invalid JSON.
+        if (!std.math.isFinite(f)) return error.NonFiniteFloat;
         var tmp_fl: [64]u8 = undefined;
-        try buf.appendSlice(a, std.fmt.bufPrint(&tmp_fl, "{d}", .{objects.floatVal(v)}) catch unreachable);
+        try buf.appendSlice(a, std.fmt.bufPrint(&tmp_fl, "{d}", .{f}) catch unreachable);
         return;
     }
     if (objects.isString(v)) {

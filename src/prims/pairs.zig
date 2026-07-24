@@ -253,7 +253,8 @@ pub fn primNumberToString(vm: *VM, args: []const Value) LispError!Value {
         return objects.makeString(vm.gc, s) catch error.OutOfMemory;
     }
     if (objects.isFloat(args[0])) {
-        const s = std.fmt.bufPrint(&buf, "{d}", .{objects.floatVal(args[0])}) catch return error.ContractViolation;
+        // zepo-mckx: R7RS float form (1.0 not 1; +inf.0/+nan.0 for non-finite).
+        const s = objects.formatFloat(&buf, objects.floatVal(args[0]));
         return objects.makeString(vm.gc, s) catch error.OutOfMemory;
     }
     return error.TypeError;
