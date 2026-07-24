@@ -655,7 +655,11 @@ const FnEmit = struct {
                     spec = try objects.makePair(c.e.gc, name_sym, tail);
                 }
                 const ci = try c.addConst(spec);
-                try c.emitInstr(bytecode.encodeBC(.IMPORT, @intCast(imp.dst), ci));
+                // zepo-okom: map the IR dst through phys() like every other
+                // emit — the raw IR register aliased physical register 0, so an
+                // in-function (import M) overwrote the first param/local with NIL
+                // (the import's discarded result), corrupting a live variable.
+                try c.emitInstr(bytecode.encodeBC(.IMPORT, c.phys(imp.dst), ci));
             },
         }
     }
