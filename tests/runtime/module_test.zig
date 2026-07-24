@@ -76,6 +76,19 @@ test "module: import with (only ...) selection" {
     try expectInt(try rig.eval("m.b"), 2);
 }
 
+// zepo-okom: the IMPORT opcode wrote its (discarded) NIL result to the raw IR
+// register instead of the phys()-mapped one, so an in-function import
+// overwrote the first param/local (register 0) with NIL.
+test "module: in-function import does not clobber a live local" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval("(module m (export greet) (define (greet n) (* n 10)))");
+    // param `n` must survive the import and reach greet as a number
+    try expectInt(try rig.eval("(define (f n) (import m) (m.greet n)) (f 7)"), 70);
+    // and a bare param survives too
+    try expectInt(try rig.eval("(define (g n) (import m) n) (g 42)"), 42);
+}
+
 test "module: exported function callable" {
     const rig = try Rig.init(std.testing.allocator);
     defer rig.deinit();
