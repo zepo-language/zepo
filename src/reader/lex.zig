@@ -108,13 +108,22 @@ pub const Lexer = struct {
             } else if (c == '#' and l.pos + 1 < l.src.len and l.src[l.pos + 1] == '|') {
                 _ = l.advance(); // #
                 _ = l.advance(); // |
-                while (!l.atEnd()) {
-                    if (l.src[l.pos] == '|' and l.pos + 1 < l.src.len and l.src[l.pos + 1] == '#') {
+                // zepo-3wss: block comments nest (R7RS). Track depth so an inner
+                // #| ... |# does not close the outer comment early, leaking the
+                // remainder as code.
+                var depth: usize = 1;
+                while (!l.atEnd() and depth > 0) {
+                    if (l.src[l.pos] == '#' and l.pos + 1 < l.src.len and l.src[l.pos + 1] == '|') {
+                        _ = l.advance(); // #
+                        _ = l.advance(); // |
+                        depth += 1;
+                    } else if (l.src[l.pos] == '|' and l.pos + 1 < l.src.len and l.src[l.pos + 1] == '#') {
                         _ = l.advance(); // |
                         _ = l.advance(); // #
-                        break;
+                        depth -= 1;
+                    } else {
+                        _ = l.advance();
                     }
-                    _ = l.advance();
                 }
             } else break;
         }

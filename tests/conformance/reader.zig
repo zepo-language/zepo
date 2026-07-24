@@ -76,6 +76,18 @@ test "reader: line comment" {
     try helpers.expectInt(v, 42);
 }
 
+// zepo-3wss: block comments nest (R7RS); an inner #| ... |# must not close the
+// outer one early and leak the remainder as code.
+test "reader: block comment" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("#| ignore me |# 7"), 7);
+    // nested — the inner |# used to terminate the whole comment, leaving `c` etc.
+    try helpers.expectInt(try r.eval("#| a #| b |# c |# 42"), 42);
+    // three levels deep, spanning lines
+    try helpers.expectInt(try r.eval("#| a #| b #| c |# d\n|# e |# 9"), 9);
+}
+
 test "reader: string literal" {
     const r = try Rig.init(alloc);
     defer r.deinit();
