@@ -174,7 +174,14 @@ pub fn tryAnalyze(alloc: std.mem.Allocator, uri: []const u8, text: []const u8) ?
         .out = &result,
     };
     for (top_nodes.items) |nid| {
-        scope_walker.walk(nid) catch {};
+        // zepo-rmcp: a partial scope walk yields WRONG classifications (a local
+        // reported as global, missed shadows). Better to have no real analysis
+        // than incorrect data — return null so the caller falls back to the
+        // simpler classifier, consistent with the other error paths above.
+        scope_walker.walk(nid) catch {
+            result.deinit();
+            return null;
+        };
     }
 
     return result;
