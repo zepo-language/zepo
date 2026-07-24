@@ -152,7 +152,14 @@ pub fn primTimeFormat(vm: *VM, args: []const Value) LispError!Value {
             j += 1;
             var tmp: [20]u8 = undefined;
             switch (fmt[j]) {
-                'Y' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>4}", .{@as(u64, @intCast(d.year))}) catch unreachable),
+                // zepo-wijk: year can be negative (large-negative epochs) — the
+                // @intCast to u64 panicked. Handle the sign explicitly so the
+                // positive case keeps its unsigned zero-padded form (no stray
+                // '+'). month/day/etc. below are always in non-negative ranges.
+                'Y' => if (d.year >= 0)
+                    try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>4}", .{@as(u64, @intCast(d.year))}) catch unreachable)
+                else
+                    try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "-{d:0>4}", .{@as(u64, @intCast(-d.year))}) catch unreachable),
                 'm' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.month))}) catch unreachable),
                 'd' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.day))}) catch unreachable),
                 'H' => try buf.appendSlice(vm.allocator, std.fmt.bufPrint(&tmp, "{d:0>2}", .{@as(u64, @intCast(d.hour))}) catch unreachable),

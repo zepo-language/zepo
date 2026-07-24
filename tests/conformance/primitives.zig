@@ -132,6 +132,17 @@ test "prims: json-stringify errors on non-finite floats" {
     try helpers.expectString(try r.eval("(display-to-string (car (json-stringify (prim-inf))))"), "err");
 }
 
+// zepo-wijk: a large-negative epoch yields a negative year; formatting it used
+// to panic on @intCast to u64.
+test "prims: time-format handles negative years without panicking" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // must not panic; negative year prints with a leading '-'
+    try helpers.expectString(try r.eval("(time-format -100000000000000 \"%Y\")"), "-1199");
+    // ordinary dates are unchanged (no stray '+' on the positive year)
+    try helpers.expectString(try r.eval("(time-format 1700000000 \"%Y-%m-%d\")"), "1970-01-20");
+}
+
 test "prims: comparison operators" {
     const r = try Rig.init(alloc);
     defer r.deinit();
