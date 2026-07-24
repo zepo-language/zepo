@@ -196,6 +196,34 @@ test "syntax-rules: ellipsis used as fixed-prefix + rest" {
     try expectInt(try rig.eval("(first-of 99)"), 99);
 }
 
+// zepo-bn0a: an ellipsis template may reference more than one ellipsis-bound
+// variable; they are expanded together in lockstep. Previously only the first
+// was substituted and the rest leaked out as unbound symbols.
+test "syntax-rules: two ellipsis vars in one template group" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define-syntax sum-pairs
+        \\  (syntax-rules ()
+        \\    ((_ (a b) ...) (+ (* a b) ...))))
+    );
+    // (+ (* 2 3) (* 4 5)) = 6 + 20 = 26
+    try expectInt(try rig.eval("(sum-pairs (2 3) (4 5))"), 26);
+}
+
+test "syntax-rules: three ellipsis vars in one template group" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    _ = try rig.eval(
+        \\(define-syntax add3each
+        \\  (syntax-rules ()
+        \\    ((_ (a b c) ...) (list (+ a b c) ...))))
+    );
+    // (list (+ 1 2 3) (+ 10 20 30)) = (6 60)
+    try expectInt(try rig.eval("(car (add3each (1 2 3) (10 20 30)))"), 6);
+    try expectInt(try rig.eval("(car (cdr (add3each (1 2 3) (10 20 30))))"), 60);
+}
+
 // ── Literal matching ───────────────────────────────────────────────────────
 
 test "syntax-rules: literal keyword dispatch" {
