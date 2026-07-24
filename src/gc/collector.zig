@@ -67,6 +67,10 @@ pub const GC = struct {
     /// Gray object worklist: objects seen but whose children haven't been traced.
     gray: std.ArrayListUnmanaged(*ObjHeader) = .empty,
     mark_phase: MarkPhase = .idle,
+    // zepo-6d2h: set when a gray-worklist append failed (OOM) during an
+    // incremental mark. The mark is then INCOMPLETE — sweepAndFinish must not
+    // sweep, or it would free still-reachable (never-traced) objects.
+    mark_overflow: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !GC {
         return initWithSize(allocator, nursery_mod.NURSERY_SIZE, oldgen_mod.OLD_GEN_SIZE);
@@ -129,6 +133,12 @@ pub const GC = struct {
         // walker (sweep / major-mark / verifier).
         const r = gc.old_gen.allocWithCap(body_words) orelse return error.OutOfMemory;
         r.hdr.* = ObjHeader.init(kind, .old_gen, @intFromEnum(kind), @intCast(r.actual_words));
+        // zepo-6d2h: if this fires during marking, the fresh old-gen object is
+        // white and would be swept mid-mark. Mark it black immediately (it holds
+        // no traced children yet), matching allocForeignRaw. Currently the
+        // preceding minor() leaves marking idle, so this is defensive — it makes
+        // the fallback correct regardless of that ordering invariant.
+        if (gc.mark_phase == .marking) r.hdr.setMark();
         return r.hdr;
     }
 
@@ -290,7 +300,11 @@ pub const GC = struct {
                 const old_tgt = value_mod.ptrVal(old_val);
                 if (gc.old_gen.contains(old_tgt) and !old_tgt.marked()) {
                     old_tgt.setMark();
-                    gc.gray.append(gc.allocator, old_tgt) catch {};
+                    // zepo-6d2h: on OOM the object is now black but never traced;
+                    // record the overflow so we don't sweep an incomplete mark.
+                    gc.gray.append(gc.allocator, old_tgt) catch {
+                        gc.mark_overflow = true;
+                    };
                 }
             }
         }
@@ -304,7 +318,12 @@ pub const GC = struct {
         if (!gc.old_gen.contains(obj)) return;
         if (obj.marked()) return;
         obj.setMark();
-        gc.gray.append(gc.allocator, obj) catch {};
+        // zepo-6d2h: on OOM the object is now black but never traced; record the
+        // overflow so we don't sweep an incomplete mark (would free its
+        // still-white, still-reachable children).
+        gc.gray.append(gc.allocator, obj) catch {
+            gc.mark_overflow = true;
+        };
     }
 
     /// RootVisitor callback: gray any old-gen pointer found in a root slot.
@@ -393,6 +412,19 @@ pub const GC = struct {
     /// worklist is empty (markStep returned true, or finishMark was called).
     pub fn sweepAndFinish(gc: *GC) void {
         std.debug.assert(gc.mark_phase == .marking);
+        // zepo-6d2h: if the gray worklist overflowed (OOM) the mark is
+        // incomplete — reachable objects may still be white. Sweeping now would
+        // free live objects (use-after-free). Abort the cycle WITHOUT sweeping:
+        // freeing nothing cannot corrupt the heap, and the partial marks only
+        // over-approximate liveness, so a later cycle reclaims from a fresh,
+        // complete mark. (No memory is reclaimed this cycle, which under OOM is
+        // strictly better than corruption.)
+        if (gc.mark_overflow) {
+            gc.mark_overflow = false;
+            gc.mark_phase = .idle;
+            gc.gray.clearRetainingCapacity();
+            return;
+        }
         gc.old_gen.sweep();
         gc.major_count += 1;
         gc.mark_phase = .idle;
