@@ -582,26 +582,39 @@ pub fn expandTemplate(
 
     if (objects.isPair(t_cdr.*) and isEllipsis(objects.pairCar(t_cdr.*).*)) {
         const after_ellipsis = objects.pairCdr(t_cdr.*).*;
-        // Find the ellipsis-bound variable in t_car.
-        const ellipsis_var = findEllipsisVar(t_car.*, bindings) orelse
-            return error.BadEllipsisTemplate;
-        const bound_list = bindings.getList(ellipsis_var) orelse
-            return error.BadEllipsisTemplate;
-        // Expand t_car once per element in bound_list.
+        // zepo-bn0a: an ellipsis template may reference MORE THAN ONE
+        // ellipsis-bound variable — e.g. (cons k v) ... — and they are iterated
+        // together in lockstep. The old code drove iteration off the first var
+        // only and left the others bound to their list form, so a sibling like
+        // `v` leaked out of the macro as an unbound symbol.
+        var evars = std.ArrayListUnmanaged([]const u8).empty;
+        defer evars.deinit(bindings.allocator);
+        try collectEllipsisVars(t_car.*, bindings, &evars);
+        if (evars.items.len == 0) return error.BadEllipsisTemplate;
+        // All driving lists come from the same ellipsis group and so share a
+        // length; disagreement means an ill-formed ellipsis template.
+        const count = (bindings.getList(evars.items[0]) orelse return error.BadEllipsisTemplate).len;
+        for (evars.items) |ev| {
+            const l = bindings.getList(ev) orelse return error.BadEllipsisTemplate;
+            if (l.len != count) return error.EllipsisCountMismatch;
+        }
+        // Expand t_car once per element, overriding EVERY ellipsis var.
         const tail_slot = scope.push(try expandTemplate(after_ellipsis, bindings, rename, syms, gc));
         // Build list in reverse.
         const acc_slot = scope.push(tail_slot.*);
-        var k: usize = bound_list.len;
+        var k: usize = count;
         while (k > 0) {
             k -= 1;
-            // Temporarily override the ellipsis-bound var for this iteration.
             var iter_bindings = Bindings.init(bindings.allocator);
             defer iter_bindings.deinit();
-            // Copy all bindings.
+            // Copy scalar bindings, then override each ellipsis var with its
+            // k-th element for this iteration.
             var sit = bindings.scalar.iterator();
             while (sit.next()) |kv| try iter_bindings.scalar.put(iter_bindings.allocator, kv.key_ptr.*, kv.value_ptr.*);
-            // Override the ellipsis var with this element.
-            try iter_bindings.scalar.put(iter_bindings.allocator, ellipsis_var, bound_list[k]);
+            for (evars.items) |ev| {
+                const l = bindings.getList(ev).?;
+                try iter_bindings.scalar.put(iter_bindings.allocator, ev, l[k]);
+            }
             const expanded = scope.push(try expandTemplate(t_car.*, &iter_bindings, rename, syms, gc));
             acc_slot.* = try objects.makePairFromSlots(gc, expanded, acc_slot);
         }
@@ -626,6 +639,28 @@ fn findEllipsisVar(tmpl: Value, bindings: *const Bindings) ?[]const u8 {
         return findEllipsisVar(objects.pairCdr(tmpl).*, bindings);
     }
     return null;
+}
+
+/// zepo-bn0a: collect every distinct ellipsis-bound pattern variable appearing
+/// in `tmpl`. All of them drive one ellipsis expansion in lockstep, so an
+/// ellipsis template like (cons k v) ... substitutes both k and v.
+fn collectEllipsisVars(
+    tmpl: Value,
+    bindings: *const Bindings,
+    out: *std.ArrayListUnmanaged([]const u8),
+) anyerror!void {
+    if (objects.isSymbol(tmpl)) {
+        const name = objects.symbolName(tmpl);
+        if (bindings.list.contains(name)) {
+            for (out.items) |e| if (std.mem.eql(u8, e, name)) return;
+            try out.append(bindings.allocator, name);
+        }
+        return;
+    }
+    if (objects.isPair(tmpl)) {
+        try collectEllipsisVars(objects.pairCar(tmpl).*, bindings, out);
+        try collectEllipsisVars(objects.pairCdr(tmpl).*, bindings, out);
+    }
 }
 
 // ── Top-level apply: match + expand ───────────────────────────────────────
