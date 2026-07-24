@@ -161,7 +161,13 @@ pub const Server = struct {
     }
 
     fn handle(s: *Server, body: []const u8) !bool {
-        var parsed = std.json.parseFromSlice(std.json.Value, s.alloc, body, .{}) catch return false;
+        // zepo-rmcp: reply -32700 (Parse error) with a null id instead of
+        // silently dropping a malformed frame, which leaves a client that
+        // expected a response hanging.
+        var parsed = std.json.parseFromSlice(std.json.Value, s.alloc, body, .{}) catch {
+            s.sendError("null", -32700, "Parse error");
+            return false;
+        };
         defer parsed.deinit();
         const obj = switch (parsed.value) {
             .object => |o| o,
@@ -251,9 +257,17 @@ pub const Server = struct {
             return try entry.handler(s, id, params);
         }
 
-        // Respond to unknown requests so clients don't hang.
+        // zepo-rmcp: reply to unknown requests with a spec-compliant
+        // MethodNotFound (-32601) rather than a bogus null result (both avoid
+        // the client hang, but -32601 is correct).
         if (obj.get("id")) |id| {
-            try s.sendResult(id, "null");
+            var idbuf: std.ArrayListUnmanaged(u8) = .empty;
+            defer idbuf.deinit(s.alloc);
+            if (proto.idToJson(&idbuf, s.alloc, id)) |_| {
+                s.sendError(idbuf.items, -32601, "Method not found");
+            } else |_| {
+                try s.sendResult(id, "null");
+            }
         }
         return false;
     }
@@ -1229,13 +1243,22 @@ pub const Server = struct {
         // file, by looking at all SymbolHits that aren't the define-site itself.
         var used: std.StringHashMapUnmanaged(void) = .empty;
         defer used.deinit(s.alloc);
+        // zepo-rmcp: if building this set fails partway (OOM), it under-reports
+        // uses, which would make the unused-import rule below flag names that
+        // ARE used. Track completeness and skip that rule rather than emit
+        // false diagnostics against valid code.
+        var used_complete = true;
         for (a.symbols.items) |sym| {
             const head = if (sym.dot_at) |dot| sym.text[0..dot] else sym.text;
-            used.put(s.alloc, head, {}) catch {};
+            used.put(s.alloc, head, {}) catch {
+                used_complete = false;
+            };
             if (sym.dot_at != null) {
                 // The bare suffix is also a "use" of the imported name.
                 const suffix = sym.text[sym.dot_at.? + 1 ..];
-                used.put(s.alloc, suffix, {}) catch {};
+                used.put(s.alloc, suffix, {}) catch {
+                    used_complete = false;
+                };
             }
         }
 
@@ -1269,6 +1292,7 @@ pub const Server = struct {
         // flag if `A` never appears as a prefix. Plain (import M) is harder
         // to lint (any of M's exports may be in use); skip it.
         for (a.imports.items) |imp| {
+            if (!used_complete) break; // zepo-rmcp: don't emit false unused-import warnings from a partial use-set
             switch (imp.selection) {
                 .only => |names| {
                     for (names) |n| {
@@ -1392,6 +1416,25 @@ pub const Server = struct {
     fn sendNullResult(s: *Server, id: std.json.Value) !bool {
         try s.sendResult(id, "null");
         return false;
+    }
+
+    // zepo-rmcp: send a JSON-RPC error response. `id_json` is a raw JSON id
+    // token ("null" when we couldn't extract one). Best-effort — a failure to
+    // build/send the error must not crash the server. `message` must be a
+    // JSON-safe literal (no unescaped quotes/backslashes).
+    fn sendError(s: *Server, id_json: []const u8, code: i32, message: []const u8) void {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(s.alloc);
+        var nb: [16]u8 = undefined;
+        const code_str = std.fmt.bufPrint(&nb, "{d}", .{code}) catch return;
+        out.appendSlice(s.alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+        out.appendSlice(s.alloc, id_json) catch return;
+        out.appendSlice(s.alloc, ",\"error\":{\"code\":") catch return;
+        out.appendSlice(s.alloc, code_str) catch return;
+        out.appendSlice(s.alloc, ",\"message\":\"") catch return;
+        out.appendSlice(s.alloc, message) catch return;
+        out.appendSlice(s.alloc, "\"}}") catch return;
+        proto.writeMessage(s.writer, out.items);
     }
 };
 
