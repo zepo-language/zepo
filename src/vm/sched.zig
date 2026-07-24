@@ -347,7 +347,13 @@ pub const Scheduler = struct {
         vm.scheduler = sched;
         defer vm.scheduler = null;
         // zepo-1aw: ensure wakeup pipe is ready before entering the event loop.
-        sched.initWakeupFd() catch {};
+        // zepo-dn5s: the wakeup pipe backs cross-thread channel/worker wakeups.
+        // Do NOT swallow a pipe() failure — with wakeup_write_fd left at -1,
+        // wake()/enqueueFromThread become no-ops and a fiber parked on a
+        // cross-thread channel hangs forever with no diagnostic. pipe() only
+        // fails on fd exhaustion (systemic), so surface it as an I/O error
+        // rather than deadlock silently.
+        sched.initWakeupFd() catch return error.IOError;
         // zepo-oav: re-enqueue runnable fibers from prior run() calls so fibers
         // spawned in a previous top-level form get dispatched this run.
         for (vm.fibers.items, 0..) |maybe_fs, i| {
