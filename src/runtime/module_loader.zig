@@ -444,13 +444,25 @@ pub fn evalInclude(ctx: *EvalContext, form: Value) anyerror!Value {
 /// Supports two forms:
 ///   bare name  "clap"       → <dir>/clap.lisp  OR  <dir>/clap/mod.lisp (needs package.lisp)
 ///   pkg/mod    "tui/list"   → <dir>/tui/list.lisp (needs <dir>/tui/package.lisp)
-pub fn logModuleFile(ctx: *EvalContext, name: []const u8, path: []const u8) void {
+// zepo-nyrz: propagate OOM instead of silently no-op'ing. Dropping an entry
+// here leaves the module-file log / build-order incomplete, which later yields
+// a standalone binary missing a module with no diagnostic.
+pub fn logModuleFile(ctx: *EvalContext, name: []const u8, path: []const u8) !void {
     const log = ctx.module_file_log orelse return;
     if (log.contains(name)) return;
-    const k = ctx.allocator.dupe(u8, name) catch return;
-    const v = ctx.allocator.dupe(u8, path) catch { ctx.allocator.free(k); return; };
-    log.put(k, v) catch { ctx.allocator.free(k); ctx.allocator.free(v); return; };
-    if (ctx.module_file_order) |ord| ord.append(ctx.allocator, k) catch {};
+    const k = try ctx.allocator.dupe(u8, name);
+    const v = ctx.allocator.dupe(u8, path) catch |e| {
+        ctx.allocator.free(k);
+        return e;
+    };
+    log.put(k, v) catch |e| {
+        ctx.allocator.free(k);
+        ctx.allocator.free(v);
+        return e;
+    };
+    // k and v are now owned by `log`; ord holds a second (non-owning) reference
+    // to k, so on append failure we must NOT free k here (it stays in log).
+    if (ctx.module_file_order) |ord| try ord.append(ctx.allocator, k);
 }
 
 /// Open and read a file by explicit path string. Tries the path as-is (works
@@ -477,48 +489,48 @@ pub fn tryAutoLoadFromPaths(ctx: *EvalContext, name: []const u8, paths: []const 
             const mod = name[idx + 1 ..];
 
             // Try compiled .zbc first, then fall back to .lisp source.
-            const zbc_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.zbc", .{ dir, pkg, mod }) catch continue;
+            const zbc_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.zbc", .{ dir, pkg, mod }) catch return error.OutOfMemory;
             defer ctx.allocator.free(zbc_path);
             if (tryLoadZbc(ctx, name, zbc_path)) {
-                logModuleFile(ctx, name, zbc_path);
+                try logModuleFile(ctx, name, zbc_path);
             } else {
-                const full_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.lisp", .{ dir, pkg, mod }) catch continue;
+                const full_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/{s}.lisp", .{ dir, pkg, mod }) catch return error.OutOfMemory;
                 defer ctx.allocator.free(full_path);
                 const src = readModuleFile(ctx.allocator, full_path) orelse continue;
                 defer ctx.allocator.free(src);
                 _ = try ctx.evalString(src, full_path);
-                logModuleFile(ctx, name, full_path);
+                try logModuleFile(ctx, name, full_path);
             }
         } else {
             // Try <dir>/<name>.zbc first.
-            const zbc_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.zbc", .{ dir, name }) catch continue;
+            const zbc_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.zbc", .{ dir, name }) catch return error.OutOfMemory;
             defer ctx.allocator.free(zbc_path);
             if (tryLoadZbc(ctx, name, zbc_path)) {
-                logModuleFile(ctx, name, zbc_path);
+                try logModuleFile(ctx, name, zbc_path);
             } else {
                 // Try <dir>/<name>.lisp
-                const file_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch continue;
+                const file_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch return error.OutOfMemory;
                 defer ctx.allocator.free(file_path);
                 if (readModuleFile(ctx.allocator, file_path)) |src| {
                     defer ctx.allocator.free(src);
                     _ = try ctx.evalString(src, file_path);
-                    logModuleFile(ctx, name, file_path);
+                    try logModuleFile(ctx, name, file_path);
                 } else {
                     // Try <dir>/<name>/mod.lisp (package entry point).
-                    const manifest = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/package.lisp", .{ dir, name }) catch continue;
+                    const manifest = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/package.lisp", .{ dir, name }) catch return error.OutOfMemory;
                     defer ctx.allocator.free(manifest);
                     if (!fileExistsPosix(manifest)) continue;
                     // Try compiled mod.zbc first.
-                    const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch continue;
+                    const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch return error.OutOfMemory;
                     defer ctx.allocator.free(mod_zbc);
                     if (!tryLoadZbc(ctx, name, mod_zbc)) {
-                        const mod_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch continue;
+                        const mod_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch return error.OutOfMemory;
                         defer ctx.allocator.free(mod_path);
                         const src = readModuleFile(ctx.allocator, mod_path) orelse continue;
                         defer ctx.allocator.free(src);
                         _ = try ctx.evalString(src, mod_path);
                     }
-                    logModuleFile(ctx, name, mod_zbc);
+                    try logModuleFile(ctx, name, mod_zbc);
                 }
             }
         }
@@ -543,7 +555,18 @@ pub fn tryAutoLoad(ctx: *EvalContext, name: []const u8) anyerror!void {
 /// Try to load a .zbc file for `name`. Returns true on success, false if the
 /// file doesn't exist or fails to parse (falls back to source loading).
 fn tryLoadZbc(ctx: *EvalContext, name: []const u8, zbc_path: []const u8) bool {
-    loadZbc(ctx, name, zbc_path) catch return false;
+    loadZbc(ctx, name, zbc_path) catch |e| {
+        // zepo-nyrz: absent is fine (fall back to source silently), but a
+        // genuinely corrupt/incompatible .zbc must not silently masquerade as
+        // "not present" — warn so the bad build artifact is diagnosable. We
+        // still fall back so the run/build can proceed from source.
+        if (e != error.FileNotFound) {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "warning: could not load compiled module '{s}' from {s} ({s}); using source\n", .{ name, zbc_path, @errorName(e) }) catch "warning: could not load a compiled module; using source\n";
+            _ = std.c.write(2, msg.ptr, msg.len);
+        }
+        return false;
+    };
     return true;
 }
 
@@ -789,29 +812,29 @@ pub fn tryImportLib(ctx: *EvalContext, name: []const u8, paths: []const []const 
 
     for (paths) |dir| {
         // Prefer .zbc
-        const zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.zbc", .{ dir, name }) catch continue;
+        const zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.zbc", .{ dir, name }) catch return error.OutOfMemory;
         defer ctx.allocator.free(zbc);
-        if (tryLoadZbc(ctx, name, zbc)) { logModuleFile(ctx, name, zbc); break; }
+        if (tryLoadZbc(ctx, name, zbc)) { try logModuleFile(ctx, name, zbc); break; }
 
-        const lisp = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch continue;
+        const lisp = std.fmt.allocPrint(ctx.allocator, "{s}/{s}.lisp", .{ dir, name }) catch return error.OutOfMemory;
         defer ctx.allocator.free(lisp);
         if (readModuleFile(ctx.allocator, lisp)) |src| {
             defer ctx.allocator.free(src);
             _ = try ctx.evalString(src, lisp);
-            logModuleFile(ctx, name, lisp);
+            try logModuleFile(ctx, name, lisp);
             break;
         }
 
-        const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch continue;
+        const mod_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.zbc", .{ dir, name }) catch return error.OutOfMemory;
         defer ctx.allocator.free(mod_zbc);
-        if (tryLoadZbc(ctx, name, mod_zbc)) { logModuleFile(ctx, name, mod_zbc); break; }
+        if (tryLoadZbc(ctx, name, mod_zbc)) { try logModuleFile(ctx, name, mod_zbc); break; }
 
-        const mod_lisp = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch continue;
+        const mod_lisp = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/mod.lisp", .{ dir, name }) catch return error.OutOfMemory;
         defer ctx.allocator.free(mod_lisp);
         if (readModuleFile(ctx.allocator, mod_lisp)) |src| {
             defer ctx.allocator.free(src);
             _ = try ctx.evalString(src, mod_lisp);
-            logModuleFile(ctx, name, mod_lisp);
+            try logModuleFile(ctx, name, mod_lisp);
             break;
         }
     }
@@ -832,7 +855,7 @@ pub fn tryImportPackage(ctx: *EvalContext, name: []const u8, roots: []const []co
     defer ctx.current_module = saved_module;
 
     for (roots) |base| {
-        const src_dir = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/src", .{ base, name }) catch continue;
+        const src_dir = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/src", .{ base, name }) catch return error.OutOfMemory;
         // src_dir ownership transferred to module_path; don't defer-free here.
 
         const main_zbc = std.fmt.allocPrint(ctx.allocator, "{s}/main.zbc", .{src_dir}) catch {
@@ -842,13 +865,16 @@ pub fn tryImportPackage(ctx: *EvalContext, name: []const u8, roots: []const []co
         defer ctx.allocator.free(main_zbc);
 
         const loaded = blk: {
-            if (tryLoadZbc(ctx, name, main_zbc)) { logModuleFile(ctx, name, main_zbc); break :blk true; }
-            const main_lisp = std.fmt.allocPrint(ctx.allocator, "{s}/main.lisp", .{src_dir}) catch { break :blk false; };
+            if (tryLoadZbc(ctx, name, main_zbc)) { try logModuleFile(ctx, name, main_zbc); break :blk true; }
+            const main_lisp = std.fmt.allocPrint(ctx.allocator, "{s}/main.lisp", .{src_dir}) catch return error.OutOfMemory;
             defer ctx.allocator.free(main_lisp);
             if (readModuleFile(ctx.allocator, main_lisp)) |src| {
                 defer ctx.allocator.free(src);
-                _ = ctx.evalString(src, main_lisp) catch { break :blk false; };
-                logModuleFile(ctx, name, main_lisp);
+                // zepo-nyrz: the package exists (its main.lisp was read), so an
+                // eval error here is a REAL failure in the package — surface it
+                // instead of masking it as a generic "not found in package roots".
+                _ = ctx.evalString(src, main_lisp) catch |e| return e;
+                try logModuleFile(ctx, name, main_lisp);
                 break :blk true;
             }
             break :blk false;
@@ -861,8 +887,8 @@ pub fn tryImportPackage(ctx: *EvalContext, name: []const u8, roots: []const []co
             @memcpy(new_path[0..old_len], ctx.module_path);
             new_path[old_len] = src_dir;
             // Register for cleanup in EvalContext.deinit.
-            ctx.owned_module_path_dirs.append(ctx.allocator, src_dir) catch {};
-            ctx.owned_module_path_slices.append(ctx.allocator, new_path) catch {};
+            ctx.owned_module_path_dirs.append(ctx.allocator, src_dir) catch return error.OutOfMemory;
+            ctx.owned_module_path_slices.append(ctx.allocator, new_path) catch return error.OutOfMemory;
             ctx.module_path = new_path;
             break;
         } else {
