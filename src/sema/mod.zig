@@ -1,18 +1,16 @@
 //! Semantic analysis aggregate.
 
-pub const resolve = @import("resolve.zig");
-pub const captures = @import("captures.zig");
-pub const arity = @import("arity.zig");
+// zepo-6aaf: resolve.zig (name/scope Resolver) and arity.zig (compile-time
+// ArityChecker) were never wired into the compile pipeline — eval.zig runs
+// only the CaptureAnalyzer, and the LSP uses its own lsp/resolver.zig — and
+// resolve.zig was incomplete (missing node kinds). They were deleted rather
+// than resurrected: the runtime already reports arity mismatches with source
+// locations, so compile-time arity checking added little for a dynamic Lisp.
 
-pub const Scope = resolve.Scope;
-pub const BindingKind = resolve.BindingKind;
-pub const BindingInfo = resolve.BindingInfo;
-pub const Resolver = resolve.Resolver;
+pub const captures = @import("captures.zig");
+
 pub const CaptureAnalyzer = captures.CaptureAnalyzer;
-pub const ArityChecker = arity.ArityChecker;
 
 test {
-    _ = resolve;
     _ = captures;
-    _ = arity;
 }
