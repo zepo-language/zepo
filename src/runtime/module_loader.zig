@@ -597,13 +597,26 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
     }
     ctx.allocator.free(result.fns); // slice itself freed; boxed items owned by ctx.compiled
 
-    // Rebuild VM with updated compiled_fns.
-    if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }
-    ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
-    if (ctx.current_module != null) ctx.vm.?.fallback_globals = ctx.globals;
-    ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
-    ctx.vm.?.do_import_ctx = ctx;
-    ctx.vm.?.installAsRoot();
+    // zepo-no5b: NEVER deinit the VM here. loadZbc can run from an IMPORT opcode
+    // inside a live dispatch loop (a runtime in-function import that resolves to
+    // a .zbc), and VM.deinit() frees the executing VM's call stack and all
+    // FiberStates — a use-after-free — besides invalidating foreign handles held
+    // in globals. Update it in place like the .lisp path (zepo-oav): the boxed
+    // CompiledFns are pointer-stable, so pointing compiled_fns at the grown
+    // slice is safe even mid-execution.
+    if (ctx.vm) |*v| {
+        v.compiled_fns = ctx.compiled.items;
+    } else {
+        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
+        if (ctx.current_module != null) ctx.vm.?.fallback_globals = ctx.globals;
+        ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
+        ctx.vm.?.do_import_ctx = ctx;
+        ctx.vm.?.installAsRoot();
+    }
+    // Remember the caller's env so the VM can be returned to it after the
+    // module's own top-level thunks run in the module env below.
+    const importer_env = ctx.vm.?.globals;
+    const importer_fallback = ctx.vm.?.fallback_globals;
 
     // If this library declared a module, set up the registry entry and run
     // thunks inside the module environment — same as evalModuleDecl does.
@@ -621,13 +634,12 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
     if (module_name.len > 0) {
         const m = try ctx.registry.create(module_name);
         ctx.current_module = m;
-        // Rebuild VM so it targets the module env.
-        if (ctx.vm) |*v| { v.deinit(); ctx.vm = null; }
-        ctx.vm = try VM.init(ctx.gc, ctx.currentEnv(), ctx.symbols, ctx.compiled.items, ctx.allocator, ctx.vm_max_regs);
-        ctx.vm.?.fallback_globals = ctx.globals;
-        ctx.vm.?.do_import = @import("eval.zig").vmImportCallback;
-        ctx.vm.?.do_import_ctx = ctx;
-        ctx.vm.?.installAsRoot();
+        // zepo-no5b: point the live VM at the module env in place (see above).
+        if (ctx.vm) |*v| {
+            v.globals = ctx.currentEnv();
+            v.fallback_globals = ctx.globals;
+            v.compiled_fns = ctx.compiled.items;
+        }
     }
 
     // Run each top-level thunk.
@@ -640,6 +652,16 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
     if (ctx.current_module) |m| {
         for (exports) |ex| try m.markExport(ex);
         m.initialized = true;
+    }
+
+    // zepo-no5b: restore the VM to the caller's env. The `defer ctx.current_module`
+    // above restores the context; the live VM must follow so a resuming dispatch
+    // loop (runtime in-function import) sees the importer's globals, not the
+    // imported module's. compiled_fns may have grown further from nested imports.
+    if (ctx.vm) |*v| {
+        v.globals = importer_env;
+        v.fallback_globals = importer_fallback;
+        v.compiled_fns = ctx.compiled.items;
     }
 }
 
