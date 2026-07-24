@@ -219,7 +219,15 @@ pub fn runBuild(alloc: std.mem.Allocator, args: []const []const u8) !void {
             std.process.exit(1);
         };
         defer alloc.free(prog_src);
-        _ = ctx.evalString(prog_src, input_path) catch {};
+        // zepo-nyrz: discovery runs the program to collect its imports for the
+        // standalone bundle. If it errors partway, the embedded module set may
+        // be incomplete (the binary would then fail at runtime with a missing
+        // import) — warn so that failure isn't silent.
+        _ = ctx.evalString(prog_src, input_path) catch |e| {
+            var wbuf: [256]u8 = undefined;
+            const wmsg = std.fmt.bufPrint(&wbuf, "warning: import discovery did not complete ({s}); the bundled module set may be incomplete\n", .{@errorName(e)}) catch "warning: import discovery did not complete; the bundled module set may be incomplete\n";
+            writeMsg(2, wmsg);
+        };
     }
 
     // ── Temp dir ──────────────────────────────────────────────────────────────

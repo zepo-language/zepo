@@ -447,7 +447,9 @@ pub const EvalContext = struct {
         const actual_fn_id: u32 = @intCast(compiled_base + (fn_id - emitted_base));
 
         if (ctx.toplevel_fn_ids) |log| {
-            log.append(ctx.allocator, actual_fn_id) catch {};
+            // zepo-nyrz: dropping an id here silently truncates the `zepo install`
+            // manifest / build bundle — propagate OOM instead of swallowing.
+            log.append(ctx.allocator, actual_fn_id) catch return error.OutOfMemory;
         }
 
         return actual_fn_id;
