@@ -68,10 +68,12 @@ test "module: import with (only ...) selection" {
     _ = try rig.eval(
         \\(module m (export a b) (define a 1) (define b 2))
     );
-    const v = try rig.eval(
-        \\(import m (only a)) a
-    );
-    try expectInt(v, 1);
+    try expectInt(try rig.eval("(import m (only a)) a"), 1);
+    // zepo-lsxm: a selective import must ALSO bind the qualified namespace
+    // alias, so `m.a` — and even the non-selected `m.b` — resolve via
+    // `m.member`, matching bare/aliased imports and the runtime import path.
+    try expectInt(try rig.eval("m.a"), 1);
+    try expectInt(try rig.eval("m.b"), 2);
 }
 
 test "module: exported function callable" {
