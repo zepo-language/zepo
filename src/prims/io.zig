@@ -88,7 +88,8 @@ fn displayInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value,
     if (value_mod.isPtr(v)) {
         if (objects.isFloat(v)) {
             var buf: [64]u8 = undefined;
-            const s = try std.fmt.bufPrint(&buf, "{d}", .{objects.floatVal(v)});
+            // zepo-mckx: R7RS float form (1.0 not 1; +inf.0/+nan.0 for non-finite).
+            const s = objects.formatFloat(&buf, objects.floatVal(v));
             try out.appendSlice(allocator, s);
             return;
         }
