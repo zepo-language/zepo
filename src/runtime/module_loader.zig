@@ -66,6 +66,8 @@ const runtime_objects = @import("objects.zig");
 const hashtable = @import("hashtable.zig");
 const eval = @import("eval.zig");
 const EvalContext = eval.EvalContext;
+const GlobalEnv = @import("globals.zig").GlobalEnv; // zepo-lsxm
+const Module = module_mod.Module; // zepo-lsxm
 const isHeadSymbol = eval.isHeadSymbol;
 
 const cg_mod = @import("../cg/mod.zig");
@@ -666,6 +668,30 @@ pub fn loadZbc(ctx: *EvalContext, _: []const u8, zbc_path: []const u8) !void {
 }
 
 /// Import a module by name strings — used by the VM IMPORT opcode callback.
+// zepo-lsxm: bind the qualified namespace alias `mod_name` -> a hash-table of
+// ALL of the module's bindings (exported AND non-exported), reachable via
+// `mod_name.member` — including the `home/path.name` form macros are rewritten
+// to at defmacro time. Idempotent (skips if already bound). Shared by every
+// import form — bare, aliased, and selective, at both compile time and the
+// runtime VM callback — so a selective `(import M (only ...))` still exposes
+// M's namespace, matching the non-selective paths.
+fn bindNamespaceAlias(ctx: *EvalContext, active: *GlobalEnv, target: *Module, mod_name: []const u8) !void {
+    const path_sym = try ctx.symbols.intern(mod_name);
+    if (active.findEntry(path_sym) != null) return;
+    var ns_scope = HandleScope{};
+    ctx.gc.roots.pushHandleScope(&ns_scope);
+    defer ctx.gc.roots.popHandleScope();
+    const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
+    const ns_slot = ns_scope.push(ns);
+    for (target.env.entries.items) |entry| {
+        const nm = runtime_objects.symbolName(entry.sym_slot.*);
+        const key_sym = try ctx.symbols.intern(nm);
+        hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
+            return error.OutOfMemory;
+    }
+    try active.define(path_sym, ns_slot.*);
+}
+
 pub fn doImportByName(
     ctx: *EvalContext,
     mod_name: []const u8,
@@ -737,25 +763,16 @@ pub fn doImportByName(
                 else => return e,
             };
         }
+        // zepo-lsxm: a selective runtime import must ALSO bind the qualified
+        // namespace alias, exactly like the compile-time selective paths — else
+        // `M.member` (and macros rewritten to `home/path.name`) are unbound when
+        // the module is imported selectively at runtime inside a function.
+        try bindNamespaceAlias(ctx, active, target, mod_name);
         return;
     }
     // zepo-y1a4: bare `(import M)` no longer flat-dumps exports — bind only
     // the namespace alias. Selective and aliased forms above are unchanged.
-    var ns_scope = HandleScope{};
-    ctx.gc.roots.pushHandleScope(&ns_scope);
-    defer ctx.gc.roots.popHandleScope();
-    const path_sym = try ctx.symbols.intern(mod_name);
-    if (active.findEntry(path_sym) == null) {
-        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
-        const ns_slot = ns_scope.push(ns);
-        for (target.env.entries.items) |entry| {
-            const nm = runtime_objects.symbolName(entry.sym_slot.*);
-            const key_sym = try ctx.symbols.intern(nm);
-            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
-                return error.OutOfMemory;
-        }
-        try active.define(path_sym, ns_slot.*);
-    }
+    try bindNamespaceAlias(ctx, active, target, mod_name);
 }
 
 /// Evaluate an `(import <name>)` or `(import <name> (only <sym>+))` form.
@@ -926,10 +943,6 @@ fn importOneNameSelective(
     if (!target.initialized) return error.ImportBeforeInitialization;
     const active = ctx.currentEnv();
 
-    var ns_scope = HandleScope{};
-    ctx.gc.roots.pushHandleScope(&ns_scope);
-    defer ctx.gc.roots.popHandleScope();
-
     // Walk the name list and import each.
     const objects = runtime_objects;
     var cur = names;
@@ -963,19 +976,8 @@ fn importOneNameSelective(
         cur = objects.pairCdr(cur).*;
     }
 
-    // Bind namespace alias (same as full-import path in importOneName).
-    const path_sym = try ctx.symbols.intern(mod_name);
-    if (active.findEntry(path_sym) == null) {
-        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
-        const ns_slot = ns_scope.push(ns);
-        for (target.env.entries.items) |entry| {
-            const nm = runtime_objects.symbolName(entry.sym_slot.*);
-            const key_sym = try ctx.symbols.intern(nm);
-            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
-                return error.OutOfMemory;
-        }
-        try active.define(path_sym, ns_slot.*);
-    }
+    // zepo-lsxm: bind the qualified namespace alias (shared helper).
+    try bindNamespaceAlias(ctx, active, target, mod_name);
 }
 
 /// Handle `(import :modules (...) :libs (...) :packages (...))`.
@@ -1223,17 +1225,7 @@ pub fn evalImport(ctx: *EvalContext, form: Value) !Value {
     // namespace so macros expanded from the imported module can still reach
     // their home internals via the qualified `home/path.name` form (which
     // we7e rewrites them to at defmacro time).
-    const path_sym2 = try ctx.symbols.intern(mod_name);
-    if (active.findEntry(path_sym2) == null) {
-        const ns = hashtable.make(ctx.gc) catch return error.OutOfMemory;
-        const ns_slot = scope.push(ns);
-        for (target.env.entries.items) |entry| {
-            const nm = runtime_objects.symbolName(entry.sym_slot.*);
-            const key_sym = try ctx.symbols.intern(nm);
-            hashtable.putDistinct(ctx.gc, ns_slot.*, key_sym, entry.val_slot.*) catch
-                return error.OutOfMemory;
-        }
-        try active.define(path_sym2, ns_slot.*);
-    }
+    // zepo-lsxm: bind the qualified namespace alias (shared helper).
+    try bindNamespaceAlias(ctx, active, target, mod_name);
     return value_mod.NIL;
 }
