@@ -218,6 +218,57 @@ test "special forms: let-values, define-values, case-lambda, dynamic-wind" {
     );
 }
 
+// zepo-k5pp: escape (upward) continuations. call/ec's escape unwinds through
+// dynamic-wind (running `after`) and passes through exception handlers, but is
+// caught by its own call/ec.
+test "control: call/ec escape continuations" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    // Basic escape skips the surrounding computation.
+    try helpers.expectInt(try r.eval("(call/ec (lambda (k) (+ 1 (k 42))))"), 42);
+    // No escape → normal result.
+    try helpers.expectInt(try r.eval("(call/ec (lambda (k) 10))"), 10);
+    // Early exit from an iteration.
+    try helpers.expectInt(
+        try r.eval("(call/ec (lambda (ret) (for-each (lambda (x) (when (> x 3) (ret x))) (list 1 2 3 4 5)) 0))"),
+        4,
+    );
+    // Escape to the OUTER of two nested call/ec, past the inner one.
+    try helpers.expectString(
+        try r.eval("(symbol->string (call/ec (lambda (o) (call/ec (lambda (i) (o 'A))) 'B)))"),
+        "A",
+    );
+    // dynamic-wind `after` runs on escape (nested, correct order).
+    try helpers.expectString(
+        try r.eval(
+            \\(define lg (list))
+            \\(call/ec (lambda (k)
+            \\  (dynamic-wind (lambda () (set! lg (cons 'ai lg)))
+            \\    (lambda () (dynamic-wind (lambda () (set! lg (cons 'bi lg)))
+            \\                 (lambda () (k 0))
+            \\                 (lambda () (set! lg (cons 'bo lg)))))
+            \\    (lambda () (set! lg (cons 'ao lg))))))
+            \\(display-to-string (reverse lg))
+        ),
+        "(ai bi bo ao)",
+    );
+    // An intervening catch-all guard does NOT swallow the escape.
+    try helpers.expectString(
+        try r.eval("(symbol->string (call/ec (lambda (k) (guard (e (#t 'caught)) (k 'escaped)))))"),
+        "escaped",
+    );
+    // A real condition IS still caught by guard.
+    try helpers.expectString(
+        try r.eval("(symbol->string (call/ec (lambda (k) (guard (e (#t 'caught)) (raise 'boom)))))"),
+        "caught",
+    );
+    // Multiple values through the escape.
+    try helpers.expectInt(
+        try r.eval("(call-with-values (lambda () (call/ec (lambda (k) (k 3 4)))) (lambda (a b) (+ a b)))"),
+        7,
+    );
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {
