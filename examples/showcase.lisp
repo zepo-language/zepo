@@ -1,6 +1,8 @@
 ; showcase.lisp — exercises string ports, values, vector ops, and hooks/advice
 
-(import hooks (add-hook defadvice run-hooks)) ; zepo-y1a4
+(import hooks (add-hook run-hooks)) ; zepo-y1a4
+; zepo-8tow: advise/unadvise/advised? are prelude globals (no import), not hooks
+; macros; the old (defadvice ...) form never existed.
 (import format (format)) ; zepo-y1a4
 
 ; ── String ports: build strings without concatenation ────────────────────────
@@ -73,7 +75,7 @@
 (define (process items)
   (map (lambda (x) (* x x)) items))
 
-(defadvice process ':around
+(advise 'process :around
   (lambda (next items)
     (set! *pipeline-log*
           (vector-append *pipeline-log*

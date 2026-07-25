@@ -2689,6 +2689,13 @@ bare `(import test)` binds every export unqualified:
 and prints a summary — you do **not** call `run-tests` yourself in discovered
 files (call it explicitly only when running a file with `zepo run`).
 
+> **BDD layer.** For nested, spec-style suites there is a second, unit-test-
+> compatible framework in the `testing` module (`lib/testing.lisp`) — `describe`
+> / `it` blocks with `before-each` / `after-each` / `before-all` / `after-all`
+> hooks, focus/skip (`fit`/`xit`/`fdescribe`/`xdescribe`), and pretty/TAP/JUnit/
+> JSON reporters. Every `it` block is itself a unit test. See
+> [docs/testing.md](testing.md) for the full guide to both layers.
+
 #### `(deftest name body...)`
 Register a test case. `name` is a symbol or string; `body` runs when tests
 execute. Use `is` / `=check` / `throws` inside for assertions.
@@ -3628,50 +3635,86 @@ Call each function in hook `name` with no arguments. Return list of results.
 
 ### Advice
 
-Advice allows wrapping an existing function with pre-, post-, around, or override logic.
-The `name` in advice macros is a symbol referring to a globally-bound function.
+Advice wraps an existing global function with pre-, post-, around-, or
+override logic. Unlike hooks, advice is **not** part of the `hooks` module:
+`advise`, `unadvise`, and `advised?` are **prelude globals** (defined in
+`lib/stdlib.lisp`) available without any import. They take the target as a
+**quoted symbol** and mutate its global binding. See
+[Advice and dynamic hooks](#advice-and-dynamic-hooks) for the full treatment
+and the recommended `parameterize`'d-hook alternative for library code.
 
-#### `(defadvice name type fn-expr)`
+> **Note:** there is no `defadvice` / `remove-advice` macro. Earlier drafts of
+> this section documented those names; they never existed. Use `advise` /
+> `unadvise` below.
 
-Macro that wraps function `name` with advice. `type` is one of:
+#### `(advise 'name wrapper)` / `(advise 'name :type wrapper)`
 
-- `':before` — call `(advice-fn . original-args)`, return value ignored, original function called and returned
-- `':after` — call `(advice-fn result . original-args)`, return value ignored, original result returned
-- `':around` — call `(advice-fn original-fn . args)`, advice must call `original-fn` explicitly
-- `':override` — `advice-fn` replaces the function entirely
+Wrap the global function bound to `name` (a quoted symbol). The two-argument
+form installs `:around` advice; the three-argument form takes an explicit type
+keyword: `:before`, `:after`, `:around`, or `:override`. Advice **stacks** —
+each `advise` wraps whatever is currently bound.
+
+- `:before` — `(wrapper . args)` runs first; its result is ignored, then the
+  original runs and its value is returned.
+- `:after` — original runs, then `(wrapper result . args)`; the wrapper's
+  result is ignored and the original result is returned.
+- `:around` — `(wrapper orig . args)`; `orig` is the function bound just before
+  this `advise`. Call it explicitly, e.g. `(apply orig args)`.
+- `:override` — `wrapper` replaces the function entirely.
 
 ```scheme
-(import hooks)
-
 (define (greet name)
   (string-append "Hello, " name))
 
-; Add before advice
-(defadvice greet ':before
-  (lambda (name)
-    (display "→ ")))
-
-(greet "Alice")   ; prints: → => "Hello, Alice"
-
-; Add around advice
-(defadvice greet ':around
+; around advice — wrapper receives the original function as its first arg
+(advise 'greet :around
   (lambda (orig name)
     (string-append "[" (orig name) "]")))
 
 (greet "Bob")     ; => "[Hello, Bob]"
 ```
 
-#### `(remove-advice name)`
+#### `(unadvise 'name)`
 
-Macro that restores the original function, removing all advice.
+Restore the original (pre-advice) function bound to `name` and drop all advice
+on it. Returns `name`.
+
 ```scheme
-(remove-advice greet)
+(unadvise 'greet)
 (greet "Charlie")  ; => "Hello, Charlie" (back to original)
 ```
 
-#### `(advised? name)`
+#### `(advised? 'name)`
 
-Predicate; return `#t` if `name` (a symbol) has active advice, otherwise `#f`.
+Predicate; returns `#t` if `name` (a quoted symbol) currently has active
+advice, otherwise `#f`.
+
 ```scheme
 (advised? 'greet)  ; => #t or #f
 ```
+
+---
+
+## Additional primitives
+
+<!-- zepo-8tow: these primitives are registered in src/prims but were missing
+     from this reference. -->
+
+A handful of primitives that are registered globally but were previously
+undocumented:
+
+| Primitive | Arity | Description |
+|-----------|-------|-------------|
+| `(prim-inf)` | 0 | The IEEE value `+inf.0`. |
+| `(prim-neg-inf)` | 0 | The IEEE value `-inf.0`. |
+| `(prim-nan)` | 0 | The IEEE value `+nan.0`. |
+| `(copysign x y)` | 2 | `x` with the sign of `y` (IEEE `copysign`). |
+| `(getkey plist key default)` | 3 | Look up `key` in a flat property list `(k1 v1 k2 v2 …)` by identity; return its value, or `default` if absent. |
+| `(read-from-string s)` | 1 | Parse the first datum from string `s` and return it (the reader, as a value). |
+| `(json-null? v)` | 1 | `#t` if `v` is the JSON-null sentinel (distinct from `#f`/`()`), else `#f`. |
+| `(zepo/gc-stats)` | 0 | Return a snapshot of GC counters (allocations, collections, heap sizes) for diagnostics. |
+| `(zepo/debug-value v)` | 1 | Print the low-level tagged representation of `v` (tag, payload) to stderr for debugging; returns `v`. |
+
+> Non-finite floats now also arise naturally from inexact division by zero —
+> `(/ 1.0 0.0)` → `+inf.0`, `(/ 0.0 0.0)` → `+nan.0` — see the arithmetic
+> section. Division by an *exact* zero, e.g. `(/ 1.0 0)`, is still an error.
