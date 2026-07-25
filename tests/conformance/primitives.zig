@@ -218,6 +218,44 @@ test "special forms: let-values, define-values, case-lambda, dynamic-wind" {
     );
 }
 
+// zepo-asu1: mutable pairs — set-car!/set-cdr! (write-barrier'd) + list-set!,
+// and the cyclic structures they make constructible must still render (bounded).
+test "pairs: set-car! / set-cdr! mutate in place" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(define p (cons 1 2)) (set-car! p 10) (car p)"), 10);
+    try helpers.expectInt(try r.eval("(set-cdr! p 20) (cdr p)"), 20);
+    // A returned value that is itself mutated.
+    try helpers.expectInt(try r.eval("(define q (cons 0 0)) (set-car! q (cons 7 8)) (car (car q))"), 7);
+    // set-car!/set-cdr! on a non-pair is a type error.
+    try std.testing.expectError(error.TypeError, r.eval("(set-car! 5 1)"));
+    try std.testing.expectError(error.TypeError, r.eval("(set-cdr! 'x 1)"));
+}
+
+test "pairs: list-set! mutates the k-th element" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    try helpers.expectString(
+        try r.eval("(define l (list 'a 'b 'c 'd)) (list-set! l 2 'X) (display-to-string l)"),
+        "(a b X d)",
+    );
+}
+
+test "pairs: cyclic list display/write terminate with a bounded marker" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // A 3-element spine made circular — Floyd cycle detection bounds the output.
+    try helpers.expectString(
+        try r.eval("(define c (cons 1 (cons 2 (cons 3 (quote ()))))) (set-cdr! (cdr (cdr c)) c) (display-to-string c)"),
+        "(1 2 3 1 2 ...)",
+    );
+    // A self-referential pair.
+    try helpers.expectString(
+        try r.eval("(define s (cons 1 2)) (set-cdr! s s) (display-to-string s)"),
+        "(1 ...)",
+    );
+}
+
 // zepo-vx61: IR register slots are never reclaimed, so a function with enough
 // sequential lets exceeds the byte-sized physical register file. That must fail
 // with a graceful error.TooManyRegisters — NOT a "reached unreachable" panic

@@ -69,6 +69,20 @@ pub fn pairCdr(p: Value) *Value {
     return bodyValueSlot(h, 1);
 }
 
+// zepo-asu1: in-place pair mutation. storeValue applies the generational write
+// barrier, so mutating an old-gen pair to point at a young value records the
+// old->young edge in the card table (same path as vectorSet). This is what
+// makes set-car!/set-cdr! — and cyclic structures like (set-cdr! x x) — safe.
+pub fn pairSetCar(gc: *GC, p: Value, new_val: Value) void {
+    const h = value_mod.ptrVal(p);
+    storeValue(gc, h, bodyValueSlot(h, 0), new_val);
+}
+
+pub fn pairSetCdr(gc: *GC, p: Value, new_val: Value) void {
+    const h = value_mod.ptrVal(p);
+    storeValue(gc, h, bodyValueSlot(h, 1), new_val);
+}
+
 // -------------------- Float --------------------
 
 pub fn makeFloat(gc: *GC, f: f64) !Value {

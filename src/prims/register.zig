@@ -56,6 +56,8 @@ const TABLE: []const Entry = &.{
     make("cons", 2, pairs.primCons),
     make("car", 1, pairs.primCar),
     make("cdr", 1, pairs.primCdr),
+    make("set-car!", 2, pairs.primSetCar), // zepo-asu1
+    make("set-cdr!", 2, pairs.primSetCdr), // zepo-asu1
     make("pair?", 1, pairs.primPairQ),
     make("null?", 1, pairs.primNullQ),
 
