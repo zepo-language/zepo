@@ -84,6 +84,12 @@ pub const CallStack = struct {
 
     pub fn reg(cs: *CallStack, idx: u16) *Value {
         const f = cs.currentFrame();
+        // zepo-i0as: a frame owns exactly the window [base, base+num_regs); an
+        // idx at/beyond num_regs would silently read into the adjacent frame (or
+        // past the register stack). Assert in Debug/ReleaseSafe to catch codegen
+        // bugs at the point of the bad access rather than as corrupted values.
+        std.debug.assert(idx < f.func.num_regs);
+        std.debug.assert(f.base + idx < cs.regs.items.len);
         return &cs.regs.items[f.base + idx];
     }
 

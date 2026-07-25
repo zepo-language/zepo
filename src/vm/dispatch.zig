@@ -273,10 +273,27 @@ pub const VM = struct {
             visitCallStack(&fs.call_stack, visitor, visitor_ctx);
             visitor(visitor_ctx, &fs.handle);
         }
-        // zepo-6o3p: dynamic (parameterize) bindings. Unlike handler_stack —
-        // whose handler closures are always reachable through registers — a
-        // parameterized value can be held ONLY by its dynamic frame, so these
-        // MUST be traced or a GC mid-extent frees it. vm.dynamic_stack is the
+        // zepo-i0as: handler closures are normally reachable through the
+        // register ir/build.zig keeps live for the installed handler, so the
+        // handler_stack was historically left untraced. Trace handler_val
+        // defensively anyway — symmetric with dynamic_stack/restart_stack — so a
+        // future register-allocator liveness rework (zepo-vx61) cannot silently
+        // free an installed handler and leave tryHandle holding a dangling
+        // closure. The three sets are disjoint just like the dynamic stacks.
+        const visitHandlerStack = struct {
+            fn call(hs: *const std.ArrayListUnmanaged(fiber_mod.HandlerFrame), vis: @import("../gc/roots.zig").RootVisitor, vis_ctx: *anyopaque) void {
+                for (hs.items) |*frame| vis(vis_ctx, &frame.handler_val);
+            }
+        }.call;
+        visitHandlerStack(&vm.handler_stack, visitor, visitor_ctx);
+        visitHandlerStack(&vm.main_handler_snapshot, visitor, visitor_ctx);
+        for (vm.fibers.items) |maybe_fs| {
+            const fs = maybe_fs orelse continue;
+            visitHandlerStack(&fs.handler_stack, visitor, visitor_ctx);
+        }
+        // zepo-6o3p: dynamic (parameterize) bindings. A parameterized value can
+        // be held ONLY by its dynamic frame, so these MUST be traced or a GC
+        // mid-extent frees it. vm.dynamic_stack is the
         // active fiber's; main_dynamic_snapshot is the suspended main fiber's;
         // each fs.dynamic_stack is a suspended spawned fiber's. The three sets
         // are disjoint (the active fiber's fs copy is empty after swap-out).
