@@ -106,6 +106,10 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
     defer input.deinit(alloc);
 
     var depth: i32 = 0;
+    // zepo-k2k6: in_str persists ACROSS lines so a string literal spanning
+    // several input lines keeps its state (the old code re-declared it false
+    // every line, miscounting depth inside multi-line strings).
+    var in_str = false;
 
     // zepo-n3h
     {
@@ -119,6 +123,7 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
             error.Interrupted => {
                 input.clearRetainingCapacity();
                 depth = 0;
+                in_str = false; // zepo-k2k6: reset string state on cancel
                 writeStdout("\n");
                 continue;
             },
@@ -133,18 +138,39 @@ pub fn runRepl(ctx: *zepo.runtime.EvalContext, alloc: std.mem.Allocator, preload
         try input.appendSlice(alloc, line);
         try input.append(alloc, '\n');
 
-        // Track paren depth to detect complete expressions.
-        var in_str = false;
-        for (line) |c| {
-            if (c == '"') in_str = !in_str;
-            if (!in_str) {
-                if (c == '(') depth += 1;
-                if (c == ')') depth -= 1;
+        // Track paren depth to detect complete expressions. zepo-k2k6: honor
+        // string escapes (\" no longer flips in/out of a string), skip `;` line
+        // comments, and skip `#\C` char literals so `#\(` / `#\"` don't disturb
+        // the count. in_str is the loop-scoped variable declared above.
+        {
+            var i: usize = 0;
+            while (i < line.len) : (i += 1) {
+                const c = line[i];
+                if (in_str) {
+                    if (c == '\\') {
+                        i += 1; // skip the escaped char (incl. \")
+                        continue;
+                    }
+                    if (c == '"') in_str = false;
+                    continue;
+                }
+                if (c == '"') {
+                    in_str = true;
+                } else if (c == ';') {
+                    break; // line comment: ignore the rest of the line
+                } else if (c == '#' and i + 1 < line.len and line[i + 1] == '\\') {
+                    i += 2; // skip "#\" and the single char literal that follows
+                } else if (c == '(') {
+                    depth += 1;
+                } else if (c == ')') {
+                    depth -= 1;
+                }
             }
         }
 
         if (depth <= 0 and input.items.len > 0) {
             depth = 0;
+            in_str = false; // zepo-k2k6: expression complete — reset string state
             const trimmed = std.mem.trim(u8, input.items, " \t\r\n");
             if (trimmed.len == 0) {
                 input.clearRetainingCapacity();

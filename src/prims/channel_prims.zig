@@ -242,7 +242,12 @@ pub fn primChannelRecv(vm: *VM, args: []const Value) LispError!Value {
         // Wake a parked sender to refill the buffer.
         if (ch.send_waiters.items.len > 0) {
             const sw = ch.send_waiters.orderedRemove(0);
-            ch.buf.append(ch.allocator, sw.cv) catch {};
+            // zepo-k2k6: the orderedRemove(0) above freed a buffer slot without
+            // shrinking capacity, so this refill always fits — assert that via
+            // appendAssumeCapacity rather than silently swallowing an impossible
+            // allocation failure (which previously dropped the sender's value and
+            // woke it as if delivered).
+            ch.buf.appendAssumeCapacity(sw.cv);
             _ = std.c.pthread_mutex_unlock(&ch.mu);
             try wakeFiber(sched, sw.sched, sw.fiber_idx);
         } else {
@@ -286,7 +291,12 @@ pub fn primChannelTryRecv(vm: *VM, args: []const Value) LispError!Value {
         const cv = ch.buf.orderedRemove(0);
         if (ch.send_waiters.items.len > 0) {
             const sw = ch.send_waiters.orderedRemove(0);
-            ch.buf.append(ch.allocator, sw.cv) catch {};
+            // zepo-k2k6: the orderedRemove(0) above freed a buffer slot without
+            // shrinking capacity, so this refill always fits — assert that via
+            // appendAssumeCapacity rather than silently swallowing an impossible
+            // allocation failure (which previously dropped the sender's value and
+            // woke it as if delivered).
+            ch.buf.appendAssumeCapacity(sw.cv);
             _ = std.c.pthread_mutex_unlock(&ch.mu);
             try wakeFiber(sched, sw.sched, sw.fiber_idx);
         } else {
