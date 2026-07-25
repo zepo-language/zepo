@@ -114,6 +114,11 @@ pub const Builder = struct {
         if (objects.isPair(v)) {
             return b.buildPair(v);
         }
+        // zepo-aqwc: a vector literal #(...) is self-quoting — it evaluates to
+        // the vector itself, with its elements taken as data (unevaluated).
+        if (objects.isVector(v)) {
+            return b.arena.add(.{ .quote = .{ .datum = v, .span = b.current_span } });
+        }
 
         return BuildError.InvalidSpecialForm;
     }

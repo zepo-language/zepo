@@ -21,6 +21,8 @@ pub const TokenKind = enum {
     string,
     character,
     symbol,
+    vector_open, // zepo-aqwc: `#(`
+    datum_comment, // zepo-aqwc: `#;` — the parser discards the next datum
     eof,
 };
 
@@ -439,6 +441,26 @@ pub const Lexer = struct {
                 };
             },
             '\\' => return l.readCharacter(start_off, start_pos),
+            // zepo-aqwc: `#(` opens a vector literal — the parser reads elements
+            // until the matching `)`.
+            '(' => {
+                _ = l.advance();
+                return .{
+                    .kind = .vector_open,
+                    .text = l.src[start_off..l.pos],
+                    .span = .{ .start = start_pos, .end = l.curPos(), .file = l.file },
+                };
+            },
+            // zepo-aqwc: `#;` datum comment — the parser discards the datum that
+            // follows this token.
+            ';' => {
+                _ = l.advance();
+                return .{
+                    .kind = .datum_comment,
+                    .text = l.src[start_off..l.pos],
+                    .span = .{ .start = start_pos, .end = l.curPos(), .file = l.file },
+                };
+            },
             // zepo-pybo: numeric radix (#b/#o/#d/#x) and exactness (#e/#i)
             // prefixes, in either order.
             'b', 'B', 'o', 'O', 'd', 'D', 'x', 'X', 'e', 'E', 'i', 'I' => return l.readPrefixedNumber(start_off, start_pos),

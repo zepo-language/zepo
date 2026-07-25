@@ -400,3 +400,44 @@ test "pybo: pipe-delimited symbols" {
     const e = try parse(&gc, &syms, &spans, "|a\\|b|");
     try std.testing.expectEqualStrings("a|b", objects.symbolName(e));
 }
+
+// zepo-aqwc: #(...) vector literals and #; datum comments.
+
+test "aqwc: vector literal reads to a vector" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    const v = try parse(&gc, &syms, &spans, "#(1 2 3)");
+    try std.testing.expect(objects.isVector(v));
+    try std.testing.expectEqual(@as(usize, 3), objects.vectorLen(v));
+    try std.testing.expectEqual(@as(i63, 2), value_mod.fixnumVal(objects.vectorGet(v, 1)));
+    // Empty and nested.
+    try std.testing.expectEqual(@as(usize, 0), objects.vectorLen(try parse(&gc, &syms, &spans, "#()")));
+    const nested = try parse(&gc, &syms, &spans, "#(1 #(2 3) 4)");
+    try std.testing.expect(objects.isVector(objects.vectorGet(nested, 1)));
+}
+
+test "aqwc: #; datum comment drops the next datum" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    // (1 #;2 3) reads as (1 3).
+    const v = try parse(&gc, &syms, &spans, "(1 #;2 3)");
+    try std.testing.expectEqual(@as(i63, 1), value_mod.fixnumVal(objects.pairCar(v).*));
+    const second = objects.pairCar(objects.pairCdr(v).*).*;
+    try std.testing.expectEqual(@as(i63, 3), value_mod.fixnumVal(second));
+    try std.testing.expect(value_mod.isNil(objects.pairCdr(objects.pairCdr(v).*).*));
+    // A leading #; at top level skips to the next datum.
+    try std.testing.expectEqual(@as(i63, 9), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#;ignored 9")));
+    // Nested #;#; drops two datums.
+    const w = try parse(&gc, &syms, &spans, "(#;#;1 2 3 4)");
+    try std.testing.expectEqual(@as(i63, 3), value_mod.fixnumVal(objects.pairCar(w).*));
+}
