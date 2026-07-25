@@ -204,6 +204,7 @@ pub const Lexer = struct {
                 return l.mkTok(.unquote, start_off, start_pos);
             },
             '"' => return l.readString(start_off, start_pos),
+            '|' => return l.readPipeSymbol(start_off, start_pos), // zepo-pybo
             '#' => return l.readHash(start_off, start_pos),
             '+', '-' => {
                 // Could be the standalone symbol '+' / '-' or sign of a number.
@@ -255,6 +256,54 @@ pub const Lexer = struct {
             .text = text,
             .span = .{ .start = start_pos, .end = end_pos, .file = l.file },
             .payload = text,
+        };
+    }
+
+    // zepo-pybo: (|...|) pipe-delimited symbol — any characters, with \| \\ \n
+    // \t and \xHH; escapes. Produces a normal symbol whose name is the decoded
+    // content (mirrors readString's decode into string_buf).
+    fn readPipeSymbol(l: *Lexer, start_off: usize, start_pos: Pos) !Token {
+        _ = l.advance(); // opening |
+        const buf_start = l.string_buf.items.len;
+        while (true) {
+            if (l.atEnd()) return ReaderError.StringUnterminated;
+            const c = l.src[l.pos];
+            if (c == '|') {
+                _ = l.advance();
+                break;
+            } else if (c == '\\') {
+                _ = l.advance();
+                if (l.atEnd()) return ReaderError.StringUnterminated;
+                const esc = l.src[l.pos];
+                _ = l.advance();
+                switch (esc) {
+                    '|' => try l.string_buf.append(l.allocator, '|'),
+                    '\\' => try l.string_buf.append(l.allocator, '\\'),
+                    'n' => try l.string_buf.append(l.allocator, '\n'),
+                    't' => try l.string_buf.append(l.allocator, '\t'),
+                    'x', 'X' => {
+                        const hs = l.pos;
+                        while (!l.atEnd() and l.src[l.pos] != ';') _ = l.advance();
+                        if (l.atEnd()) return ReaderError.InvalidEscape;
+                        const hex = l.src[hs..l.pos];
+                        _ = l.advance(); // consume ';'
+                        const cp = std.fmt.parseInt(u21, hex, 16) catch return ReaderError.InvalidEscape;
+                        var ub: [4]u8 = undefined;
+                        const n = std.unicode.utf8Encode(cp, &ub) catch return ReaderError.InvalidEscape;
+                        try l.string_buf.appendSlice(l.allocator, ub[0..n]);
+                    },
+                    else => return ReaderError.InvalidEscape,
+                }
+            } else {
+                try l.string_buf.append(l.allocator, c);
+                _ = l.advance();
+            }
+        }
+        return .{
+            .kind = .symbol,
+            .text = l.src[start_off..l.pos],
+            .span = .{ .start = start_pos, .end = l.curPos(), .file = l.file },
+            .payload = l.string_buf.items[buf_start..],
         };
     }
 
@@ -390,8 +439,89 @@ pub const Lexer = struct {
                 };
             },
             '\\' => return l.readCharacter(start_off, start_pos),
+            // zepo-pybo: numeric radix (#b/#o/#d/#x) and exactness (#e/#i)
+            // prefixes, in either order.
+            'b', 'B', 'o', 'O', 'd', 'D', 'x', 'X', 'e', 'E', 'i', 'I' => return l.readPrefixedNumber(start_off, start_pos),
             else => return ReaderError.UnexpectedChar,
         }
+    }
+
+    fn radixDigit(c: u8, radix: u8) bool {
+        const d: u8 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => return false,
+        };
+        return d < radix;
+    }
+
+    // zepo-pybo: read a number after one or more #-prefixes. `l.pos` is at the
+    // first prefix letter (the leading '#' was already consumed by readHash).
+    fn readPrefixedNumber(l: *Lexer, start_off: usize, start_pos: Pos) !Token {
+        var radix: u8 = 10;
+        var exact: ?bool = null;
+        var count: u8 = 0;
+        while (true) {
+            switch (l.src[l.pos]) {
+                'b', 'B' => radix = 2,
+                'o', 'O' => radix = 8,
+                'd', 'D' => radix = 10,
+                'x', 'X' => radix = 16,
+                'e', 'E' => exact = true,
+                'i', 'I' => exact = false,
+                else => return ReaderError.UnexpectedChar,
+            }
+            _ = l.advance();
+            count += 1;
+            if (count >= 2) break;
+            // A second prefix must be written as another '#'+letter.
+            if (!l.atEnd() and l.src[l.pos] == '#') {
+                _ = l.advance();
+                if (l.atEnd()) return ReaderError.UnexpectedEof;
+                continue;
+            }
+            break;
+        }
+
+        // Number body: optional sign, digits in `radix`; a decimal point or
+        // exponent (radix 10 only) makes it a float.
+        const body_start = l.pos;
+        if (!l.atEnd() and (l.src[l.pos] == '+' or l.src[l.pos] == '-')) _ = l.advance();
+        var is_float = false;
+        while (!l.atEnd() and radixDigit(l.src[l.pos], radix)) _ = l.advance();
+        if (radix == 10 and !l.atEnd() and l.src[l.pos] == '.') {
+            is_float = true;
+            _ = l.advance();
+            while (!l.atEnd() and std.ascii.isDigit(l.src[l.pos])) _ = l.advance();
+        }
+        if (radix == 10 and !l.atEnd() and (l.src[l.pos] == 'e' or l.src[l.pos] == 'E')) {
+            is_float = true;
+            _ = l.advance();
+            if (!l.atEnd() and (l.src[l.pos] == '+' or l.src[l.pos] == '-')) _ = l.advance();
+            while (!l.atEnd() and std.ascii.isDigit(l.src[l.pos])) _ = l.advance();
+        }
+        const body = l.src[body_start..l.pos];
+        if (body.len == 0 or (body.len == 1 and (body[0] == '+' or body[0] == '-'))) return ReaderError.InvalidNumber;
+        if (!l.atEnd() and !isDelimiter(l.src[l.pos])) return ReaderError.InvalidNumber;
+
+        const text = l.src[start_off..l.pos];
+        const span = Span{ .start = start_pos, .end = l.curPos(), .file = l.file };
+
+        // #e on an inexact literal would need exact rationals, which zepo lacks.
+        if (is_float and exact == true) return ReaderError.InvalidNumber;
+
+        if (is_float or exact == false) {
+            const f: f64 = if (is_float)
+                (std.fmt.parseFloat(f64, body) catch return ReaderError.InvalidNumber)
+            else blk: {
+                const iv = std.fmt.parseInt(i64, body, radix) catch return ReaderError.InvalidNumber;
+                break :blk @as(f64, @floatFromInt(iv));
+            };
+            return .{ .kind = .float, .text = text, .span = span, .float_val = f };
+        }
+        const iv = std.fmt.parseInt(i64, body, radix) catch return ReaderError.OverflowInt;
+        return .{ .kind = .integer, .text = text, .span = span, .int_val = iv };
     }
 
     fn readCharacter(l: *Lexer, start_off: usize, start_pos: Pos) !Token {
@@ -421,8 +551,24 @@ pub const Lexer = struct {
             cp = '\t';
         } else if (std.mem.eql(u8, name, "return")) {
             cp = '\r';
+        } else if (std.mem.eql(u8, name, "null") or std.mem.eql(u8, name, "nul")) {
+            // zepo-pybo: R7RS named characters.
+            cp = 0;
+        } else if (std.mem.eql(u8, name, "delete") or std.mem.eql(u8, name, "rubout")) {
+            cp = 0x7f;
+        } else if (std.mem.eql(u8, name, "escape")) {
+            cp = 0x1b;
+        } else if (std.mem.eql(u8, name, "alarm")) {
+            cp = 0x07;
+        } else if (std.mem.eql(u8, name, "backspace")) {
+            cp = 0x08;
+        } else if (name.len >= 2 and (name[0] == 'x' or name[0] == 'X')) {
+            // zepo-pybo: R7RS #\xHH hex character.
+            const hex = name[1..];
+            if (hex.len == 0 or hex.len > 6) return ReaderError.InvalidCharName;
+            cp = std.fmt.parseInt(u21, hex, 16) catch return ReaderError.InvalidCharName;
         } else if (name.len >= 2 and name[0] == 'u') {
-            // uXXXX hex
+            // uXXXX hex (retained for compatibility).
             const hex = name[1..];
             if (hex.len == 0 or hex.len > 6) return ReaderError.InvalidCharName;
             cp = std.fmt.parseInt(u21, hex, 16) catch return ReaderError.InvalidCharName;
