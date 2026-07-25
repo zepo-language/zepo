@@ -102,7 +102,19 @@ pub const Emitter = struct {
         // hold IR virtual registers.
         ctx.local_base = 0;
         ctx.reg_base = f.num_locals;
-        ctx.next_phys_reg = @as(Reg, f.num_locals) + computeMaxReg(f) + 1;
+        // zepo-vx61: the base register footprint (locals + IR virtual registers)
+        // must fit in the byte-sized physical register file. IR slots are never
+        // reclaimed, so a function with enough sequential lets/ifs/conds can
+        // exceed it. Validate the footprint UP FRONT and fail with a graceful
+        // error.TooManyRegisters, instead of letting phys()/localPhys() overflow
+        // their @intCast — a "reached unreachable" panic in Debug, or silent UB /
+        // register aliasing (wrong results) in ReleaseFast. Computed in u32 to
+        // avoid a u16 overflow in the sum. This bounds every phys()/localPhys()
+        // index to < footprint (≤ 254); call windows beyond call_temp_base are
+        // separately guarded by allocArgWindow.
+        const footprint: u32 = @as(u32, f.num_locals) + @as(u32, computeMaxReg(f)) + 1;
+        if (footprint > 255) return error.TooManyRegisters;
+        ctx.next_phys_reg = @intCast(footprint);
         ctx.call_temp_base = ctx.next_phys_reg;
         ctx.peak_phys_reg = ctx.next_phys_reg;
 
@@ -376,8 +388,10 @@ const FnEmit = struct {
         return @intCast(base);
     }
 
-    /// Cast an IR register index to a physical u8, asserting range.
     /// Map an IR virtual register to a physical byte-sized register index.
+    /// zepo-vx61: the assert can never fire — emitOne validated the whole base
+    /// footprint (reg_base + max IR reg) ≤ 254 before any instruction is emitted,
+    /// so `r ≤ computeMaxReg(f)` guarantees `p < 255`.
     fn phys(c: *FnEmit, r: Reg) u8 {
         const p: u32 = @as(u32, c.reg_base) + @as(u32, r);
         std.debug.assert(p < 255);
