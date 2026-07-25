@@ -276,7 +276,12 @@ fn cheneyScanObjOld(ctx: *CopyCtx, obj: *ObjHeader) void {
 
 /// Run a minor collection. Roots + remembered set are traced; reachable objects
 /// are copied into to-space (or promoted). Then the spaces flip.
-pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !void {
+// zepo-yzhs: declared `anyerror!void` (not inferred `!void`) even though the
+// only failure mode now panics. collect() used to `return ctx.err` (an
+// anyerror), which is what widened the whole GC-alloc error set to anyerror;
+// downstream code (e.g. prims/hashtable.zig) relies on that breadth for
+// reachable `else` prongs. Keeping the declared set preserves that contract.
+pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) anyerror!void {
     var ctx = CopyCtx{
         .nursery = n,
         .old_gen = og,
@@ -335,7 +340,21 @@ pub fn collect(n: *Nursery, og: *OldGen, cards: *CardTable, roots: *RootSet) !vo
         ctx.promoted.deinit(og.allocator);
     }
 
-    if (ctx.err) |e| return e;
+    // zepo-yzhs: a nursery collection that hits OOM cannot be completed OR
+    // undone. By this point some from-space object headers already hold
+    // forwarding pointers and no flip has happened, so `from` is no longer a
+    // walkable heap. Returning a recoverable-looking error would leave that
+    // corrupt, half-forwarded state behind for the next collection (which would
+    // follow stale/freed forward targets) or for teardown to walk. OOM here
+    // means the old generation could not grow — the system is out of memory and
+    // the process is going down regardless — so abort cleanly and explicitly
+    // rather than propagating heap corruption.
+    if (ctx.err) |e| {
+        std.debug.panic(
+            "nursery GC could not complete ({s}): old generation exhausted, heap left mid-collection",
+            .{@errorName(e)},
+        );
+    }
 
     // 4. Flip: old from-space is garbage. Swap from/to and reset bump.
     //    zepo-jus: the card table is NOT cleared here — forwardSlot rebuilt it
