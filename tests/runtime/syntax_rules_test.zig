@@ -224,6 +224,66 @@ test "syntax-rules: three ellipsis vars in one template group" {
     try expectInt(try rig.eval("(car (cdr (add3each (1 2 3) (10 20 30))))"), 60);
 }
 
+// ── Nested ellipsis (zepo-5rr6) ────────────────────────────────────────────
+
+// zepo-5rr6: a pattern var can be bound at depth ≥ 2 by nested ellipses, and
+// the template must be able to descend one depth level per ellipsis. The old
+// FLAT binding model (scalar + one-level list) dropped depth-2 structure.
+
+test "syntax-rules: nested ellipsis — flatten via x ... ..." {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    // Pattern binds x at depth 2 (one ... per nesting). Template `x ... ...`
+    // must flatten both levels into a single flat list.
+    _ = try rig.eval(
+        \\(define-syntax flatten2
+        \\  (syntax-rules ()
+        \\    ((_ (x ...) ...) (list x ... ...))))
+    );
+    // (flatten2 (1 2) (3) (4 5 6)) → (1 2 3 4 5 6)
+    try expectInt(try rig.eval("(length (flatten2 (1 2) (3) (4 5 6)))"), 6);
+    try expectInt(try rig.eval("(car (flatten2 (1 2) (3) (4 5 6)))"), 1);
+    try expectInt(try rig.eval("(list-ref (flatten2 (1 2) (3) (4 5 6)) 2)"), 3);
+    try expectInt(try rig.eval("(list-ref (flatten2 (1 2) (3) (4 5 6)) 5)"), 6);
+    // Empty inner groups collapse away.
+    try expectInt(try rig.eval("(length (flatten2 () (1) () (2 3)))"), 3);
+    // No groups at all → empty list.
+    try expectBool(try rig.eval("(null? (flatten2))"), true);
+}
+
+test "syntax-rules: nested ellipsis — preserve structure ((x ...) ...)" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    // Template re-nests: (list (list x ...) ...) rebuilds the 2-level shape.
+    _ = try rig.eval(
+        \\(define-syntax regroup
+        \\  (syntax-rules ()
+        \\    ((_ (x ...) ...) (list (list x ...) ...))))
+    );
+    // (regroup (1 2) (3) (4 5 6)) → ((1 2) (3) (4 5 6))
+    try expectInt(try rig.eval("(length (regroup (1 2) (3) (4 5 6)))"), 3);
+    try expectInt(try rig.eval("(car (car (regroup (1 2) (3) (4 5 6))))"), 1);
+    try expectInt(try rig.eval("(length (car (regroup (1 2) (3) (4 5 6))))"), 2);
+    try expectInt(try rig.eval("(length (car (cdr (regroup (1 2) (3) (4 5 6)))))"), 1);
+    try expectInt(try rig.eval("(car (car (cdr (cdr (regroup (1 2) (3) (4 5 6))))))"), 4);
+}
+
+test "syntax-rules: nested ellipsis — depth-1 var alongside depth-2" {
+    const rig = try Rig.init(std.testing.allocator);
+    defer rig.deinit();
+    // `k` is depth 1 (outer only); `v` is depth 2. The outer ellipsis drives
+    // both; the inner ellipsis drives only v.
+    _ = try rig.eval(
+        \\(define-syntax tag-groups
+        \\  (syntax-rules ()
+        \\    ((_ (k v ...) ...) (list (list k (+ v ...)) ...))))
+    );
+    // (tag-groups (10 1 2) (20 3 4 5)) → ((10 3) (20 12))
+    try expectInt(try rig.eval("(car (car (tag-groups (10 1 2) (20 3 4 5))))"), 10);
+    try expectInt(try rig.eval("(car (cdr (car (tag-groups (10 1 2) (20 3 4 5)))))"), 3);
+    try expectInt(try rig.eval("(car (cdr (car (cdr (tag-groups (10 1 2) (20 3 4 5))))))"), 12);
+}
+
 // ── Literal matching ───────────────────────────────────────────────────────
 
 test "syntax-rules: literal keyword dispatch" {
