@@ -599,13 +599,32 @@ pub fn primCloseInputPort(_: *VM, args: []const Value) LispError!Value {
 
 extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*std.c.FILE;
 
+// zepo-k2k6: fdopen(0,"r") allocates a fresh FILE* on every call, and with
+// owned=false those were never freed → a FILE* leak per (current-input-port).
+// We also must not fclose it (that would close fd 0 for the whole process).
+// Cache one process-lifetime stdin FILE* and share it across all input ports.
+var cached_stdin: ?*std.c.FILE = null;
+
 pub fn primCurrentInputPort(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 0) return error.ArityMismatch;
-    // fdopen(0, "r") gives us a FILE* wrapping stdin; not owned (do not fclose).
-    const file = fdopen(0, "r") orelse return error.IOError;
+    const file = cached_stdin orelse blk: {
+        const f = fdopen(0, "r") orelse return error.IOError;
+        cached_stdin = f;
+        break :blk f;
+    };
     const pd = vm.allocator.create(InputPortPayload) catch return error.OutOfMemory;
     pd.* = .{ .file = file, .owned = false, .allocator = vm.allocator };
     return objects.makeForeign(vm.gc, pd, deinitInputPortFull, TAG_INPUT_PORT) catch return error.OutOfMemory;
+}
+
+// zepo-k2k6: length of a UTF-8 sequence from its leading byte. A stray
+// continuation byte (0x80–0xBF) or invalid lead is treated as a single byte.
+fn utf8Len(b0: u8) usize {
+    if (b0 < 0x80) return 1;
+    if (b0 >= 0xF0) return 4;
+    if (b0 >= 0xE0) return 3;
+    if (b0 >= 0xC0) return 2;
+    return 1;
 }
 
 pub fn primReadChar(vm: *VM, args: []const Value) LispError!Value {
@@ -613,9 +632,21 @@ pub fn primReadChar(vm: *VM, args: []const Value) LispError!Value {
     if (!isInputPort(args[0])) return error.TypeError;
     const file = inputPortFile(args[0]);
     _ = vm;
-    const c = fgetc(file);
-    if (c == EOF_C) return value_mod.EOF_VAL;
-    return value_mod.char(@intCast(c & 0xFF));
+    // zepo-k2k6: decode a full UTF-8 codepoint, not just the first byte. The old
+    // (c & 0xFF) returned a raw byte and left continuation bytes in the stream.
+    const b0 = fgetc(file);
+    if (b0 == EOF_C) return value_mod.EOF_VAL;
+    var buf: [4]u8 = undefined;
+    buf[0] = @intCast(b0 & 0xFF);
+    const len = utf8Len(buf[0]);
+    var i: usize = 1;
+    while (i < len) : (i += 1) {
+        const b = fgetc(file);
+        if (b == EOF_C) break; // truncated sequence — decode what we have
+        buf[i] = @intCast(b & 0xFF);
+    }
+    const cp = std.unicode.utf8Decode(buf[0..i]) catch return value_mod.char(buf[0]);
+    return value_mod.char(cp);
 }
 
 pub fn primPeekChar(vm: *VM, args: []const Value) LispError!Value {
@@ -623,10 +654,28 @@ pub fn primPeekChar(vm: *VM, args: []const Value) LispError!Value {
     if (!isInputPort(args[0])) return error.TypeError;
     const file = inputPortFile(args[0]);
     _ = vm;
-    const c = fgetc(file);
-    if (c == EOF_C) return value_mod.EOF_VAL;
-    _ = ungetc(c, file);
-    return value_mod.char(@intCast(c & 0xFF));
+    // zepo-k2k6: peek a full UTF-8 codepoint. Read the whole sequence, then push
+    // every byte back in reverse so the stream is left unchanged. (The C
+    // standard guarantees only one ungetc, but macOS/glibc allow the buffered
+    // pushback used here.)
+    const b0 = fgetc(file);
+    if (b0 == EOF_C) return value_mod.EOF_VAL;
+    var buf: [4]u8 = undefined;
+    buf[0] = @intCast(b0 & 0xFF);
+    const len = utf8Len(buf[0]);
+    var i: usize = 1;
+    while (i < len) : (i += 1) {
+        const b = fgetc(file);
+        if (b == EOF_C) break;
+        buf[i] = @intCast(b & 0xFF);
+    }
+    var j: usize = i;
+    while (j > 0) {
+        j -= 1;
+        _ = ungetc(@as(c_int, buf[j]), file);
+    }
+    const cp = std.unicode.utf8Decode(buf[0..i]) catch return value_mod.char(buf[0]);
+    return value_mod.char(cp);
 }
 
 pub fn primEofObjectQ(_: *VM, args: []const Value) LispError!Value {

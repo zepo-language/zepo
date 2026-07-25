@@ -84,10 +84,37 @@ fn readKey(buf: *[16]u8) []const u8 {
                 'D' => return "left",
                 'H' => return "home",
                 'F' => return "end",
-                '1' => { _ = readByte() catch {}; return "home"; },
-                '4' => { _ = readByte() catch {}; return "end"; },
-                '5' => { _ = readByte() catch {}; return "page-up"; },
-                '6' => { _ = readByte() catch {}; return "page-down"; },
+                // zepo-k2k6: CSI <num> ~ sequences. The old code read exactly one
+                // extra byte and assumed it was '~', so multi-digit params like
+                // ESC[15~ (F5, 5 bytes) left the '~' in the stream and desynced
+                // every subsequent key. Accumulate all digits and consume the
+                // trailing terminator.
+                '0'...'9' => {
+                    var num: u16 = third - '0';
+                    while (true) {
+                        const d = readByte() catch break;
+                        if (d >= '0' and d <= '9') {
+                            num = num *% 10 +% (d - '0');
+                        } else break; // terminator (normally '~')
+                    }
+                    return switch (num) {
+                        1, 7 => "home",
+                        2 => "insert",
+                        3 => "delete",
+                        4, 8 => "end",
+                        5 => "page-up",
+                        6 => "page-down",
+                        15 => "f5",
+                        17 => "f6",
+                        18 => "f7",
+                        19 => "f8",
+                        20 => "f9",
+                        21 => "f10",
+                        23 => "f11",
+                        24 => "f12",
+                        else => "unknown",
+                    };
+                },
                 else => return "unknown",
             }
         } else if (next == 'O') {
