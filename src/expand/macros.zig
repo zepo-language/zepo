@@ -58,6 +58,17 @@ fn expandList(v: Value, symbols: *SymbolTable, gc: *GC) anyerror!Value {
 // the level and is preserved as data; (unquote X)/(unquote-splicing X) lower it
 // and only SUBSTITUTE at level 1, otherwise they too are preserved as data.
 fn expandQQ(template: Value, symbols: *SymbolTable, gc: *GC, level: u32) anyerror!Value {
+    // zepo-aqwc: a vector template #(...) — expand its elements as if they were
+    // a list (so `unquote` and `unquote-splicing` work), then rebuild a vector:
+    //   `#(a ,b ,@c)  →  (list->vector `(a ,b ,@c))
+    if (objects.isVector(template)) {
+        var scope = HandleScope{};
+        gc.roots.pushHandleScope(&scope);
+        defer gc.roots.popHandleScope();
+        const as_list = scope.push(try vectorToList(template, gc));
+        const expanded = scope.push(try expandQQ(as_list.*, symbols, gc, level));
+        return makeCall1(symbols, gc, "list->vector", expanded.*);
+    }
     if (!objects.isPair(template)) {
         return makeQuote(template, symbols, gc);
     }
@@ -163,6 +174,36 @@ fn makeQuote(val: Value, symbols: *SymbolTable, gc: *GC) !Value {
     const nil_slot = scope.push(value_mod.NIL);
     const inner_slot = scope.push(try objects.makePairFromSlots(gc, v_slot, nil_slot));
     return objects.makePairFromSlots(gc, q_slot, inner_slot);
+}
+
+// zepo-aqwc: (sym a) — one-argument call. GC-rooted like makeCall2.
+fn makeCall1(symbols: *SymbolTable, gc: *GC, sym_name: []const u8, a: Value) !Value {
+    var scope = HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const fn_slot = scope.push(try symbols.intern(sym_name));
+    const a_slot = scope.push(a);
+    const nil_slot = scope.push(value_mod.NIL);
+    const args_slot = scope.push(try objects.makePairFromSlots(gc, a_slot, nil_slot));
+    return objects.makePairFromSlots(gc, fn_slot, args_slot);
+}
+
+// zepo-aqwc: build a proper list of a vector's elements (forward order). `vec`
+// is rooted so makePairFromSlots' GC can't invalidate it mid-walk.
+fn vectorToList(vec: Value, gc: *GC) !Value {
+    var scope = HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const vec_slot = scope.push(vec);
+    const acc = scope.push(value_mod.NIL);
+    const elem = scope.push(value_mod.NIL);
+    var i: usize = objects.vectorLen(vec_slot.*);
+    while (i > 0) {
+        i -= 1;
+        elem.* = objects.vectorGet(vec_slot.*, i);
+        acc.* = try objects.makePairFromSlots(gc, elem, acc);
+    }
+    return acc.*;
 }
 
 fn makeCall2(symbols: *SymbolTable, gc: *GC, sym_name: []const u8, a: Value, b: Value) !Value {

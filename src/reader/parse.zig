@@ -80,7 +80,24 @@ pub const Parser = struct {
 
     /// Read a single expression. Returns error.Eof when the input is
     /// exhausted (no more non-whitespace tokens).
+    // zepo-aqwc: `#;` comments out the FULL datum that follows. Discard any run
+    // of them wherever a datum is about to be read.
+    fn skipDatumComments(p: *Parser) anyerror!void {
+        while ((try p.lexer.peek()).kind == .datum_comment) {
+            _ = try p.lexer.next(); // consume `#;`
+            try p.discardDatum();
+        }
+    }
+
+    fn discardDatum(p: *Parser) anyerror!void {
+        try p.skipDatumComments(); // handles `#;#;a b`
+        const tok = try p.lexer.next();
+        if (tok.kind == .eof) return p.setDiag(error.UnexpectedEof, tok.span);
+        _ = try p.parseToken(tok); // fully parse (and discard) one datum
+    }
+
     pub fn readOne(p: *Parser) !Value {
+        try p.skipDatumComments(); // top-level leading `#;` datums
         const tok = p.lexer.next() catch |e| {
             const here = Span{
                 .start = .{ .line = p.lexer.line, .col = p.lexer.col, .offset = @intCast(p.lexer.pos) },
@@ -115,6 +132,7 @@ pub const Parser = struct {
         const head_slot = scope.push(value_mod.NIL);
 
         while (true) {
+            try p.skipDatumComments(); // zepo-aqwc
             const tok = try p.lexer.next();
             if (tok.kind == .eof) break;
             const v = try p.parseToken(tok);
@@ -138,6 +156,16 @@ pub const Parser = struct {
     fn parseToken(p: *Parser, tok: Token) anyerror!Value {
         switch (tok.kind) {
             .lparen => return p.parseList(tok),
+            .vector_open => return p.parseVector(tok), // zepo-aqwc
+            // zepo-aqwc: `#;` in a datum position (e.g. `'#;a b`, top level) —
+            // discard the commented datum and parse the next real one.
+            .datum_comment => {
+                try p.discardDatum();
+                try p.skipDatumComments();
+                const next_tok = try p.lexer.next();
+                if (next_tok.kind == .eof) return p.setDiag(error.UnexpectedEof, next_tok.span);
+                return p.parseToken(next_tok);
+            },
             .rparen => return p.setDiag(error.UnbalancedParen, tok.span),
             .dot => return p.setDiag(error.DotInvalid, tok.span),
             .quote => return p.parseQuote(tok),
@@ -216,6 +244,47 @@ pub const Parser = struct {
         return result;
     }
 
+    // zepo-aqwc: `#( datum ... )` → a vector Value. Elements are collected into
+    // a rooted reversed cons list (GC-safe: each parseToken may allocate), then
+    // copied into a freshly-allocated vector. The vector self-quotes in the AST
+    // builder, so its elements are data, not evaluated.
+    fn parseVector(p: *Parser, open_tok: Token) anyerror!Value {
+        var scope = HandleScope{};
+        p.gc.roots.pushHandleScope(&scope);
+        defer p.gc.roots.popHandleScope();
+
+        const reversed_slot = scope.push(value_mod.NIL);
+        const v_slot = scope.push(value_mod.NIL);
+        var count: usize = 0;
+        while (true) {
+            try p.skipDatumComments(); // zepo-aqwc
+            const tok = try p.lexer.peek();
+            if (tok.kind == .eof) return p.setDiag(error.UnbalancedParen, tok.span);
+            if (tok.kind == .rparen) {
+                _ = try p.lexer.next();
+                break;
+            }
+            // A vector has no dotted tail; `.` is not special inside it.
+            const next_tok = try p.lexer.next();
+            v_slot.* = try p.parseToken(next_tok);
+            reversed_slot.* = try objects.makePairFromSlots(p.gc, v_slot, reversed_slot);
+            count += 1;
+        }
+
+        const vec_slot = scope.push(try objects.makeVector(p.gc, count, value_mod.NIL));
+        // reversed list is last-to-first; walk it filling indices high→low. No
+        // allocation here, so the reversed-list Values stay stable.
+        var i: usize = count;
+        var cur = reversed_slot.*;
+        while (objects.isPair(cur)) {
+            i -= 1;
+            objects.vectorSet(p.gc, vec_slot.*, i, objects.pairCar(cur).*);
+            cur = objects.pairCdr(cur).*;
+        }
+        try p.recordSpan(vec_slot.*, open_tok.span.start, open_tok.span.end);
+        return vec_slot.*;
+    }
+
     fn parseList(p: *Parser, open_tok: Token) anyerror!Value {
         var scope = HandleScope{};
         p.gc.roots.pushHandleScope(&scope);
@@ -233,6 +302,7 @@ pub const Parser = struct {
         // pair span covers the WHOLE form, not just the open paren.
         var close_end_pos = open_tok.span.end;
         while (true) {
+            try p.skipDatumComments(); // zepo-aqwc
             const tok = try p.lexer.peek();
             if (tok.kind == .eof) return p.setDiag(error.UnbalancedParen, tok.span);
             if (tok.kind == .rparen) {

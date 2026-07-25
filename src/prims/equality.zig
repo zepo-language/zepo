@@ -74,5 +74,20 @@ pub fn structuralEqual(vm: *VM, a: Value, b: Value, visited: *std.AutoHashMap([2
         // Interned → identity already matches above; fall back to name.
         return std.mem.eql(u8, objects.symbolName(a), objects.symbolName(b));
     }
+    // zepo-aqwc: equal? recurses into vectors (same length + elementwise equal?),
+    // now that #(...) literals make vectors easy to compare. Same co-inductive
+    // cycle handling as pairs — vector-set! can make a vector self-referential.
+    if (objects.isVector(a) and objects.isVector(b)) {
+        const len = objects.vectorLen(a);
+        if (len != objects.vectorLen(b)) return false;
+        const key = [2]usize{ @intFromPtr(value_mod.ptrVal(a)), @intFromPtr(value_mod.ptrVal(b)) };
+        if (visited.contains(key)) return true;
+        try visited.put(key, {});
+        var i: usize = 0;
+        while (i < len) : (i += 1) {
+            if (!try structuralEqual(vm, objects.vectorGet(a, i), objects.vectorGet(b, i), visited)) return false;
+        }
+        return true;
+    }
     return false;
 }

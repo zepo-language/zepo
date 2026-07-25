@@ -218,6 +218,35 @@ test "special forms: let-values, define-values, case-lambda, dynamic-wind" {
     );
 }
 
+// zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
+// quasiquote walks vector templates; #; comments out a datum.
+test "reader: vector literals self-evaluate and compare with equal?" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(vector-ref #(10 20 30) 1)"), 20);
+    try helpers.expectInt(try r.eval("(vector-length #(a b c d))"), 4);
+    try helpers.expectTrue(try r.eval("(vector? #(1 2))"));
+    // equal? recurses into vectors (same length + elementwise).
+    try helpers.expectTrue(try r.eval("(equal? #(1 2 3) (vector 1 2 3))"));
+    try helpers.expectTrue(try r.eval("(equal? #(1 #(2 3)) #(1 #(2 3)))"));
+    try helpers.expectFalse(try r.eval("(equal? #(1 2) #(1 2 3))"));
+    // A vector literal is mutable.
+    try helpers.expectString(try r.eval("(define v #(9 8 7)) (vector-set! v 0 'X) (display-to-string v)"), "#(X 8 7)");
+    // #; comments out the next datum. (car (cdr (list 1 #;2 3))) == 3 → the
+    // middle element 2 was dropped, so the list is (1 3). Prim-only, no stdlib.
+    try helpers.expectInt(try r.eval("(car (cdr (list 1 #;2 3)))"), 3);
+    try helpers.expectInt(try r.eval("(+ 1 #;(* 100 100) 2)"), 3);
+    try helpers.expectInt(try r.eval("(vector-length #(1 #;2 3))"), 2);
+}
+
+test "reader: quasiquote walks vector templates" {
+    const r = try Rig.initWithPrelude(alloc); // needs list->vector
+    defer r.deinit();
+    try helpers.expectString(try r.eval("(define x 99) (display-to-string `#(1 ,x 3))"), "#(1 99 3)");
+    try helpers.expectString(try r.eval("(display-to-string `#(1 ,@(list 2 3) 4))"), "#(1 2 3 4)");
+    try helpers.expectString(try r.eval("(display-to-string `#(0 #(1 ,x) 2))"), "#(0 #(1 99) 2)");
+}
+
 // zepo-asu1: mutable pairs — set-car!/set-cdr! (write-barrier'd) + list-set!,
 // and the cyclic structures they make constructible must still render (bounded).
 test "pairs: set-car! / set-cdr! mutate in place" {
