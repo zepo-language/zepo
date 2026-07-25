@@ -41,52 +41,65 @@ fn headSym(v: Value) ?[]const u8 {
     return objects.symbolName(h);
 }
 
-// ── Bindings (pattern variable → matched Value / []Value) ──────────────────
+// ── Bindings (pattern variable → depth-aware matched structure) ────────────
+
+// zepo-5rr6: pattern variables can be bound at an arbitrary *nesting depth*
+// (one level per enclosing `...` in the pattern). A depth-0 variable matches a
+// single Value; a depth-d variable matches a d-deep nested sequence of Values.
+// The old FLAT model (scalar Value + one-level list) could only represent
+// depth 0 and 1, so nested ellipsis (`((a ...) ...)`, `x ... ...`) silently
+// lost structure. A `MatchNode` is the recursive value a pattern var binds to.
+pub const MatchNode = union(enum) {
+    /// A leaf datum (depth-0 match).
+    leaf: Value,
+    /// One ellipsis level: an ordered sequence of sub-matches.
+    seq: std.ArrayListUnmanaged(MatchNode),
+
+    fn deinit(self: *MatchNode, a: std.mem.Allocator) void {
+        switch (self.*) {
+            .leaf => {},
+            .seq => |*s| {
+                for (s.items) |*child| child.deinit(a);
+                s.deinit(a);
+            },
+        }
+    }
+};
 
 pub const Bindings = struct {
-    /// Scalar bindings: pattern variable bound to a single Value.
-    scalar: std.StringHashMapUnmanaged(Value) = .empty,
-    /// Ellipsis bindings: pattern variable bound to a list of Values.
-    list: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Value)) = .empty,
+    map: std.StringHashMapUnmanaged(MatchNode) = .empty,
     allocator: std.mem.Allocator,
+    /// When false this is a borrowing view (e.g. a per-iteration expansion
+    /// child): the map entries alias MatchNodes owned by a parent Bindings, so
+    /// deinit frees only the map spine, never the shared node buffers.
+    owns_nodes: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) Bindings {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(b: *Bindings) void {
-        var it = b.list.valueIterator();
-        while (it.next()) |lst| lst.deinit(b.allocator);
-        b.list.deinit(b.allocator);
-        b.scalar.deinit(b.allocator);
-    }
-
-    pub fn putScalar(b: *Bindings, name: []const u8, val: Value) anyerror!void {
-        try b.scalar.put(b.allocator, name, val);
-    }
-
-    pub fn putEllipsis(b: *Bindings, name: []const u8) anyerror!void {
-        if (!b.list.contains(name)) {
-            try b.list.put(b.allocator, name, .empty);
+        if (b.owns_nodes) {
+            var it = b.map.valueIterator();
+            while (it.next()) |node| node.deinit(b.allocator);
         }
+        b.map.deinit(b.allocator);
     }
 
-    pub fn appendEllipsis(b: *Bindings, name: []const u8, val: Value) anyerror!void {
-        const entry = b.list.getPtr(name) orelse return error.UnboundPatternVar;
-        try entry.append(b.allocator, val);
+    /// Bind `name` to `node`, taking ownership. Replaces any prior binding.
+    pub fn put(b: *Bindings, name: []const u8, node: MatchNode) anyerror!void {
+        if (b.owns_nodes) {
+            if (b.map.getPtr(name)) |old| old.deinit(b.allocator);
+        }
+        try b.map.put(b.allocator, name, node);
     }
 
     pub fn isPatternVar(b: *const Bindings, name: []const u8) bool {
-        return b.scalar.contains(name) or b.list.contains(name);
+        return b.map.contains(name);
     }
 
-    pub fn getScalar(b: *const Bindings, name: []const u8) ?Value {
-        return b.scalar.get(name);
-    }
-
-    pub fn getList(b: *const Bindings, name: []const u8) ?[]Value {
-        if (b.list.getPtr(name)) |l| return l.items;
-        return null;
+    pub fn get(b: *const Bindings, name: []const u8) ?MatchNode {
+        return b.map.get(name);
     }
 };
 
@@ -110,8 +123,8 @@ pub fn matchPattern(
             if (!objects.isSymbol(form)) return false;
             return std.mem.eql(u8, objects.symbolName(pattern), objects.symbolName(form));
         }
-        // Pattern variable: bind to form.
-        try bindings.putScalar(objects.symbolName(pattern), form);
+        // Pattern variable: bind to form as a depth-0 leaf.
+        try bindings.put(objects.symbolName(pattern), .{ .leaf = form });
         return true;
     }
 
@@ -125,27 +138,54 @@ pub fn matchPattern(
             const after_ellipsis = objects.pairCdr(pat_cdr).*;
             // Count how many elements are after the ellipsis.
             const tail_len = listLength(after_ellipsis);
-            // Collect the symbols that pat_car binds so we can init lists.
-            try initEllipsisBindings(pat_car, literals, bindings);
-            // Match the tail of form against after_ellipsis.
             const form_len = listLength(form);
             if (form_len < tail_len) return false;
             const ellipsis_count = form_len - tail_len;
+
+            // zepo-5rr6: collect the pattern variables that `pat_car` binds so
+            // that each is bound at depth+1 — as a `seq` of its per-iteration
+            // sub-matches. This preserves nested structure: if pat_car itself
+            // contains an ellipsis, a sub-var already comes back as a `.seq`
+            // (depth d) and the wrapping here lifts it to depth d+1.
+            const a = bindings.allocator;
+            var pcvars = std.ArrayListUnmanaged([]const u8).empty;
+            defer pcvars.deinit(a);
+            try collectPatternVars(pat_car, literals, a, &pcvars);
+
+            // One accumulator sequence per collected variable.
+            const accs = try a.alloc(std.ArrayListUnmanaged(MatchNode), pcvars.items.len);
+            for (accs) |*acc| acc.* = .empty;
+            // Free any accumulated nodes still held here on any early exit; on
+            // the success path each acc is emptied after ownership transfer.
+            defer {
+                for (accs) |*acc| {
+                    for (acc.items) |*n| n.deinit(a);
+                    acc.deinit(a);
+                }
+                a.free(accs);
+            }
+
             // Match ellipsis_count elements against pat_car.
             var cur_form = form;
             var i: usize = 0;
             while (i < ellipsis_count) : (i += 1) {
                 if (!objects.isPair(cur_form)) return false;
-                var sub = Bindings.init(bindings.allocator);
+                var sub = Bindings.init(a);
                 defer sub.deinit();
                 const ok = try matchPattern(pat_car, objects.pairCar(cur_form).*, literals, &sub);
                 if (!ok) return false;
-                // Merge sub scalar bindings into ellipsis lists.
-                var sit = sub.scalar.iterator();
-                while (sit.next()) |kv| {
-                    try bindings.appendEllipsis(kv.key_ptr.*, kv.value_ptr.*);
+                // Move each sub-binding into its accumulator (depth-lift).
+                for (pcvars.items, accs) |name, *acc| {
+                    if (sub.map.fetchRemove(name)) |kv| {
+                        try acc.append(a, kv.value);
+                    }
                 }
                 cur_form = objects.pairCdr(cur_form).*;
+            }
+            // Bind each collected var to its accumulated sequence.
+            for (pcvars.items, accs) |name, *acc| {
+                try bindings.put(name, .{ .seq = acc.* });
+                acc.* = .empty; // ownership transferred to `bindings`
             }
             // Match tail.
             return matchListTail(after_ellipsis, cur_form, literals, bindings);
@@ -179,19 +219,28 @@ fn matchListTail(
     return matchListTail(objects.pairCdr(pattern).*, objects.pairCdr(form).*, literals, bindings);
 }
 
-/// Collect all pattern variables introduced by `pat_car` (a sub-pattern before
-/// `...`) and pre-initialize their ellipsis list slots.
-fn initEllipsisBindings(pat: Value, literals: Value, bindings: *Bindings) anyerror!void {
-    if (symEq(pat, "_")) return;
+/// zepo-5rr6: collect every distinct pattern variable introduced by `pat`
+/// (a sub-pattern preceding `...`), excluding `_`, the ellipsis marker, and
+/// literals. Used to bind each at depth+1 after an ellipsis match — including
+/// vars that matched zero times, which must still be bound to an empty `seq`.
+fn collectPatternVars(
+    pat: Value,
+    literals: Value,
+    a: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged([]const u8),
+) anyerror!void {
+    if (symEq(pat, "_") or isEllipsis(pat)) return;
     if (objects.isSymbol(pat)) {
         if (!isLiteral(pat, literals)) {
-            try bindings.putEllipsis(objects.symbolName(pat));
+            const name = objects.symbolName(pat);
+            for (out.items) |e| if (std.mem.eql(u8, e, name)) return;
+            try out.append(a, name);
         }
         return;
     }
     if (objects.isPair(pat)) {
-        try initEllipsisBindings(objects.pairCar(pat).*, literals, bindings);
-        try initEllipsisBindings(objects.pairCdr(pat).*, literals, bindings);
+        try collectPatternVars(objects.pairCar(pat).*, literals, a, out);
+        try collectPatternVars(objects.pairCdr(pat).*, literals, a, out);
     }
 }
 
@@ -562,10 +611,16 @@ pub fn expandTemplate(
 ) anyerror!Value {
     // Symbol: check rename map first, then pattern variable substitution.
     if (objects.isSymbol(template)) {
+        const name = objects.symbolName(template);
         // Hygiene rewrite: if the symbol was renamed by applyHygiene, use fresh name.
-        if (rename.get(objects.symbolName(template))) |fresh| return fresh;
+        if (rename.get(name)) |fresh| return fresh;
         // Pattern variable substitution.
-        if (bindings.getScalar(objects.symbolName(template))) |v| return v;
+        if (bindings.get(name)) |node| switch (node) {
+            .leaf => |v| return v,
+            // zepo-5rr6: a positive-depth pattern var referenced with fewer
+            // ellipses than its depth — an ill-formed template.
+            .seq => return error.EllipsisDepthTooShallow,
+        };
         // Free reference: left as-is.
         return template;
     }
@@ -581,43 +636,20 @@ pub fn expandTemplate(
     const t_cdr = scope.push(objects.pairCdr(template).*);
 
     if (objects.isPair(t_cdr.*) and isEllipsis(objects.pairCar(t_cdr.*).*)) {
-        const after_ellipsis = objects.pairCdr(t_cdr.*).*;
-        // zepo-bn0a: an ellipsis template may reference MORE THAN ONE
-        // ellipsis-bound variable — e.g. (cons k v) ... — and they are iterated
-        // together in lockstep. The old code drove iteration off the first var
-        // only and left the others bound to their list form, so a sibling like
-        // `v` leaked out of the macro as an unbound symbol.
-        var evars = std.ArrayListUnmanaged([]const u8).empty;
-        defer evars.deinit(bindings.allocator);
-        try collectEllipsisVars(t_car.*, bindings, &evars);
-        if (evars.items.len == 0) return error.BadEllipsisTemplate;
-        // All driving lists come from the same ellipsis group and so share a
-        // length; disagreement means an ill-formed ellipsis template.
-        const count = (bindings.getList(evars.items[0]) orelse return error.BadEllipsisTemplate).len;
-        for (evars.items) |ev| {
-            const l = bindings.getList(ev) orelse return error.BadEllipsisTemplate;
-            if (l.len != count) return error.EllipsisCountMismatch;
+        // zepo-5rr6: count the run of consecutive ellipses following t_car.
+        // Each extra `...` flattens one additional nesting level, so
+        // `x ... ...` (m = 2) appends the inner expansions into one list.
+        var m: usize = 1;
+        var after = objects.pairCdr(t_cdr.*).*;
+        while (objects.isPair(after) and isEllipsis(objects.pairCar(after).*)) {
+            m += 1;
+            after = objects.pairCdr(after).*;
         }
-        // Expand t_car once per element, overriding EVERY ellipsis var.
-        const tail_slot = scope.push(try expandTemplate(after_ellipsis, bindings, rename, syms, gc));
-        // Build list in reverse.
+        // Expand the tail (everything past the ellipsis run), then prepend the
+        // ellipsis elements onto it (built in reverse for correct final order).
+        const tail_slot = scope.push(try expandTemplate(after, bindings, rename, syms, gc));
         const acc_slot = scope.push(tail_slot.*);
-        var k: usize = count;
-        while (k > 0) {
-            k -= 1;
-            var iter_bindings = Bindings.init(bindings.allocator);
-            defer iter_bindings.deinit();
-            // Copy scalar bindings, then override each ellipsis var with its
-            // k-th element for this iteration.
-            var sit = bindings.scalar.iterator();
-            while (sit.next()) |kv| try iter_bindings.scalar.put(iter_bindings.allocator, kv.key_ptr.*, kv.value_ptr.*);
-            for (evars.items) |ev| {
-                const l = bindings.getList(ev).?;
-                try iter_bindings.scalar.put(iter_bindings.allocator, ev, l[k]);
-            }
-            const expanded = scope.push(try expandTemplate(t_car.*, &iter_bindings, rename, syms, gc));
-            acc_slot.* = try objects.makePairFromSlots(gc, expanded, acc_slot);
-        }
+        try expandEllipsisInto(acc_slot, t_car.*, m, bindings, rename, syms, gc);
         return acc_slot.*;
     }
 
@@ -627,23 +659,63 @@ pub fn expandTemplate(
     return objects.makePairFromSlots(gc, t_car, t_cdr);
 }
 
-/// Find the first symbol in `tmpl` that is an ellipsis-bound pattern variable.
-fn findEllipsisVar(tmpl: Value, bindings: *const Bindings) ?[]const u8 {
-    if (objects.isSymbol(tmpl)) {
-        const name = objects.symbolName(tmpl);
-        if (bindings.list.contains(name)) return name;
-        return null;
+/// zepo-5rr6: prepend the expansion of `t_car` under `m` ellipses onto the
+/// rooted accumulator `acc_slot` (which already holds the tail). Elements are
+/// produced in reverse iteration order so the final list order is correct.
+/// With m > 1 the inner levels are flattened (appended) into the same
+/// accumulator — this is how `x ... ...` collapses nested structure.
+fn expandEllipsisInto(
+    acc_slot: *Value, // rooted slot holding the list built so far (starts as the tail)
+    t_car: Value,
+    m: usize,
+    bindings: *const Bindings,
+    rename: *RenameMap,
+    syms: *SymbolTable,
+    gc: *GC,
+) anyerror!void {
+    const a = bindings.allocator;
+    // Driving vars: every pattern var occurring in t_car that is currently
+    // bound at depth ≥ 1 (a `.seq`). They iterate together in lockstep.
+    var drivers = std.ArrayListUnmanaged([]const u8).empty;
+    defer drivers.deinit(a);
+    try collectEllipsisVars(t_car, bindings, &drivers);
+    if (drivers.items.len == 0) return error.BadEllipsisTemplate;
+    // All drivers share the outer sequence length; disagreement is ill-formed.
+    const n = bindings.get(drivers.items[0]).?.seq.items.len;
+    for (drivers.items) |d| {
+        if (bindings.get(d).?.seq.items.len != n) return error.EllipsisCountMismatch;
     }
-    if (objects.isPair(tmpl)) {
-        if (findEllipsisVar(objects.pairCar(tmpl).*, bindings)) |n| return n;
-        return findEllipsisVar(objects.pairCdr(tmpl).*, bindings);
+    var k: usize = n;
+    while (k > 0) {
+        k -= 1;
+        // Borrowing child env: alias every parent binding, then rebind each
+        // driver to its k-th sub-node (one depth level shallower). owns_nodes
+        // is false so child.deinit frees only the map spine, never the shared
+        // node buffers owned by `bindings`.
+        var child = Bindings{ .allocator = a, .owns_nodes = false };
+        defer child.deinit();
+        var it = bindings.map.iterator();
+        while (it.next()) |kv| try child.map.put(a, kv.key_ptr.*, kv.value_ptr.*);
+        for (drivers.items) |d| {
+            try child.map.put(a, d, bindings.get(d).?.seq.items[k]);
+        }
+        if (m == 1) {
+            var s = HandleScope{};
+            gc.roots.pushHandleScope(&s);
+            defer gc.roots.popHandleScope();
+            const el_slot = s.push(try expandTemplate(t_car, &child, rename, syms, gc));
+            acc_slot.* = try objects.makePairFromSlots(gc, el_slot, acc_slot);
+        } else {
+            // Flatten one further level into the same accumulator.
+            try expandEllipsisInto(acc_slot, t_car, m - 1, &child, rename, syms, gc);
+        }
     }
-    return null;
 }
 
-/// zepo-bn0a: collect every distinct ellipsis-bound pattern variable appearing
-/// in `tmpl`. All of them drive one ellipsis expansion in lockstep, so an
-/// ellipsis template like (cons k v) ... substitutes both k and v.
+/// zepo-5rr6: collect every distinct pattern variable appearing in `tmpl` that
+/// is currently bound at ellipsis depth (a `.seq`). All of them drive one
+/// ellipsis expansion in lockstep, so `(cons k v) ...` substitutes both k and
+/// v, and a depth-2 var wrapped in an outer `...` is descended one level.
 fn collectEllipsisVars(
     tmpl: Value,
     bindings: *const Bindings,
@@ -651,9 +723,11 @@ fn collectEllipsisVars(
 ) anyerror!void {
     if (objects.isSymbol(tmpl)) {
         const name = objects.symbolName(tmpl);
-        if (bindings.list.contains(name)) {
-            for (out.items) |e| if (std.mem.eql(u8, e, name)) return;
-            try out.append(bindings.allocator, name);
+        if (bindings.get(name)) |node| {
+            if (node == .seq) {
+                for (out.items) |e| if (std.mem.eql(u8, e, name)) return;
+                try out.append(bindings.allocator, name);
+            }
         }
         return;
     }
