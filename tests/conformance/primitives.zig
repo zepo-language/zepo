@@ -218,6 +218,50 @@ test "special forms: let-values, define-values, case-lambda, dynamic-wind" {
     );
 }
 
+// zepo-vx61: IR register slots are never reclaimed, so a function with enough
+// sequential lets exceeds the byte-sized physical register file. That must fail
+// with a graceful error.TooManyRegisters — NOT a "reached unreachable" panic
+// (Debug) or silent register-aliasing UB (ReleaseFast). Without the fix this
+// test would crash the test runner via the panic.
+test "codegen: register exhaustion returns TooManyRegisters, not a panic" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(alloc);
+    var numbuf: [24]u8 = undefined;
+    const N: usize = 400;
+    try buf.appendSlice(alloc, "(define (big)\n");
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        if (i == 0) {
+            try buf.appendSlice(alloc, "(let ((v0 0))\n");
+        } else {
+            try buf.appendSlice(alloc, "(let ((v");
+            try buf.appendSlice(alloc, try std.fmt.bufPrint(&numbuf, "{d}", .{i}));
+            try buf.appendSlice(alloc, " (+ v");
+            try buf.appendSlice(alloc, try std.fmt.bufPrint(&numbuf, "{d}", .{i - 1}));
+            try buf.appendSlice(alloc, " 1)))\n");
+        }
+    }
+    try buf.appendSlice(alloc, "v");
+    try buf.appendSlice(alloc, try std.fmt.bufPrint(&numbuf, "{d}", .{N - 1}));
+    i = 0;
+    while (i < N) : (i += 1) try buf.append(alloc, ')');
+    try buf.append(alloc, ')');
+
+    try std.testing.expectError(error.TooManyRegisters, r.eval(buf.items));
+}
+
+// Sanity: a modest nested let is well under the register limit and compiles.
+// (Fresh Rig — a failed over-limit compile does not yet cleanly roll back the
+// shared program state; recoverability is tracked separately.)
+test "codegen: modest nested lets compile and run" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(let ((a 1)) (let ((b (+ a 1))) (let ((c (+ b 1))) c)))"), 3);
+}
+
 // zepo-mqvc: inexact division by zero produces ±inf.0/+nan.0 (R7RS/IEEE);
 // exact (fixnum) division by zero remains an error.
 test "prims: inexact division by zero yields inf/nan, exact stays an error" {
