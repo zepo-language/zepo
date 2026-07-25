@@ -338,3 +338,65 @@ test "error: unterminated string" {
     const result = parse(&gc, &syms, &spans, "\"unterminated");
     try std.testing.expectError(ReaderError.StringUnterminated, result);
 }
+
+// zepo-pybo: R7RS reader syntax — named/hex characters, radix + exactness
+// number prefixes, and |...| pipe symbols.
+
+test "pybo: named and hex character literals" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    try std.testing.expectEqual(value_mod.char(0), try parse(&gc, &syms, &spans, "#\\null"));
+    try std.testing.expectEqual(value_mod.char(0x7f), try parse(&gc, &syms, &spans, "#\\delete"));
+    try std.testing.expectEqual(value_mod.char(0x1b), try parse(&gc, &syms, &spans, "#\\escape"));
+    try std.testing.expectEqual(value_mod.char(0x07), try parse(&gc, &syms, &spans, "#\\alarm"));
+    try std.testing.expectEqual(value_mod.char(0x08), try parse(&gc, &syms, &spans, "#\\backspace"));
+    try std.testing.expectEqual(value_mod.char('A'), try parse(&gc, &syms, &spans, "#\\x41"));
+    // A bare "#\x" is still the character 'x'.
+    try std.testing.expectEqual(value_mod.char('x'), try parse(&gc, &syms, &spans, "#\\x"));
+}
+
+test "pybo: radix and exactness number prefixes" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    try std.testing.expectEqual(@as(i63, 255), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#xff")));
+    try std.testing.expectEqual(@as(i63, 15), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#o17")));
+    try std.testing.expectEqual(@as(i63, 10), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#b1010")));
+    try std.testing.expectEqual(@as(i63, 42), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#d42")));
+    try std.testing.expectEqual(@as(i63, -26), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#x-1a")));
+    // #i makes it inexact; #e#x combines exactness + radix.
+    const inexact = try parse(&gc, &syms, &spans, "#i42");
+    try std.testing.expect(objects.isFloat(inexact));
+    try std.testing.expectEqual(@as(f64, 42.0), objects.floatVal(inexact));
+    try std.testing.expectEqual(@as(i63, 16), value_mod.fixnumVal(try parse(&gc, &syms, &spans, "#e#x10")));
+}
+
+test "pybo: pipe-delimited symbols" {
+    var gc = try GC.init(alloc);
+    defer gc.deinit();
+    var syms = try SymbolTable.init(&gc, alloc);
+    defer syms.deinit();
+    var spans = SpanTable.init(alloc);
+    defer spans.deinit();
+
+    const s = try parse(&gc, &syms, &spans, "|weird name|");
+    try std.testing.expect(objects.isSymbol(s));
+    try std.testing.expectEqualStrings("weird name", objects.symbolName(s));
+    // A pipe symbol interns to the same symbol as the bare form.
+    try std.testing.expectEqual(
+        try parse(&gc, &syms, &spans, "abc"),
+        try parse(&gc, &syms, &spans, "|abc|"),
+    );
+    // Escapes inside pipes.
+    const e = try parse(&gc, &syms, &spans, "|a\\|b|");
+    try std.testing.expectEqualStrings("a|b", objects.symbolName(e));
+}
