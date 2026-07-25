@@ -453,6 +453,11 @@ pub const Scheduler = struct {
             // vm.call_stack is empty here (scheduler invariant), so no
             // live Values are on the call stack — a safe point for marking.
             if (vm.gc.needsMajor()) {
+                // zepo-yzhs: if markBegin can't allocate its gray worklist, skip
+                // starting the incremental major this cycle. This swallow is
+                // safe precisely because a not-yet-started mark leaves NO partial
+                // state — the heap stays fully consistent and the next allocation
+                // trigger retries markBegin.
                 vm.gc.markBegin() catch {};
             } else if (vm.gc.mark_phase == .marking) {
                 if (vm.gc.markStep(256)) {

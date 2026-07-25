@@ -438,6 +438,11 @@ pub const VM = struct {
         if (vm.fibers.items[idx]) |fs| {
             fs.deinit();
             vm.fibers.items[idx] = null;
+            // zepo-yzhs: on OOM we simply don't recycle this slot index. The
+            // FiberState memory was already freed above; failing to push the
+            // index only forgoes reuse of one vm.fibers slot (a bounded leak of
+            // an index, not memory). The slot stays null, so nothing reads a
+            // stale entry.
             vm.free_fiber_slots.append(vm.allocator, idx) catch {};
         }
     }
