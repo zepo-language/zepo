@@ -36,6 +36,22 @@ pub fn primCdr(vm: *VM, args: []const Value) LispError!Value {
     return objects.pairCdr(p).*;
 }
 
+// zepo-asu1: (set-car! pair obj) / (set-cdr! pair obj) — in-place mutation via
+// the generational write barrier (see objects.pairSetCar/pairSetCdr).
+pub fn primSetCar(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!objects.isPair(args[0])) return error.TypeError;
+    objects.pairSetCar(vm.gc, args[0], args[1]);
+    return value_mod.NIL;
+}
+
+pub fn primSetCdr(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!objects.isPair(args[0])) return error.TypeError;
+    objects.pairSetCdr(vm.gc, args[0], args[1]);
+    return value_mod.NIL;
+}
+
 pub fn primPairQ(vm: *VM, args: []const Value) LispError!Value {
     _ = vm;
     if (args.len != 1) return error.ArityMismatch;

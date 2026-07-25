@@ -109,6 +109,11 @@ fn displayInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value,
             defer guard.pop();
             try out.appendSlice(allocator, "(");
             var cur = v;
+            // zepo-asu1: Floyd tortoise/hare over the spine. set-cdr! can make a
+            // list circular; the guard tracks nesting ancestors, not the spine,
+            // and can't (its 256 cap would truncate long flat lists). O(1) space.
+            var tortoise = v;
+            var advance_t = false;
             var first = true;
             while (true) {
                 if (!first) try out.appendSlice(allocator, " ");
@@ -122,6 +127,13 @@ fn displayInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value,
                     break;
                 }
                 cur = rest;
+                if (advance_t) tortoise = objects.pairCdr(tortoise).*;
+                advance_t = !advance_t;
+                if (cur == tortoise) { // spine is circular
+                    try out.appendSlice(allocator, " ");
+                    try out.appendSlice(allocator, CYCLE_MARKER);
+                    break;
+                }
             }
             try out.appendSlice(allocator, ")");
             return;
@@ -281,6 +293,9 @@ fn writeInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value, g
         defer guard.pop();
         try out.append(allocator, '(');
         var cur = v;
+        // zepo-asu1: Floyd tortoise/hare — set-cdr! can make the spine circular.
+        var tortoise = v;
+        var advance_t = false;
         var first = true;
         while (true) {
             if (!first) try out.append(allocator, ' ');
@@ -294,6 +309,13 @@ fn writeInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value, g
                 break;
             }
             cur = rest;
+            if (advance_t) tortoise = objects.pairCdr(tortoise).*;
+            advance_t = !advance_t;
+            if (cur == tortoise) {
+                try out.appendSlice(allocator, " ");
+                try out.appendSlice(allocator, CYCLE_MARKER);
+                break;
+            }
         }
         try out.append(allocator, ')');
         return;

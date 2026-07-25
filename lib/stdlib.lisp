@@ -761,11 +761,11 @@
                 cond))))))
 
 ;;; ── R7RS stdlib additions (zepo-7mwa) ──────────────────────────────────────
-;; NOTE: pairs and strings are immutable in zepo (no set-car!/set-cdr!, no
-;; string-set!), so list-set!, string-set!, string-fill!, and the port-parameter
-;; forms with-input-from-string / with-output-to-string need mutation / dynamic
-;; current-port support and are tracked in a separate bead. open-input-string is
-;; a primitive (fmemopen-backed).
+;; NOTE: pairs are now mutable (zepo-asu1: set-car!/set-cdr!/list-set!). Strings
+;; are still immutable, so string-set!/string-fill! (zepo-1meg) and the
+;; port-parameter forms with-input-from-string / with-output-to-string
+;; (zepo-gwj5) remain tracked separately. open-input-string is a primitive
+;; (fmemopen-backed).
 
 ; eqv?-based membership / association (eqv? is a primitive).
 (define (memv x lst)
@@ -790,6 +790,10 @@
   (if (pair? lst)
       (cons (car lst) (list-copy (cdr lst)))
       lst))
+
+; (list-set! lst k v) — mutate the k-th pair's car in place (zepo-asu1).
+(define (list-set! lst k v)
+  (set-car! (list-tail lst k) v))
 
 ; Identity-based equality over homogeneous arguments.
 (define (symbol=? a b . rest)
