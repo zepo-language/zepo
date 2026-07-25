@@ -118,6 +118,13 @@ pub const VM = struct {
     // restore capacity if scheduler context switching left vm.call_stack
     // as a fresh 0-capacity placeholder.
     max_regs: usize = 0,
+    // zepo-ul1l: tail-call out-buffer. MUST be a per-VM field, not a file-static
+    // var: worker_prims spawns an isolated GC+VM per OS thread, so a shared
+    // static would race concurrent TAIL_CALL memcpys AND — because &tc_args_buf[i]
+    // is registered as a GC root per-thread — let one thread's minor GC rewrite
+    // slots another thread is filling with its own heap's pointers (cross-heap
+    // corruption). Fibers on one thread are cooperative, so per-VM is sufficient.
+    tc_args_buf: [64]Value = undefined,
     // zepo-9bi: per-fiber exception-handler stack. Swapped in/out with
     // call_stack by the scheduler. Lives here as the *active* stack;
     // the main fiber's saved copy is in main_handler_snapshot, and other
@@ -449,7 +456,7 @@ pub const VM = struct {
 
     // zepo-5wg: place args from args_src into the new frame at `base`.
     // args_in_regs=true when args_src is a slice into call_stack.regs (already
-    // GC-rooted); false when pointing at tc_args_buf (C-static, needs extra roots).
+    // GC-rooted); false when pointing at the per-VM tc_args_buf (needs extra roots).
     fn setupCallArgs(
         vm: *VM,
         tgt: *CompiledFn,
@@ -582,14 +589,14 @@ pub const VM = struct {
 
         // zepo-1p4: skip the initial memcpy. For the first trampoline
         // iteration `args_src` points at the caller's reg window directly;
-        // on tail-call iterations it points into the file-static tc_args_buf
+        // on tail-call iterations it points into the per-VM tc_args_buf
         // (already populated by the TAIL_CALL handler). The previous code
         // copied caller-args → args_buf → callee regs (two copies) and
         // tc_args_buf → args_buf → callee regs on tail-call (two copies).
         // Removing both memcpys saves ~134M copies per 24game run.
         var args_src: []const Value = initial_args;
         var args_in_regs: bool = true;
-        if (initial_args.len > tc_args_buf.len) return error.ArityMismatch;
+        if (initial_args.len > vm.tc_args_buf.len) return error.ArityMismatch;
         var args_len: usize = initial_args.len;
 
         trampoline: while (true) {
@@ -686,10 +693,10 @@ pub const VM = struct {
         yielded,
     };
 
-    /// Tail-call out-buffer. Using a thread-local-ish static buffer would be
-    /// simpler but Zig lacks thread locals; we put it on the VM struct.
-    // zepo-op7: shrunk from [256] to [64] (see args_buf comment in execFn).
-    var tc_args_buf: [64]Value = undefined;
+    // zepo-ul1l: the tail-call out-buffer is now a per-VM field `tc_args_buf`
+    // (declared with the other VM fields above). It was previously a file-static
+    // `var` here — shared across worker-thread VMs, causing the data race and
+    // cross-heap GC-root corruption this bead fixes. zepo-op7: sized [64].
 
     // zepo-5wg: dispatch drives the full multi-frame lifecycle. CALL on a closure
     // pushes a logical frame and continues in the same C stack frame instead of
@@ -1113,8 +1120,8 @@ pub const VM = struct {
                     const args_start = tc_base + @as(u32, a) + 1;
                     const args_end = args_start + @as(u32, b);
 
-                    if (b > tc_args_buf.len) return error.ArityMismatch;
-                    @memcpy(tc_args_buf[0..b], vm.call_stack.regs.items[args_start..args_end]);
+                    if (b > vm.tc_args_buf.len) return error.ArityMismatch;
+                    @memcpy(vm.tc_args_buf[0..b], vm.call_stack.regs.items[args_start..args_end]);
 
                     const at_outermost = vm.call_stack.frames.items.len - 1 == outermost_idx;
 
@@ -1126,7 +1133,7 @@ pub const VM = struct {
                             return DispatchResult{ .tail_call = .{
                                 .func = tgt,
                                 .closure_val = fn_val,
-                                .args = tc_args_buf[0..b],
+                                .args = vm.tc_args_buf[0..b],
                             } };
                         }
                         // zepo-5wg: non-outermost tail call — inherit dst_reg from
@@ -1152,7 +1159,7 @@ pub const VM = struct {
                             .closure_val = fn_val,
                             .dst_reg = dst,
                         }, tgt.num_regs);
-                        try vm.setupCallArgs(tgt, tc_args_buf[0..b], new_base, false);
+                        try vm.setupCallArgs(tgt, vm.tc_args_buf[0..b], new_base, false);
                         func = tgt;
                         pc = 0;
                         code = func.code;
@@ -1163,8 +1170,8 @@ pub const VM = struct {
                         const pfn: PrimFn = @ptrFromInt(@as(usize, @intCast(raw)));
                         const prev_extra = vm.gc.roots.extra.items.len;
                         vm.gc.roots.extra.ensureUnusedCapacity(vm.gc.allocator, b) catch return error.OutOfMemory;
-                        for (0..b) |i| vm.gc.roots.extra.appendAssumeCapacity(&tc_args_buf[i]);
-                        const v = pfn(vm, tc_args_buf[0..b]) catch |e| {
+                        for (0..b) |i| vm.gc.roots.extra.appendAssumeCapacity(&vm.tc_args_buf[i]);
+                        const v = pfn(vm, vm.tc_args_buf[0..b]) catch |e| {
                             vm.gc.roots.extra.shrinkRetainingCapacity(prev_extra);
                             return e;
                         };
@@ -1196,7 +1203,7 @@ pub const VM = struct {
                     }
                     if (objects.isParameter(fn_val)) {
                         // zepo-6o3p: parameter in tail position.
-                        const v = try vm.paramApply(fn_val, tc_args_buf[0..b]);
+                        const v = try vm.paramApply(fn_val, vm.tc_args_buf[0..b]);
                         if (at_outermost) return DispatchResult{ .value = v };
                         const dst = vm.call_stack.currentFrame().dst_reg;
                         _ = vm.call_stack.pop();
