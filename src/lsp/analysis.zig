@@ -11,7 +11,7 @@
 //!   - (import M (a b c))                     -> Import + selected names
 //!   - every symbol occurrence with its byte/line offsets
 //!
-//! Diagnostics still go through the real reader (see `lsp_cmd`) so syntax
+//! Diagnostics still go through the real reader (see `reader_check`) so syntax
 //! errors stay aligned with what `zepo run` would produce.
 //!
 //! Resolution rules approximate ADR 0001:

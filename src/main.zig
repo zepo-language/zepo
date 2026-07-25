@@ -7,7 +7,6 @@ const fmt_cmd = @import("cli/fmt_cmd.zig");
 const init_cmd = @import("cli/init_cmd.zig");
 const install_cmd = @import("cli/install_cmd.zig");
 const lint_cmd = @import("cli/lint_cmd.zig");
-const lsp_cmd = @import("cli/lsp_cmd.zig");
 const new_cmd = @import("cli/new_cmd.zig");
 const repl_cmd = @import("cli/repl_cmd.zig");
 const run_cmd = @import("cli/run_cmd.zig");
@@ -195,10 +194,9 @@ fn realMain() !void {
     }
 
     if (std.mem.eql(u8, arg, "lsp")) {
-        // zepo-k9hh: new LSP module exposes hover/def/completion in addition
-        // to diagnostics. Old runLsp kept reachable for compatibility but the
-        // CLI now routes through the new server.
-        _ = lsp_cmd;
+        // zepo-k9hh: new LSP module exposes hover/def/completion in addition to
+        // diagnostics. zepo-017z: the old cli/lsp_cmd.zig JSON-RPC stack was
+        // dead and has been deleted; the CLI routes solely through the server.
         try zepo.lsp.runStdio(alloc);
         return;
     }
