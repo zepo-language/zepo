@@ -537,12 +537,22 @@
             ((equal? (string-ref str i) ch) i)
             (#t (loop (+ i 1)))))))
 
+; zepo-k5pp: escape continuations (call/ec) transfer control by raising a value
+; tagged with this global marker. Exception handlers must be TRANSPARENT to them
+; — a continuation invocation is not a condition — so guard re-raises any escape
+; instead of matching it against user clauses. (call/ec catches its own tag via
+; with-exception-handler directly, below.)
+(define %escape-marker (list '%escape-continuation))
+(define (%escape? e) (and (pair? e) (eq? (car e) %escape-marker)))
+
 (defmacro guard (var-and-clauses . body)
   `(with-exception-handler
      (lambda (,(car var-and-clauses))
-       (cond
-         ,@(cdr var-and-clauses)
-         (else (raise ,(car var-and-clauses)))))
+       (if (%escape? ,(car var-and-clauses))
+           (raise ,(car var-and-clauses)) ; escape continuations pass through
+           (cond
+             ,@(cdr var-and-clauses)
+             (else (raise ,(car var-and-clauses))))))
      (lambda () ,@body)))
 
 ; zepo-rdan: advice / wrapper convention.
@@ -710,10 +720,14 @@
 ;; => 42
 (defmacro unwind-protect (body . cleanup)
   (let ((res (gensym)) (exn (gensym)))
-    `(guard (,exn (#t ,@cleanup (raise ,exn)))
-       (let ((,res ,body))
-         ,@cleanup
-         ,res))))
+    ; zepo-k5pp: cleanup must run on escape continuations too, so use
+    ; with-exception-handler directly (guard is transparent to escapes).
+    `(with-exception-handler
+       (lambda (,exn) ,@cleanup (raise ,exn))
+       (lambda ()
+         (let ((,res ,body))
+           ,@cleanup
+           ,res)))))
 
 ; zepo-qqzm: (with-output-string (p) body...) — bind P to a fresh string output
 ; port for BODY (write to it with port-display / port-write) and return the
@@ -943,11 +957,37 @@
                   clauses)
            (else (error "case-lambda: no clause matches arity" ,n)))))))
 
-; (dynamic-wind before thunk after) — after runs on normal AND non-local exit.
-; zepo's only non-local exit is raise, so guard fully covers unwind.
+; (dynamic-wind before thunk after) — after runs on normal exit AND on every
+; non-local exit: ordinary raise/guard conditions AND escape continuations
+; (zepo-k5pp). Uses with-exception-handler directly rather than guard, because
+; guard is transparent to escapes — dynamic-wind's cleanup must NOT be.
 (define (dynamic-wind before thunk after)
   (before)
-  (guard (e (#t (after) (raise e)))
-    (let ((r (thunk)))
-      (after)
-      r)))
+  (with-exception-handler
+    (lambda (e) (after) (raise e))
+    (lambda ()
+      (let ((r (thunk)))
+        (after)
+        r))))
+
+; ── Escape (upward) continuations (zepo-k5pp) ───────────────────────────────
+; (call/ec proc) calls proc with an ESCAPE PROCEDURE k. Invoking (k v ...) at
+; any point during proc's dynamic extent makes the call/ec form return those
+; values immediately, unwinding intermediate frames — running any dynamic-wind
+; `after` thunks and restoring parameterize bindings on the way, because it is
+; built on raise/guard (zepo's only non-local exit). This is the escape-only
+; ("upward, one-shot") subset of call/cc: k must be invoked WITHIN the dynamic
+; extent of the call/ec that created it — invoking it afterward raises the tag
+; as an unhandled condition. Full re-entrant multi-shot call/cc is a non-goal.
+(define (call-with-escape-continuation proc)
+  (let ((my-tag (list 'ec))) ; fresh identity so nested call/ec don't collide
+    ; Use with-exception-handler directly (NOT guard): catch only THIS escape,
+    ; re-raise every other condition (incl. other escapes) so it propagates.
+    (with-exception-handler
+      (lambda (e)
+        (if (and (%escape? e) (eq? (car (cdr e)) my-tag))
+            (apply values (cdr (cdr e))) ; my escape → return its values
+            (raise e)))                  ; not mine → propagate
+      (lambda ()
+        (proc (lambda vals (raise (cons %escape-marker (cons my-tag vals)))))))))
+(define call/ec call-with-escape-continuation)
