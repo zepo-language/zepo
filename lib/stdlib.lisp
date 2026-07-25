@@ -839,3 +839,111 @@
 
 (define (string->vector s) (list->vector (string->list s)))
 (define (vector->string v) (list->string (vector->list v)))
+
+;;; ── R7RS special forms as macros (zepo-qaxw) ───────────────────────────────
+;; case, do, delay/force, let-values/let*-values, define-values, case-lambda,
+;; and dynamic-wind. (cond => is handled in the AST builder.) These sit after
+;; guard/gensym/cond/vector ops/call-with-values and the 7mwa additions, all of
+;; which they use.
+
+; (case key ((d ...) body...) ... (else body...)) — also supports => clauses.
+(defmacro case (key . clauses)
+  (let ((k (gensym)))
+    `(let ((,k ,key))
+       (cond
+         ,@(map (lambda (clause)
+                  (let ((datums (car clause))
+                        (body (cdr clause)))
+                    (let ((test (if (eq? datums 'else) 'else `(memv ,k ',datums))))
+                      (if (and (pair? body) (eq? (car body) '=>))
+                          `(,test (,(cadr body) ,k))
+                          `(,test ,@body)))))
+                clauses)))))
+
+; (do ((var init step) ...) (test result...) command...) — iteration.
+(defmacro do (specs test-and-result . commands)
+  (let ((loop (gensym))
+        (vars  (map car specs))
+        (inits (map cadr specs))
+        (steps (map (lambda (s) (if (pair? (cddr s)) (caddr s) (car s))) specs))
+        (test   (car test-and-result))
+        (result (cdr test-and-result)))
+    `(let ,loop ,(map list vars inits)
+       (if ,test
+           ,(if (null? result) #f `(begin ,@result))
+           (begin ,@commands (,loop ,@steps))))))
+
+; Promises. A promise is a tagged, mutable 3-slot vector: #(%promise forced? x).
+(define (promise? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) '%promise)))
+(define (make-promise v) (vector '%promise #t v))
+(defmacro delay (expr) `(vector '%promise #f (lambda () ,expr)))
+(define (force p)
+  (if (promise? p)
+      (if (vector-ref p 1)
+          (vector-ref p 2)
+          (let ((v ((vector-ref p 2))))
+            (if (vector-ref p 1)                 ; forcing may have forced it
+                (vector-ref p 2)
+                (begin (vector-set! p 1 #t) (vector-set! p 2 v) v))))
+      p))
+
+; (let-values (((a b) expr) ...) body) / let*-values. Nested call-with-values;
+; both expand sequentially (identical for the common single-binding case).
+(defmacro let-values (bindings . body)
+  (if (null? bindings)
+      `(begin ,@body)
+      (let ((b (car bindings)))
+        `(call-with-values
+           (lambda () ,(cadr b))
+           (lambda ,(car b)
+             (let-values ,(cdr bindings) ,@body))))))
+(defmacro let*-values (bindings . body)
+  `(let-values ,bindings ,@body))
+
+; (define-values (a b ...) expr) — bind each name to a value of expr.
+(defmacro define-values (formals expr)
+  (let ((tmp (gensym)))
+    `(begin
+       (define ,tmp (call-with-values (lambda () ,expr) list))
+       ,@(let loop ((fs formals) (i 0) (acc '()))
+           (if (null? fs)
+               (reverse acc)
+               (loop (cdr fs) (+ i 1)
+                     (cons `(define ,(car fs) (list-ref ,tmp ,i)) acc)))))))
+
+; (case-lambda (formals body...) ...) — dispatch on argument count.
+(define (%formals-fixed-count f)
+  (let loop ((f f) (n 0))
+    (cond ((null? f) n)
+          ((pair? f) (loop (cdr f) (+ n 1)))
+          (#t n))))                              ; dotted: n = required count
+(define (%formals-variadic? f)
+  (let loop ((f f))
+    (cond ((null? f) #f)
+          ((pair? f) (loop (cdr f)))
+          (#t #t))))                             ; ends in a rest symbol
+(defmacro case-lambda clauses
+  (let ((args (gensym)) (n (gensym)))
+    `(lambda ,args
+       (let ((,n (length ,args)))
+         (cond
+           ,@(map (lambda (clause)
+                    (let ((formals (car clause))
+                          (body (cdr clause)))
+                      (if (%formals-variadic? formals)
+                          `((>= ,n ,(%formals-fixed-count formals))
+                            (apply (lambda ,formals ,@body) ,args))
+                          `((= ,n ,(%formals-fixed-count formals))
+                            (apply (lambda ,formals ,@body) ,args)))))
+                  clauses)
+           (else (error "case-lambda: no clause matches arity" ,n)))))))
+
+; (dynamic-wind before thunk after) — after runs on normal AND non-local exit.
+; zepo's only non-local exit is raise, so guard fully covers unwind.
+(define (dynamic-wind before thunk after)
+  (before)
+  (guard (e (#t (after) (raise e)))
+    (let ((r (thunk)))
+      (after)
+      r)))
