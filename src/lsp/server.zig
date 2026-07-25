@@ -6,8 +6,8 @@
 //!   textDocument/hover, definition, completion
 //!
 //! Diagnostics are computed and published on didOpen/didChange via the
-//! existing reader-based `lsp_cmd.checkDocument` helper, which surfaces
-//! lex/parse errors with accurate spans.
+//! reader-based `reader_check.check` helper, which surfaces lex/parse errors
+//! with accurate spans.
 //!
 //! See bead zepo-k9hh.
 

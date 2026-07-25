@@ -1,5 +1,9 @@
 const std = @import("std");
-const lsp_cmd = @import("lsp_cmd.zig");
+// zepo-017z: diagnostics come from the single reader-check source of truth
+// (was the now-deleted lsp_cmd.checkDocument). Reached through the zepo module
+// so the file stays in exactly one module.
+const zepo = @import("zepo");
+const reader_check = zepo.lsp.reader_check;
 
 // zepo-n3h
 extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
@@ -60,16 +64,17 @@ pub fn runLint(alloc: std.mem.Allocator, lint_args: []const []const u8) !void {
         };
         defer alloc.free(src);
 
-        var diags = try lsp_cmd.checkDocument(alloc, path, src);
+        var diags: std.ArrayListUnmanaged(reader_check.Diag) = .empty;
         defer {
-            for (diags.items) |d| if (d.msg_owned) alloc.free(d.message);
+            for (diags.items) |d| if (d.owned) alloc.free(d.message);
             diags.deinit(alloc);
         }
+        try reader_check.check(alloc, path, src, &diags);
 
         for (diags.items) |d| {
             var buf: [512]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "{s}:{d}:{d}: {s}\n", .{
-                path, d.start_line + 1, d.start_char + 1, d.message,
+                path, d.range.start.line + 1, d.range.start.character + 1, d.message,
             }) catch continue;
             writeStdout(line);
             total_diags += 1;
