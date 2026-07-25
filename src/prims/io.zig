@@ -525,6 +525,9 @@ const InputPortPayload = struct {
     file: *std.c.FILE,
     owned: bool,
     allocator: std.mem.Allocator,
+    // zepo-7mwa: for string input ports, a private byte buffer that fmemopen
+    // reads in place. It must outlive the FILE* and be freed with it.
+    buf: ?[]u8 = null,
 };
 
 fn deinitInputPortFull(ptr: ?*anyopaque) callconv(.c) void {
@@ -533,6 +536,7 @@ fn deinitInputPortFull(ptr: ?*anyopaque) callconv(.c) void {
         if (pd.owned) {
             _ = std.c.fclose(pd.file);
         }
+        if (pd.buf) |b| pd.allocator.free(b);
         pd.allocator.destroy(pd);
     }
 }
@@ -598,6 +602,40 @@ pub fn primCloseInputPort(_: *VM, args: []const Value) LispError!Value {
 }
 
 extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*std.c.FILE;
+extern "c" fn fmemopen(buf: ?*anyopaque, size: usize, mode: [*:0]const u8) ?*std.c.FILE;
+
+// zepo-7mwa: (open-input-string s) → an input port that reads the characters of
+// s. Implemented over fmemopen against a PRIVATE copy of the bytes: fmemopen
+// reads the buffer in place and the GC may move or collect the source string,
+// so the port owns its own buffer (freed with the FILE* in deinit).
+pub fn primOpenInputString(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    const src = objects.stringBytes(args[0]);
+    // macOS fmemopen rejects size 0, but R7RS wants (open-input-string "") to
+    // read as immediate EOF. For the empty case open a 1-byte stream over a
+    // filler byte and pre-consume it below so the port starts at end-of-file.
+    const n = if (src.len == 0) 1 else src.len;
+    const buf = vm.allocator.alloc(u8, n) catch return error.OutOfMemory;
+    if (src.len == 0) buf[0] = 0 else @memcpy(buf, src);
+    const file = fmemopen(buf.ptr, n, "r") orelse {
+        vm.allocator.free(buf);
+        return error.IOError;
+    };
+    if (src.len == 0) _ = fgetc(file); // advance past the filler byte → EOF
+    const pd = vm.allocator.create(InputPortPayload) catch {
+        _ = std.c.fclose(file);
+        vm.allocator.free(buf);
+        return error.OutOfMemory;
+    };
+    pd.* = .{ .file = file, .owned = true, .allocator = vm.allocator, .buf = buf };
+    return objects.makeForeign(vm.gc, pd, deinitInputPortFull, TAG_INPUT_PORT) catch {
+        _ = std.c.fclose(file);
+        vm.allocator.free(buf);
+        vm.allocator.destroy(pd);
+        return error.OutOfMemory;
+    };
+}
 
 // zepo-k2k6: fdopen(0,"r") allocates a fresh FILE* on every call, and with
 // owned=false those were never freed → a FILE* leak per (current-input-port).

@@ -163,6 +163,7 @@ const TABLE: []const Entry = &.{
     make("open-input-file", 1, io_mod.primOpenInputFile),
     make("close-input-port", 1, io_mod.primCloseInputPort),
     make("current-input-port", 0, io_mod.primCurrentInputPort),
+    make("open-input-string", 1, io_mod.primOpenInputString), // zepo-7mwa
     make("read-char", 1, io_mod.primReadChar),
     make("peek-char", 1, io_mod.primPeekChar),
     make("eof-object?", 1, io_mod.primEofObjectQ),

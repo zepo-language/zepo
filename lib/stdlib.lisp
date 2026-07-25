@@ -759,3 +759,83 @@
             (if (and n (>= n 0) (< n (length restarts)))
                 (invoke-restart (list-ref restarts n))
                 cond))))))
+
+;;; ── R7RS stdlib additions (zepo-7mwa) ──────────────────────────────────────
+;; NOTE: pairs and strings are immutable in zepo (no set-car!/set-cdr!, no
+;; string-set!), so list-set!, string-set!, string-fill!, and the port-parameter
+;; forms with-input-from-string / with-output-to-string need mutation / dynamic
+;; current-port support and are tracked in a separate bead. open-input-string is
+;; a primitive (fmemopen-backed).
+
+; eqv?-based membership / association (eqv? is a primitive).
+(define (memv x lst)
+  (cond ((null? lst) #f)
+        ((eqv? x (car lst)) lst)
+        (#t (memv x (cdr lst)))))
+
+(define (assv key lst)
+  (cond ((null? lst) #f)
+        ((eqv? key (car (car lst))) (car lst))
+        (#t (assv key (cdr lst)))))
+
+; (make-list n [fill]) → list of n copies of fill (default #f).
+(define (make-list n . rest)
+  (let ((fill (if (null? rest) #f (car rest))))
+    (let loop ((i n) (acc (quote ())))
+      (if (<= i 0) acc (loop (- i 1) (cons fill acc))))))
+
+; (list-copy obj) → a shallow copy of the list; a non-pair (incl. an improper
+; tail) is returned as-is, per R7RS.
+(define (list-copy lst)
+  (if (pair? lst)
+      (cons (car lst) (list-copy (cdr lst)))
+      lst))
+
+; Identity-based equality over homogeneous arguments.
+(define (symbol=? a b . rest)
+  (and (eq? a b) (or (null? rest) (apply symbol=? b rest))))
+
+(define (boolean=? a b . rest)
+  (and (eq? a b) (or (null? rest) (apply boolean=? b rest))))
+
+; Case-insensitive comparisons.
+(define (char-ci=? a b) (char=? (char-downcase a) (char-downcase b)))
+(define (string-ci=? a b) (string=? (string-downcase a) (string-downcase b)))
+
+; Exactness. In zepo an exact number is a fixnum; an inexact one is a float.
+(define (inexact? x) (float? x))
+(define (exact? x) (and (number? x) (not (float? x))))
+(define exact inexact->exact)
+(define inexact exact->inexact)
+(define (exact-integer? x) (and (exact? x) (integer? x)))
+
+; (exact-integer-sqrt n) → (values s r), s = floor(sqrt n), r = n - s*s.
+; The loop corrects for floating-point error in either direction.
+(define (exact-integer-sqrt n)
+  (let loop ((s (exact (floor (sqrt (inexact n))))))
+    (cond ((> (* s s) n) (loop (- s 1)))
+          ((> (* (+ s 1) (+ s 1)) n) (values s (- n (* s s))))
+          (#t (loop (+ s 1))))))
+
+; Truncating / flooring division, each returning (values quotient remainder).
+(define (truncate/ n d) (values (quotient n d) (remainder n d)))
+(define (floor/ n d)
+  (let ((r (modulo n d)))
+    (values (quotient (- n r) d) r)))
+
+; String helpers (immutable-safe).
+(define (string-copy s . rest)
+  (let ((start (if (null? rest) 0 (car rest)))
+        (end   (if (or (null? rest) (null? (cdr rest)))
+                   (string-length s)
+                   (car (cdr rest)))))
+    (substring s start end)))
+
+(define (string-map f . strs)
+  (list->string (apply map f (map string->list strs))))
+
+(define (string-for-each f . strs)
+  (apply for-each f (map string->list strs)))
+
+(define (string->vector s) (list->vector (string->list s)))
+(define (vector->string v) (list->string (vector->list v)))

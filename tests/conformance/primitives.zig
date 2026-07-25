@@ -123,6 +123,57 @@ test "prims: float external representation" {
     try helpers.expectString(try r.eval("(display-to-string (prim-nan))"), "+nan.0");
 }
 
+// zepo-7mwa: R7RS stdlib absentees added in lib/stdlib.lisp + open-input-string.
+test "prims: R7RS stdlib additions — predicates and list/exactness ops" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    // eqv?-based membership / association.
+    try helpers.expectInt(try r.eval("(car (memv 2 (list 1 2 3)))"), 2);
+    try helpers.expectInt(try r.eval("(cdr (assv 2 (list (cons 1 10) (cons 2 20))))"), 20);
+    try helpers.expectFalse(try r.eval("(memv 9 (list 1 2 3))"));
+    // make-list / list-copy.
+    try helpers.expectInt(try r.eval("(length (make-list 4 0))"), 4);
+    try helpers.expectInt(try r.eval("(car (make-list 3 7))"), 7);
+    try helpers.expectInt(try r.eval("(car (list-copy (list 5 6)))"), 5);
+    // Identity-based equality predicates.
+    try helpers.expectTrue(try r.eval("(symbol=? 'a 'a 'a)"));
+    try helpers.expectFalse(try r.eval("(symbol=? 'a 'b)"));
+    try helpers.expectTrue(try r.eval("(boolean=? #t #t)"));
+    try helpers.expectFalse(try r.eval("(boolean=? #t #f)"));
+    // Case-insensitive comparisons.
+    try helpers.expectTrue(try r.eval("(char-ci=? #\\A #\\a)"));
+    try helpers.expectTrue(try r.eval("(string-ci=? \"FoO\" \"foo\")"));
+    // Exactness.
+    try helpers.expectTrue(try r.eval("(exact? 5)"));
+    try helpers.expectFalse(try r.eval("(exact? 5.0)"));
+    try helpers.expectTrue(try r.eval("(inexact? 5.0)"));
+    try helpers.expectTrue(try r.eval("(exact-integer? 5)"));
+    try helpers.expectFalse(try r.eval("(exact-integer? 5.0)"));
+    try helpers.expectInt(try r.eval("(exact 3.0)"), 3);
+    try helpers.expectFloat(try r.eval("(inexact 3)"), 3.0, 1e-9);
+}
+
+test "prims: R7RS stdlib additions — division, sqrt, string ops, input string" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    // Multiple-value division consumed via call-with-values.
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (floor/ 7 2)) (lambda (q r) q))"), 3);
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (floor/ 7 2)) (lambda (q r) r))"), 1);
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (floor/ -7 2)) (lambda (q r) q))"), -4);
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (truncate/ -7 2)) (lambda (q r) q))"), -3);
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (exact-integer-sqrt 17)) (lambda (s r) s))"), 4);
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (exact-integer-sqrt 17)) (lambda (s r) r))"), 1);
+    try helpers.expectInt(try r.eval("(call-with-values (lambda () (exact-integer-sqrt 16)) (lambda (s r) s))"), 4);
+    // String helpers.
+    try helpers.expectString(try r.eval("(string-copy \"hello\" 1 4)"), "ell");
+    try helpers.expectString(try r.eval("(string-map char-upcase \"abc\")"), "ABC");
+    try helpers.expectInt(try r.eval("(vector-length (string->vector \"hi\"))"), 2);
+    try helpers.expectString(try r.eval("(vector->string (vector #\\y #\\o))"), "yo");
+    // open-input-string reads characters, then EOF.
+    try helpers.expectInt(try r.eval("(char->integer (read-char (open-input-string \"A\")))"), 65);
+    try helpers.expectTrue(try r.eval("(let ((p (open-input-string \"\"))) (eof-object? (read-char p)))"));
+}
+
 // zepo-mqvc: inexact division by zero produces ±inf.0/+nan.0 (R7RS/IEEE);
 // exact (fixnum) division by zero remains an error.
 test "prims: inexact division by zero yields inf/nan, exact stays an error" {
