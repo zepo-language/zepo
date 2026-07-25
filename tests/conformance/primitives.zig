@@ -174,6 +174,50 @@ test "prims: R7RS stdlib additions — division, sqrt, string ops, input string"
     try helpers.expectTrue(try r.eval("(let ((p (open-input-string \"\"))) (eof-object? (read-char p)))"));
 }
 
+// zepo-qaxw: R7RS special forms added as macros in lib/stdlib.lisp.
+test "special forms: case, do, delay/force" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    // case: datum lists + else + => clause.
+    try helpers.expectInt(try r.eval("(case 3 ((1) 10) ((2 3) 23) (else 99))"), 23);
+    try helpers.expectInt(try r.eval("(case 5 ((1) 10) (else 99))"), 99);
+    try helpers.expectInt(try r.eval("(case 7 ((7) => (lambda (k) (* k 2))) (else 0))"), 14);
+    // do: iterative sum 0..4 = 10.
+    try helpers.expectInt(try r.eval("(do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) s))"), 10);
+    // delay/force: forced once, memoized. A counter proves single evaluation.
+    try helpers.expectInt(
+        try r.eval("(define n 0) (define p (delay (begin (set! n (+ n 1)) 42))) (force p) (force p) n"),
+        1,
+    );
+    try helpers.expectInt(try r.eval("(force (delay (* 6 7)))"), 42);
+    try helpers.expectInt(try r.eval("(force 5)"), 5); // non-promise passes through
+}
+
+test "special forms: let-values, define-values, case-lambda, dynamic-wind" {
+    const r = try Rig.initWithPrelude(alloc);
+    defer r.deinit();
+    // let-values consumes multiple values.
+    try helpers.expectInt(try r.eval("(let-values (((q rr) (floor/ 7 2))) (+ (* q 10) rr))"), 31);
+    // define-values binds each name.
+    try helpers.expectInt(try r.eval("(define-values (a b) (values 4 5)) (+ (* a 10) b)"), 45);
+    // case-lambda dispatches on arity, including a rest clause.
+    try helpers.expectString(
+        try r.eval("(define f (case-lambda ((x) \"one\") ((x y) \"two\") ((x . r) \"many\"))) (f 1)"),
+        "one",
+    );
+    try helpers.expectString(try r.eval("(f 1 2)"), "two");
+    try helpers.expectString(try r.eval("(f 1 2 3)"), "many");
+    // dynamic-wind runs after on both normal return and non-local (raise) exit.
+    try helpers.expectInt(
+        try r.eval("(define c 0) (dynamic-wind (lambda () (set! c (+ c 1))) (lambda () 0) (lambda () (set! c (+ c 10)))) c"),
+        11,
+    );
+    try helpers.expectInt(
+        try r.eval("(define d 0) (guard (e (#t d)) (dynamic-wind (lambda () (set! d 1)) (lambda () (raise 'x)) (lambda () (set! d (+ d 100)))))"),
+        101,
+    );
+}
+
 // zepo-mqvc: inexact division by zero produces ±inf.0/+nan.0 (R7RS/IEEE);
 // exact (fixnum) division by zero remains an error.
 test "prims: inexact division by zero yields inf/nan, exact stays an error" {
