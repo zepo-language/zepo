@@ -167,9 +167,12 @@ pub fn primDiv(vm: *VM, args: []const Value) LispError!Value {
         var acc: f64 = if (args.len == 1) 1 else toFloat(args[0]);
         const start: usize = if (args.len == 1) 0 else 1;
         for (args[start..]) |v| {
-            const vf = toFloat(v);
-            if (vf == 0) return error.DivisionByZero;
-            acc /= vf;
+            // zepo-mqvc: R7RS/IEEE — this branch is inexact (some operand is a
+            // float). Division by an INEXACT zero yields ±inf.0 / +nan.0 via
+            // ordinary IEEE division; only division by an EXACT (fixnum) zero
+            // stays an error (matching (/ 1.0 0) → error, (/ 1.0 0.0) → +inf.0).
+            if (value_mod.isFixnum(v) and value_mod.fixnumVal(v) == 0) return error.DivisionByZero;
+            acc /= toFloat(v);
         }
         return makeNum(vm, true, 0, acc);
     }

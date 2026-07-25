@@ -123,6 +123,24 @@ test "prims: float external representation" {
     try helpers.expectString(try r.eval("(display-to-string (prim-nan))"), "+nan.0");
 }
 
+// zepo-mqvc: inexact division by zero produces ±inf.0/+nan.0 (R7RS/IEEE);
+// exact (fixnum) division by zero remains an error.
+test "prims: inexact division by zero yields inf/nan, exact stays an error" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // Inexact zero divisor → non-finite result.
+    try helpers.expectString(try r.eval("(display-to-string (/ 1.0 0.0))"), "+inf.0");
+    try helpers.expectString(try r.eval("(display-to-string (/ -1.0 0.0))"), "-inf.0");
+    try helpers.expectString(try r.eval("(display-to-string (/ 0.0 0.0))"), "+nan.0");
+    // Reciprocal form: (/ z) = (/ 1 z).
+    try helpers.expectString(try r.eval("(display-to-string (/ 0.0))"), "+inf.0");
+    // Mixed but inexact result, exact zero divisor → still an error.
+    try std.testing.expectError(error.DivisionByZero, r.eval("(/ 1.0 0)"));
+    // All-exact division by zero → error.
+    try std.testing.expectError(error.DivisionByZero, r.eval("(/ 1 0)"));
+    try std.testing.expectError(error.DivisionByZero, r.eval("(/ 0)"));
+}
+
 test "prims: json-stringify errors on non-finite floats" {
     const r = try Rig.init(alloc);
     defer r.deinit();
