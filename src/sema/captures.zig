@@ -35,6 +35,7 @@ pub const CaptureAnalyzer = struct {
                 for (cond.clauses) |cl| {
                     try c.walk(cl.test_);
                     for (cl.body) |bid| try c.walk(bid);
+                    if (cl.recv) |recv| try c.walk(recv); // zepo-7gpd
                 }
             },
             .application => |app| {
@@ -196,6 +197,8 @@ pub const CaptureAnalyzer = struct {
                 for (cond.clauses) |cl| {
                     try c.collectFree(cl.test_, params, free, mutated);
                     for (cl.body) |bid| try c.collectFree(bid, params, free, mutated);
+                    // zepo-7gpd: a `(test => proc)` clause's receiver expression.
+                    if (cl.recv) |recv| try c.collectFree(recv, params, free, mutated);
                 }
             },
             .application => |app| {

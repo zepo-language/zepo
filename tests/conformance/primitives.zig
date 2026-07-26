@@ -392,6 +392,28 @@ test "ratio: reader literals (#e decimals, #i), rounding" {
     try helpers.expectString(try r.eval("(display-to-string (abs -3/4))"), "3/4");
 }
 
+// zepo-7gpd: (cond (test => proc) ...) evaluates test once and, if truthy,
+// applies proc to the test VALUE. The receiver closes over enclosing bindings.
+test "cond: => clause applies the receiver to the truthy test value" {
+    const r = try Rig.initWithPrelude(alloc); // uses assv/memv
+    defer r.deinit();
+    try helpers.expectInt(try r.eval("(cond ((assv 2 (list (cons 1 10) (cons 2 20))) => cdr) (else 0))"), 20);
+    try helpers.expectInt(try r.eval("(cond ((assv 9 (list (cons 1 10))) => cdr) (else -1))"), -1);
+    // The receiver sees the test value (evaluated once), not a re-test.
+    try helpers.expectInt(try r.eval("(cond ((+ 3 4) => (lambda (x) (* x 2))))"), 14);
+    // Multiple => clauses; the first truthy one wins.
+    try helpers.expectInt(try r.eval("(cond (#f => car) (5 => (lambda (x) (* x x))))"), 25);
+    // The receiver is a closure over enclosing bindings.
+    try helpers.expectInt(try r.eval("(let ((y 100)) (cond (5 => (lambda (t) (+ t y)))))"), 105);
+    // A => guard inside a tail-recursive named let.
+    try helpers.expectInt(try r.eval("(let loop ((n 3) (acc 0)) (cond ((= n 0) => (lambda (t) acc)) (else (loop (- n 1) (+ acc n)))))"), 6);
+    // => coexists with ordinary clauses.
+    try helpers.expectInt(try r.eval("(cond (#f 1) ((memv 2 (quote (1 2 3))) => car) (else 9))"), 2);
+    // Plain cond is unchanged (regression guard).
+    try helpers.expectInt(try r.eval("(cond (#f 1) (else 2))"), 2);
+    try helpers.expectInt(try r.eval("(cond (42))"), 42);
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {

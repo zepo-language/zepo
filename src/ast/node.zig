@@ -26,6 +26,9 @@ pub const LiteralKind = union(enum) {
 pub const CondClause = struct {
     test_: NodeId,
     body: []NodeId, // empty means (cond (test) ...) where the test value is the result
+    // zepo-7gpd: `(test => proc)` — when set, the truthy test value is passed to
+    // this receiver: (proc test-value). Mutually exclusive with a non-empty body.
+    recv: ?NodeId = null,
 };
 
 pub const LetBinding = struct {

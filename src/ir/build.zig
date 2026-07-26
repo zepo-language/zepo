@@ -626,6 +626,13 @@ pub const Compiler = struct {
             // Each clause reuses the same register space — clauses are mutually exclusive.
             ctx.next_reg = saved_reg;
             const test_r = try c.lowerNode(ctx, cl.test_);
+            // zepo-7gpd: a `(test => proc)` clause must apply proc to the truthy
+            // TEST VALUE, so stash it in a slot before the branch reclaims regs.
+            const recv_slot: ?u16 = if (cl.recv != null) blk: {
+                const s = ctx.allocSlot();
+                try ctx.func.emit(.{ .store_local = .{ .slot = s, .src = test_r } });
+                break :blk s;
+            } else null;
             const body_lbl = ctx.func.newLabel();
             const next_lbl = ctx.func.newLabel();
             try ctx.func.emit(.{ .branch_if = .{ .cond = test_r, .then_label = body_lbl, .else_label = next_lbl } });
@@ -633,7 +640,25 @@ pub const Compiler = struct {
 
             try ctx.func.placeLabel(body_lbl);
             var last_r: Reg = test_r;
-            if (cl.body.len > 0) {
+            if (cl.recv) |recv_id| {
+                // (proc test-value): evaluate proc, load the stashed test value.
+                const func_r = try c.lowerNode(ctx, recv_id);
+                const arg_r = ctx.freshReg();
+                try ctx.func.emit(.{ .load_local = .{ .dst = arg_r, .slot = recv_slot.? } });
+                const args_owned = try ctx.func.dupRegs(&.{arg_r});
+                if (tail) {
+                    try ctx.func.emit(.{ .tail_call = .{ .func = func_r, .args = args_owned } });
+                    last_r = func_r;
+                } else {
+                    const sp_id = c.freshSp();
+                    try ctx.func.emit(.{ .safepoint = .{ .id = sp_id } });
+                    try ctx.func.recordRootMap(sp_id, &.{ func_r, arg_r });
+                    ctx.next_reg = saved_reg; // reclaim func_r/arg_r, consumed by the call
+                    const dst = ctx.freshReg();
+                    try ctx.func.emit(.{ .call = .{ .dst = dst, .func = func_r, .args = args_owned, .safepoint = sp_id } });
+                    last_r = dst;
+                }
+            } else if (cl.body.len > 0) {
                 for (cl.body, 0..) |bid, i| {
                     const is_last = i + 1 == cl.body.len;
                     last_r = try c.lowerNodeTail(ctx, bid, tail and is_last);
