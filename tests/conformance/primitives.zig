@@ -445,6 +445,44 @@ test "eval: a failed compile does not poison the next form in a reused context" 
     try helpers.expectInt(try r.eval("(* 6 7)"), 42);
 }
 
+// zepo-gwj5: current-output-port / current-input-port are dynamic parameters;
+// with-output-to-string / with-input-from-string capture I/O by rebinding them.
+test "ports: with-output-to-string and with-input-from-string parameterize I/O" {
+    const r = try Rig.initWithPrelude(alloc); // parameterize + string ports
+    defer r.deinit();
+    // display/write/newline with no port route to the current output port.
+    try helpers.expectString(
+        try r.eval("(with-output-to-string (lambda () (display \"x=\") (write 42) (newline) (display 'sym)))"),
+        "x=42\nsym",
+    );
+    // write-char / write-string emit raw characters/strings (no #\\ or quotes).
+    try helpers.expectString(
+        try r.eval("(with-output-to-string (lambda () (write-string \"raw\") (write-char #\\!)))"),
+        "raw!",
+    );
+    // Nested captures restore the outer port (parameterize unwinds).
+    try helpers.expectString(
+        try r.eval("(with-output-to-string (lambda () (display (with-output-to-string (lambda () (display \"in\")))) (display \"-out\")))"),
+        "in-out",
+    );
+    // An explicit port argument overrides the current port.
+    try helpers.expectString(
+        try r.eval("(define p (open-output-string)) (write '(1 2) p) (display \"!\" p) (get-output-string p)"),
+        "(1 2)!",
+    );
+    // Input side: read-char / peek-char / read-line draw from the current input.
+    try helpers.expectString(
+        try r.eval("(with-input-from-string \"ab\" (lambda () (list->string (list (read-char) (peek-char) (read-char)))))"),
+        "abb",
+    );
+    try helpers.expectString(
+        try r.eval("(with-input-from-string \"line one\\nline two\" (lambda () (read-line)))"),
+        "line one",
+    );
+    try helpers.expectTrue(try r.eval("(with-input-from-string \"\" (lambda () (eof-object? (read-char))))"));
+    try helpers.expectTrue(try r.eval("(output-port? (open-output-string))"));
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {

@@ -779,10 +779,45 @@
 
 ;;; ── R7RS stdlib additions (zepo-7mwa) ──────────────────────────────────────
 ;; NOTE: pairs are now mutable (zepo-asu1: set-car!/set-cdr!/list-set!). Strings
-;; are still immutable, so string-set!/string-fill! (zepo-1meg) and the
-;; port-parameter forms with-input-from-string / with-output-to-string
-;; (zepo-gwj5) remain tracked separately. open-input-string is a primitive
-;; (fmemopen-backed).
+;; are still immutable, so string-set!/string-fill! (zepo-1meg) remain tracked
+;; separately. open-input-string is a primitive (fmemopen-backed).
+
+;;; ── Port parameterization (zepo-gwj5) ──────────────────────────────────────
+;; current-output-port / current-input-port are dynamic parameters. The no-port
+;; output/input procedures route through them, so parameterize can capture or
+;; redirect I/O — that is all with-output-to-string / with-input-from-string are.
+;; The %-prims (register.zig) take an explicit destination/source port; a bare
+;; call defaults it to the current port. An optional explicit port still works
+;; (R7RS: (display obj [port]), (read-char [port]), ...).
+(define current-output-port (make-parameter (%stdout-port)))
+(define current-input-port (make-parameter (%stdin-port)))
+
+(define (display obj . rest)
+  (%display obj (if (pair? rest) (car rest) (current-output-port))))
+(define (write obj . rest)
+  (%write obj (if (pair? rest) (car rest) (current-output-port))))
+(define (newline . rest)
+  (%newline (if (pair? rest) (car rest) (current-output-port))))
+(define (write-char ch . rest)
+  (%write-char ch (if (pair? rest) (car rest) (current-output-port))))
+(define (write-string str . rest)
+  (%write-string str (if (pair? rest) (car rest) (current-output-port))))
+
+(define (read-char . rest)
+  (%read-char (if (pair? rest) (car rest) (current-input-port))))
+(define (peek-char . rest)
+  (%peek-char (if (pair? rest) (car rest) (current-input-port))))
+(define (read-line . rest)
+  (%read-line (if (pair? rest) (car rest) (current-input-port))))
+
+;; Rebind the current output port to a fresh string port for the thunk, then
+;; return everything it wrote. Rebind the current input port to a string port.
+(define (with-output-to-string thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-output-port p)) (thunk))
+    (get-output-string p)))
+(define (with-input-from-string str thunk)
+  (parameterize ((current-input-port (open-input-string str))) (thunk)))
 
 ; eqv?-based membership / association (eqv? is a primitive).
 (define (memv x lst)

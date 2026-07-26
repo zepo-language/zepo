@@ -109,6 +109,17 @@ const TABLE: []const Entry = &.{
     make("port-display", 2, io_mod.primPortDisplay),
     make("port-write", 2, io_mod.primPortWrite),
     make("newline", 0, io_mod.primNewline),
+    // zepo-gwj5: port-parameterized output. The %-prims take an explicit
+    // destination port; the stdlib display/write/newline/write-char/write-string
+    // wrappers pass (current-output-port). Public names stay as stdout prims so
+    // the prims-only test rig (no stdlib) keeps a working display/write/newline.
+    make("%stdout-port", 0, io_mod.primStdoutPort),
+    make("%display", 2, io_mod.primDisplayPort),
+    make("%write", 2, io_mod.primWritePort),
+    make("%newline", 1, io_mod.primNewlinePort),
+    make("%write-char", 2, io_mod.primWriteCharPort),
+    make("%write-string", 2, io_mod.primWriteStringPort),
+    make("output-port?", 1, io_mod.primOutputPortQ),
 
     make("list", -1, pairs.primList),
     make("vector", -1, pairs.primVector),
@@ -170,6 +181,13 @@ const TABLE: []const Entry = &.{
     make("open-input-string", 1, io_mod.primOpenInputString), // zepo-7mwa
     make("read-char", 1, io_mod.primReadChar),
     make("peek-char", 1, io_mod.primPeekChar),
+    // zepo-gwj5: %-prims for the stdlib read-char/peek-char/read-line wrappers
+    // that default the port to (current-input-port). %stdin-port makes a fresh
+    // stdin input port (the default value of the current-input-port parameter).
+    make("%stdin-port", 0, io_mod.primCurrentInputPort),
+    make("%read-char", 1, io_mod.primReadChar),
+    make("%peek-char", 1, io_mod.primPeekChar),
+    make("%read-line", -1, io_mod.primReadLine),
     make("eof-object?", 1, io_mod.primEofObjectQ),
     make("eof-object", 0, io_mod.primEofObject),
     make("input-port?", 1, io_mod.primInputPortQ),
