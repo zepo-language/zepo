@@ -36,6 +36,12 @@ pub const Parser = struct {
     spans: *SpanTable,
     allocator: std.mem.Allocator,
     last_diag: ?ReaderDiag = null,
+    // zepo-vhh6: datum-label table, scoped to one top-level datum. Each value is
+    // an allocator-boxed Value slot registered in gc.roots.extra so the GC keeps
+    // it live (and updates it on a move) across the nested reads that follow a
+    // `#N=`. #N# reads the current slot value (a placeholder mid-read, the real
+    // datum after). Cleared + un-rooted after each top-level datum.
+    labels: std.AutoHashMapUnmanaged(u64, *Value) = .empty,
 
     pub fn init(
         gc: *GC,
@@ -56,6 +62,20 @@ pub const Parser = struct {
 
     pub fn deinit(p: *Parser) void {
         p.lexer.deinit();
+        // zepo-vhh6: free any label boxes still around (clearLabels normally
+        // empties this after each top-level datum; this is defensive).
+        var it = p.labels.valueIterator();
+        while (it.next()) |box| p.allocator.destroy(box.*);
+        p.labels.deinit(p.allocator);
+    }
+
+    // zepo-vhh6: parse ONE top-level datum with a fresh datum-label scope. Labels
+    // (#N=/#N#) are scoped to a single datum; this snapshots gc.roots.extra and
+    // clears + un-roots the label table afterward.
+    fn parseTopLevel(p: *Parser, tok: Token) anyerror!Value {
+        const extra_base = p.gc.roots.extra.items.len;
+        defer p.clearLabels(extra_base);
+        return p.parseToken(tok);
     }
 
     fn setDiag(p: *Parser, err: ReaderError, span: Span) ReaderError {
@@ -93,7 +113,7 @@ pub const Parser = struct {
         try p.skipDatumComments(); // handles `#;#;a b`
         const tok = try p.lexer.next();
         if (tok.kind == .eof) return p.setDiag(error.UnexpectedEof, tok.span);
-        _ = try p.parseToken(tok); // fully parse (and discard) one datum
+        _ = try p.parseTopLevel(tok); // fully parse (and discard) one datum (zepo-vhh6)
     }
 
     pub fn readOne(p: *Parser) !Value {
@@ -119,7 +139,7 @@ pub const Parser = struct {
             return p.setDiag(re, here);
         };
         if (tok.kind == .eof) return EofError.Eof;
-        return p.parseToken(tok);
+        return p.parseTopLevel(tok);
     }
 
     /// Read every expression and return them as a proper list.
@@ -135,7 +155,7 @@ pub const Parser = struct {
             try p.skipDatumComments(); // zepo-aqwc
             const tok = try p.lexer.next();
             if (tok.kind == .eof) break;
-            const v = try p.parseToken(tok);
+            const v = try p.parseTopLevel(tok);
             const v_slot = scope.push(v);
             head_slot.* = try objects.makePairFromSlots(p.gc, v_slot, head_slot);
         }
@@ -157,6 +177,13 @@ pub const Parser = struct {
         switch (tok.kind) {
             .lparen => return p.parseList(tok),
             .vector_open => return p.parseVector(tok), // zepo-aqwc
+            .bytevector_open => return p.parseBytevector(tok), // zepo-vhh6
+            .datum_label_def => return p.parseLabelDef(tok), // zepo-vhh6
+            .datum_label_ref => { // zepo-vhh6
+                const box = p.labels.get(@intCast(tok.int_val)) orelse
+                    return p.setDiag(error.InvalidNumber, tok.span); // undefined label
+                return box.*;
+            },
             // zepo-aqwc: `#;` in a datum position (e.g. `'#;a b`, top level) —
             // discard the commented datum and parse the next real one.
             .datum_comment => {
@@ -321,6 +348,112 @@ pub const Parser = struct {
         }
         try p.recordSpan(vec_slot.*, open_tok.span.start, open_tok.span.end);
         return vec_slot.*;
+    }
+
+    // zepo-vhh6: `#u8( byte ... )` — a bytevector literal. Each element must be
+    // an exact integer in 0..255. Bytes are collected in a host buffer (no GC
+    // roots needed), then one makeBytevector fills them.
+    fn parseBytevector(p: *Parser, open_tok: Token) anyerror!Value {
+        var bytes = std.ArrayListUnmanaged(u8).empty;
+        defer bytes.deinit(p.allocator);
+        while (true) {
+            try p.skipDatumComments();
+            const tok = try p.lexer.peek();
+            if (tok.kind == .eof) return p.setDiag(error.UnbalancedParen, tok.span);
+            if (tok.kind == .rparen) {
+                _ = try p.lexer.next();
+                break;
+            }
+            const next_tok = try p.lexer.next();
+            const v = try p.parseToken(next_tok);
+            if (!value_mod.isFixnum(v)) return p.setDiag(error.InvalidNumber, next_tok.span);
+            const n = value_mod.fixnumVal(v);
+            if (n < 0 or n > 255) return p.setDiag(error.InvalidNumber, next_tok.span);
+            bytes.append(p.allocator, @intCast(n)) catch return error.OutOfMemory;
+        }
+        const bv = try objects.makeBytevector(p.gc, bytes.items.len, 0);
+        if (bytes.items.len > 0) @memcpy(objects.bytevectorBytes(bv)[0..bytes.items.len], bytes.items);
+        try p.recordSpan(bv, open_tok.span.start, open_tok.span.end);
+        return bv;
+    }
+
+    // zepo-vhh6: `#N= <datum>` binds label N to the datum, allowing `#N#` back-
+    // references (including cyclic ones, e.g. `#0=(a . #0#)`). A placeholder is
+    // registered for N first; after the datum is read its self-references (which
+    // read the placeholder) are patched to the datum, tying the knot via mutable
+    // pairs/vectors (zepo-asu1).
+    fn parseLabelDef(p: *Parser, tok: Token) anyerror!Value {
+        const label: u64 = @intCast(tok.int_val);
+        if (p.labels.contains(label)) return p.setDiag(error.InvalidNumber, tok.span); // duplicate
+
+        // Box a placeholder slot and root it (GC may move it during the read).
+        const box = p.allocator.create(Value) catch return error.OutOfMemory;
+        box.* = value_mod.NIL; // placeholder is the box's identity; NIL is fine
+        // A unique placeholder object so self-references are recognizable when
+        // patching. A fresh pair is pointer-unique; store it in the box.
+        box.* = objects.makePair(p.gc, value_mod.NIL, value_mod.NIL) catch |e| {
+            p.allocator.destroy(box);
+            return e;
+        };
+        const placeholder = box.*;
+        p.labels.put(p.allocator, label, box) catch {
+            p.allocator.destroy(box);
+            return error.OutOfMemory;
+        };
+        p.gc.roots.extra.append(p.allocator, box) catch return error.OutOfMemory;
+
+        // Read the labelled datum. #N# encountered inside returns the placeholder.
+        const inner_tok = try p.lexer.next();
+        if (inner_tok.kind == .eof) return p.setDiag(error.UnexpectedEof, inner_tok.span);
+        const datum = try p.parseToken(inner_tok);
+
+        // The box now names the real datum, so later #N# siblings share it.
+        box.* = datum;
+        // Tie any self-references: replace the placeholder inside `datum`.
+        if (datum != placeholder) {
+            var seen: std.AutoHashMapUnmanaged(Value, void) = .empty;
+            defer seen.deinit(p.allocator);
+            try p.patchLabel(datum, placeholder, datum, &seen);
+        }
+        return datum;
+    }
+
+    // Replace every occurrence of `placeholder` reachable from `node` with
+    // `datum` (in mutable pair/vector slots), tying a self-referential label.
+    // `seen` bounds the walk over shared/already-cyclic sub-structure.
+    fn patchLabel(p: *Parser, node: Value, placeholder: Value, datum: Value, seen: *std.AutoHashMapUnmanaged(Value, void)) anyerror!void {
+        if (!value_mod.isPtr(node)) return;
+        if (objects.isPair(node)) {
+            if (seen.contains(node)) return;
+            seen.put(p.allocator, node, {}) catch return error.OutOfMemory;
+            const car = objects.pairCar(node).*;
+            if (car == placeholder) {
+                objects.pairSetCar(p.gc, node, datum);
+            } else try p.patchLabel(car, placeholder, datum, seen);
+            const cdr = objects.pairCdr(node).*;
+            if (cdr == placeholder) {
+                objects.pairSetCdr(p.gc, node, datum);
+            } else try p.patchLabel(cdr, placeholder, datum, seen);
+        } else if (objects.isVector(node)) {
+            if (seen.contains(node)) return;
+            seen.put(p.allocator, node, {}) catch return error.OutOfMemory;
+            const len = objects.vectorLen(node);
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                const el = objects.vectorGet(node, i);
+                if (el == placeholder) {
+                    objects.vectorSet(p.gc, node, i, datum);
+                } else try p.patchLabel(el, placeholder, datum, seen);
+            }
+        }
+    }
+
+    // Clear the datum-label table and un-root its boxes, back to `extra_base`.
+    fn clearLabels(p: *Parser, extra_base: usize) void {
+        var it = p.labels.valueIterator();
+        while (it.next()) |box| p.allocator.destroy(box.*);
+        p.labels.clearRetainingCapacity();
+        p.gc.roots.extra.shrinkRetainingCapacity(extra_base);
     }
 
     fn parseList(p: *Parser, open_tok: Token) anyerror!Value {

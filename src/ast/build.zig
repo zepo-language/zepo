@@ -127,6 +127,10 @@ pub const Builder = struct {
         if (objects.isVector(v)) {
             return b.arena.add(.{ .quote = .{ .datum = v, .span = b.current_span } });
         }
+        // zepo-vhh6: a bytevector literal #u8(...) self-evaluates.
+        if (objects.isBytevector(v)) {
+            return b.arena.add(.{ .quote = .{ .datum = v, .span = b.current_span } });
+        }
 
         return BuildError.InvalidSpecialForm;
     }
