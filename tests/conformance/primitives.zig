@@ -507,6 +507,37 @@ test "strings: make-string / string-copy are mutable; string-set!/-fill!" {
     try std.testing.expectError(error.ContractViolation, r.eval("(string-set! (make-string 1) 0 (integer->char 300))"));
 }
 
+// zepo-vhh6: #u8(...) bytevector literals + #N=/#N# datum labels.
+test "reader: #u8 bytevector literals" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    try helpers.expectString(try r.eval("(display-to-string '#u8(1 2 3 255))"), "#u8(1 2 3 255)");
+    try helpers.expectTrue(try r.eval("(bytevector? '#u8(1 2 3))"));
+    try helpers.expectInt(try r.eval("(bytevector-length '#u8(10 20 30))"), 3);
+    try helpers.expectInt(try r.eval("(bytevector-u8-ref '#u8(5 6 7) 1)"), 6);
+    try helpers.expectString(try r.eval("(display-to-string '#u8())"), "#u8()");
+    // Elements may use radix prefixes; a value > 255 is rejected.
+    try helpers.expectInt(try r.eval("(bytevector-u8-ref '#u8(#xff #x10) 0)"), 255);
+    try std.testing.expectError(error.InvalidNumber, r.eval("'#u8(1 300)"));
+}
+
+test "reader: #N= / #N# datum labels (shared and cyclic)" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // Cyclic pair: the cdr is the pair itself.
+    try helpers.expectTrue(try r.eval("(define x '#0=(a . #0#)) (and (eq? (car x) 'a) (eq? x (cdr x)))"));
+    // Shared structure: both list elements are the same object.
+    try helpers.expectTrue(try r.eval("(define l '(#0=(x y) #0#)) (eq? (car l) (car (cdr l)))"));
+    // A label with no self-reference is just a plain (shared-able) datum.
+    try helpers.expectInt(try r.eval("(car (cdr (cdr '#1=(1 2 3))))"), 3);
+    // Cyclic vector: element 1 is the vector itself.
+    try helpers.expectTrue(try r.eval("(define v '#0=#(1 #0# 3)) (eq? v (vector-ref v 1))"));
+    // Multi-digit labels work.
+    try helpers.expectTrue(try r.eval("(define y '#42=(z . #42#)) (eq? y (cdr y))"));
+    // An undefined back-reference is an error.
+    try std.testing.expectError(error.InvalidNumber, r.eval("'#9#"));
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {

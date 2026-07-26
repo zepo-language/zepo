@@ -24,7 +24,10 @@ pub const TokenKind = enum {
     character,
     symbol,
     vector_open, // zepo-aqwc: `#(`
+    bytevector_open, // zepo-vhh6: `#u8(` — the parser reads byte elements
     datum_comment, // zepo-aqwc: `#;` — the parser discards the next datum
+    datum_label_def, // zepo-vhh6: `#N=` — binds label int_val to the next datum
+    datum_label_ref, // zepo-vhh6: `#N#` — refers back to label int_val
     eof,
 };
 
@@ -481,6 +484,41 @@ pub const Lexer = struct {
                     .kind = .vector_open,
                     .text = l.src[start_off..l.pos],
                     .span = .{ .start = start_pos, .end = l.curPos(), .file = l.file },
+                };
+            },
+            // zepo-vhh6: `#u8(` opens a bytevector literal.
+            'u' => {
+                _ = l.advance(); // u
+                if (l.atEnd() or l.src[l.pos] != '8') return ReaderError.UnexpectedChar;
+                _ = l.advance(); // 8
+                if (l.atEnd() or l.src[l.pos] != '(') return ReaderError.UnexpectedChar;
+                _ = l.advance(); // (
+                return .{
+                    .kind = .bytevector_open,
+                    .text = l.src[start_off..l.pos],
+                    .span = .{ .start = start_pos, .end = l.curPos(), .file = l.file },
+                };
+            },
+            // zepo-vhh6: `#N=` (datum label definition) / `#N#` (reference).
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                var n: u64 = 0;
+                while (!l.atEnd() and std.ascii.isDigit(l.src[l.pos])) {
+                    n = n * 10 + (l.src[l.pos] - '0');
+                    _ = l.advance();
+                }
+                if (l.atEnd()) return ReaderError.UnexpectedEof;
+                const marker = l.src[l.pos];
+                _ = l.advance();
+                const kind: TokenKind = switch (marker) {
+                    '=' => .datum_label_def,
+                    '#' => .datum_label_ref,
+                    else => return ReaderError.UnexpectedChar,
+                };
+                return .{
+                    .kind = kind,
+                    .text = l.src[start_off..l.pos],
+                    .span = .{ .start = start_pos, .end = l.curPos(), .file = l.file },
+                    .int_val = @intCast(n),
                 };
             },
             // zepo-aqwc: `#;` datum comment — the parser discards the datum that
