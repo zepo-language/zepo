@@ -402,6 +402,43 @@ pub const EvalContext = struct {
         // Released explicitly before vm.run so the VM can allocate freely.
         var no_gc = ctx.gc.noCollect();
 
+        // zepo-ify4: a failed compile (a graceful error.TooManyRegisters from
+        // emitOne — zepo-vx61 — or any build/sema/lowering error) must NOT leave
+        // shared program state half-updated: compileExpr appends to
+        // program.functions and emitAppend non-atomically appends boxed
+        // *CompiledFn to ctx.compiled. Without rollback the NEXT compile
+        // re-processes the dirty tail and re-errors, poisoning every subsequent
+        // REPL input. Capture the pre-form baselines and unwind on the error path.
+        //
+        // compiled_base/emitted_base are also used below (line marked) to compute
+        // the emitted thunk's actual ctx.compiled index — when .zbc fns have been
+        // appended directly to ctx.compiled (bypassing the IR program), ctx.compiled
+        // is ahead of emitter.emitted_count.
+        const funcs_base = ctx.program.functions.items.len;
+        const compiled_base = ctx.compiled.items.len;
+        const emitted_base = ctx.emitter.emitted_count;
+        var committed = false;
+        errdefer if (!committed) {
+            // Release the noCollect guard on the error path (otherwise a later
+            // GC panics in Debug: "collection fired while a noCollect guard is
+            // active"). On success it is released explicitly below instead.
+            no_gc.release();
+            // Free the boxed CompiledFns emitAppend managed to append, then shrink.
+            for (ctx.compiled.items[compiled_base..]) |cf| {
+                cf.deinit(ctx.allocator);
+                ctx.allocator.destroy(cf);
+            }
+            ctx.compiled.shrinkRetainingCapacity(compiled_base);
+            ctx.emitter.emitted_count = emitted_base;
+            // Drop the IR functions compileExpr appended for this form.
+            for (ctx.program.functions.items[funcs_base..]) |*f| f.deinit();
+            ctx.program.functions.shrinkRetainingCapacity(funcs_base);
+            // emitAppend's ensureTotalCapacity may have REALLOCATED ctx.compiled
+            // before failing, dangling a prior form's v.compiled_fns pointer —
+            // re-point it at the shrunk (valid) buffer to avoid a UAF.
+            if (ctx.vm) |*v| v.compiled_fns = ctx.compiled.items;
+        };
+
         var builder = Builder.init(&ctx.arena, ctx.symbols, ctx.allocator);
         builder.span_table = &ctx.spans;
         const root_id = try builder.build(expanded_slot.*);
@@ -412,14 +449,8 @@ pub const EvalContext = struct {
         var compiler = Compiler.initWithGc(&ctx.arena, &ctx.program, ctx.symbols, ctx.gc, ctx.allocator);
         const fn_id = try compiler.compileExpr(root_id);
 
-        // Save positions before emitAppend so we can compute the actual
-        // ctx.compiled index for fn_id. When .zbc fns have been appended
-        // directly to ctx.compiled (bypassing the IR program), ctx.compiled
-        // is ahead of emitter.emitted_count, so the emitted fn lands at a
-        // higher position than fn_id alone would suggest.
-        const compiled_base = ctx.compiled.items.len;
-        const emitted_base = ctx.emitter.emitted_count;
         try ctx.emitter.emitAppend(&ctx.program, &ctx.compiled);
+        committed = true; // program state is now consistent; disarm the rollback
         no_gc.release(); // AST/IR pipeline done; VM may now allocate freely.
         // zepo-oav: update compiled_fns in-place to preserve live fibers across
         // forms. Recreating via VM.deinit()+VM.init() frees all FiberStates,

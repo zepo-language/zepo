@@ -414,6 +414,37 @@ test "cond: => clause applies the receiver to the truthy test value" {
     try helpers.expectInt(try r.eval("(cond (42))"), 42);
 }
 
+// zepo-ify4: a compile that fails partway (here register exhaustion — zepo-vx61)
+// must roll back program state so a REPL-style reused context is NOT poisoned:
+// the next form must compile and run normally.
+test "eval: a failed compile does not poison the next form in a reused context" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // A deeply-nested let overflows the 255 physical-register file (IR slots are
+    // never reclaimed), so compiling it fails with error.TooManyRegisters.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+    const N: usize = 400;
+    try buf.appendSlice(alloc, "(let ((v0 0)) ");
+    var i: usize = 1;
+    while (i < N) : (i += 1) {
+        var line: [64]u8 = undefined;
+        try buf.appendSlice(alloc, try std.fmt.bufPrint(&line, "(let ((v{d} (+ v{d} 1))) ", .{ i, i - 1 }));
+    }
+    try buf.appendSlice(alloc, "v399");
+    i = 0;
+    while (i < N) : (i += 1) try buf.appendSlice(alloc, ")");
+
+    try std.testing.expectError(error.TooManyRegisters, r.eval(buf.items));
+    // The context is not poisoned — subsequent forms compile and run.
+    try helpers.expectInt(try r.eval("(+ 1 2)"), 3);
+    try helpers.expectInt(try r.eval("(let ((a 10) (b 20)) (+ a b))"), 30);
+    // And a second over-limit form still errors gracefully (not a stale re-error
+    // from the first) and again leaves the context usable.
+    try std.testing.expectError(error.TooManyRegisters, r.eval(buf.items));
+    try helpers.expectInt(try r.eval("(* 6 7)"), 42);
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {
