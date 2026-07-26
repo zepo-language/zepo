@@ -183,12 +183,20 @@ pub fn setParameterDefault(gc: *GC, v: Value, new_val: Value) void {
 // -------------------- String --------------------
 // Body: [len: u64][bytes padded to word boundary]
 
-pub fn makeString(gc: *GC, bytes: []const u8) !Value {
+// zepo-1meg: the top bit of the length word flags a MUTABLE string (created by
+// make-string/string-copy). Literals and every other makeString result are
+// immutable, so string-set!/string-fill! can reject them. zepo strings are
+// byte-indexed (string-ref returns a byte), so a mutable string is a mutable
+// byte buffer; the length never changes. The GC sizes objects from the header
+// (sizeWords), not this word, so the flag bit is invisible to it.
+const STRING_MUTABLE_BIT: u64 = @as(u64, 1) << 63;
+
+fn allocString(gc: *GC, bytes: []const u8, mutable: bool) !Value {
     const nbytes = bytes.len;
     const tail_words = (nbytes + WORD - 1) / WORD;
     const body_words = 1 + tail_words; // length word + byte tail
     const h = try gc.alloc(.string, body_words);
-    bodyPtr(u64, h, 0).* = @intCast(nbytes);
+    bodyPtr(u64, h, 0).* = @as(u64, @intCast(nbytes)) | (if (mutable) STRING_MUTABLE_BIT else 0);
     if (nbytes != 0) {
         const tail_ptr: [*]u8 = @ptrCast(bodyPtr(u8, h, 1));
         @memcpy(tail_ptr[0..nbytes], bytes);
@@ -201,16 +209,54 @@ pub fn makeString(gc: *GC, bytes: []const u8) !Value {
     return value_mod.fromPtr(h);
 }
 
+pub fn makeString(gc: *GC, bytes: []const u8) !Value {
+    return allocString(gc, bytes, false);
+}
+
+/// zepo-1meg: a mutable byte-string copy of `bytes` (string-set!/-fill! allowed).
+pub fn makeMutableString(gc: *GC, bytes: []const u8) !Value {
+    return allocString(gc, bytes, true);
+}
+
+/// zepo-1meg: a mutable string of `len` bytes all set to `fill` (make-string).
+pub fn makeMutableStringFill(gc: *GC, len: usize, fill: u8) !Value {
+    const tail_words = (len + WORD - 1) / WORD;
+    const h = try gc.alloc(.string, 1 + tail_words);
+    bodyPtr(u64, h, 0).* = @as(u64, @intCast(len)) | STRING_MUTABLE_BIT;
+    if (len != 0) {
+        const tail_ptr: [*]u8 = @ptrCast(bodyPtr(u8, h, 1));
+        @memset(tail_ptr[0 .. tail_words * WORD], 0); // pad
+        @memset(tail_ptr[0..len], fill);
+    }
+    return value_mod.fromPtr(h);
+}
+
 pub fn stringLen(v: Value) usize {
     const h = value_mod.ptrVal(v);
-    return @intCast(bodyPtr(u64, h, 0).*);
+    return @intCast(bodyPtr(u64, h, 0).* & ~STRING_MUTABLE_BIT);
+}
+
+pub fn stringIsMutable(v: Value) bool {
+    const h = value_mod.ptrVal(v);
+    return (bodyPtr(u64, h, 0).* & STRING_MUTABLE_BIT) != 0;
 }
 
 pub fn stringBytes(v: Value) []const u8 {
-    const h = value_mod.ptrVal(v);
-    const n: usize = @intCast(bodyPtr(u64, h, 0).*);
+    const n = stringLen(v);
     if (n == 0) return &.{};
+    const h = value_mod.ptrVal(v);
     const tail_ptr: [*]const u8 = @ptrCast(bodyPtr(u8, h, 1));
+    return tail_ptr[0..n];
+}
+
+/// zepo-1meg: a MUTABLE view of a mutable string's bytes, for string-set!/-fill!.
+/// The caller must have checked stringIsMutable. Read it fresh after any alloc
+/// (a GC may move the object).
+pub fn stringBytesMut(v: Value) []u8 {
+    const n = stringLen(v);
+    if (n == 0) return &.{};
+    const h = value_mod.ptrVal(v);
+    const tail_ptr: [*]u8 = @ptrCast(bodyPtr(u8, h, 1));
     return tail_ptr[0..n];
 }
 

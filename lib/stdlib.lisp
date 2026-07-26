@@ -778,9 +778,10 @@
                 cond))))))
 
 ;;; ── R7RS stdlib additions (zepo-7mwa) ──────────────────────────────────────
-;; NOTE: pairs are now mutable (zepo-asu1: set-car!/set-cdr!/list-set!). Strings
-;; are still immutable, so string-set!/string-fill! (zepo-1meg) remain tracked
-;; separately. open-input-string is a primitive (fmemopen-backed).
+;; NOTE: pairs are mutable (zepo-asu1: set-car!/set-cdr!/list-set!) and strings
+;; from make-string/string-copy are mutable byte-strings (zepo-1meg:
+;; string-set!/string-fill!, byte-indexed like string-ref; literals stay
+;; immutable). open-input-string is a primitive (fmemopen-backed).
 
 ;;; ── Port parameterization (zepo-gwj5) ──────────────────────────────────────
 ;; current-output-port / current-input-port are dynamic parameters. The no-port
@@ -884,13 +885,8 @@
   (let ((r (modulo n d)))
     (values (quotient (- n r) d) r)))
 
-; String helpers (immutable-safe).
-(define (string-copy s . rest)
-  (let ((start (if (null? rest) 0 (car rest)))
-        (end   (if (or (null? rest) (null? (cdr rest)))
-                   (string-length s)
-                   (car (cdr rest)))))
-    (substring s start end)))
+; zepo-1meg: string-copy is now a primitive that returns a MUTABLE copy
+; (the old stdlib version delegated to substring, which is immutable).
 
 (define (string-map f . strs)
   (list->string (apply map f (map string->list strs))))
