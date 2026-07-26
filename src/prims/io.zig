@@ -544,6 +544,106 @@ pub fn primPortWrite(_: *VM, args: []const Value) LispError!Value {
     return value_mod.NIL;
 }
 
+// ── zepo-gwj5: port-parameterized output ───────────────────────────────────
+// An output port is either a string port (isStringPort — accumulates into a
+// buffer) or the stdout port (below). The %-prefixed prims below take an
+// explicit destination port; the stdlib display/write/newline/write-char/
+// write-string wrappers supply (current-output-port) when none is given.
+
+pub const TAG_STDOUT_PORT: u64 = 0x736F7574; // "sout"
+
+fn isStdoutPort(v: Value) bool {
+    return value_mod.isPtr(v) and objects.isForeign(v) and
+        objects.foreignTypeTag(v) == TAG_STDOUT_PORT;
+}
+
+pub fn isOutputPort(v: Value) bool {
+    return isStringPort(v) or isStdoutPort(v);
+}
+
+// (%stdout-port) → a fresh port object standing for the process stdout. The
+// stdlib captures one as the default value of the current-output-port param.
+pub fn primStdoutPort(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 0) return error.ArityMismatch;
+    return objects.makeForeign(vm.gc, null, null, TAG_STDOUT_PORT) catch return error.OutOfMemory;
+}
+
+pub fn primOutputPortQ(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    return if (isOutputPort(args[0])) value_mod.TRUE else value_mod.FALSE;
+}
+
+// Append raw bytes to an output port (string port buffer, else stdout).
+fn portAppendBytes(port: Value, bytes: []const u8) LispError!void {
+    if (isStringPort(port)) {
+        const sp: *StringPort = @alignCast(@ptrCast(objects.foreignPayload(port)));
+        sp.buf.appendSlice(sp.allocator, bytes) catch return error.OutOfMemory;
+    } else {
+        writeToStdout(bytes);
+    }
+}
+
+// Render `v` (display or write form) to an output port.
+fn portRender(vm: *VM, port: Value, v: Value, comptime write_form: bool) LispError!void {
+    if (isStringPort(port)) {
+        const sp: *StringPort = @alignCast(@ptrCast(objects.foreignPayload(port)));
+        if (write_form) {
+            writeValue(&sp.buf, sp.allocator, v) catch return error.OutOfMemory;
+        } else {
+            displayValue(&sp.buf, sp.allocator, v) catch return error.OutOfMemory;
+        }
+        return;
+    }
+    // stdout (the stdout port, or any non-string-port destination).
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(vm.allocator);
+    if (write_form) {
+        writeValue(&buf, vm.allocator, v) catch return error.OutOfMemory;
+    } else {
+        displayValue(&buf, vm.allocator, v) catch return error.OutOfMemory;
+    }
+    writeToStdout(buf.items);
+}
+
+// (%display obj port)
+pub fn primDisplayPort(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    try portRender(vm, args[1], args[0], false);
+    return value_mod.NIL;
+}
+
+// (%write obj port)
+pub fn primWritePort(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    try portRender(vm, args[1], args[0], true);
+    return value_mod.NIL;
+}
+
+// (%newline port)
+pub fn primNewlinePort(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    try portAppendBytes(args[0], "\n");
+    return value_mod.NIL;
+}
+
+// (%write-char char port) — the raw character, not the #\ form.
+pub fn primWriteCharPort(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!value_mod.isChar(args[0])) return error.TypeError;
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(value_mod.charVal(args[0]), &buf) catch 1;
+    try portAppendBytes(args[1], buf[0..n]);
+    return value_mod.NIL;
+}
+
+// (%write-string str port) — the raw string bytes.
+pub fn primWriteStringPort(_: *VM, args: []const Value) LispError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    try portAppendBytes(args[1], objects.stringBytes(args[0]));
+    return value_mod.NIL;
+}
+
 // ── Input Ports ───────────────────────────────────────────────────────────────
 // zepo-s4p
 
