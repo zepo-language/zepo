@@ -149,6 +149,8 @@ const TABLE: []const Entry = &.{
     make("truncate", 1, arith.primTruncate),
     make("exact->inexact", 1, arith.primExactToInexact),
     make("inexact->exact", 1, arith.primInexactToExact),
+    make("numerator", 1, arith.primNumerator), // zepo-or1d
+    make("denominator", 1, arith.primDenominator), // zepo-or1d
 
     make("string-upcase", 1, pairs.primStringUpcase),
     make("string-downcase", 1, pairs.primStringDowncase),

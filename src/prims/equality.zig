@@ -34,6 +34,10 @@ pub fn eqv(a: Value, b: Value) bool {
         if (objects.isBignum(a) and objects.isBignum(b)) {
             return runtime.bignum.eql(a, b);
         }
+        // zepo-or1d: two ratios are eqv? when numerator and denominator match.
+        if (objects.isRatio(a) and objects.isRatio(b)) {
+            return runtime.ratio.eql(a, b);
+        }
     }
     return false;
 }

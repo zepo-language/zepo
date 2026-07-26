@@ -417,6 +417,9 @@
 ; Fast expt using even? now that modulo is available.
 (define (expt base exp)
   (cond ((= exp 0) 1)
+        ; zepo-or1d: a negative exponent is the reciprocal (exact when base is
+        ; exact, e.g. (expt 2 -3) => 1/8).
+        ((< exp 0) (/ 1 (expt base (- exp))))
         ((even? exp) (let ((half (expt base (/ exp 2)))) (* half half)))
         (#t (* base (expt base (- exp 1))))))
 
@@ -820,12 +823,17 @@
 (define (char-ci=? a b) (char=? (char-downcase a) (char-downcase b)))
 (define (string-ci=? a b) (string=? (string-downcase a) (string-downcase b)))
 
-; Exactness. In zepo an exact number is a fixnum; an inexact one is a float.
+; Exactness. In zepo an exact number is a fixnum, bignum, or ratio; an inexact
+; one is a float.
 (define (inexact? x) (float? x))
 (define (exact? x) (and (number? x) (not (float? x))))
 (define exact inexact->exact)
 (define inexact exact->inexact)
 (define (exact-integer? x) (and (exact? x) (integer? x)))
+; zepo-or1d: every exact number is rational; a float is rational iff finite.
+(define (rational? x) (and (number? x) (or (not (float? x)) (finite? x))))
+; zepo-or1d: reals are the only numeric tower zepo has (no complex).
+(define (real? x) (number? x))
 
 ; (exact-integer-sqrt n) → (values s r), s = floor(sqrt n), r = n - s*s.
 ; The loop corrects for floating-point error in either direction.

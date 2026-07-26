@@ -106,6 +106,10 @@ pub const Builder = struct {
         if (objects.isBignum(v)) {
             return b.arena.add(.{ .quote = .{ .datum = v, .span = b.current_span } });
         }
+        // zepo-or1d: a ratio literal (num/den) self-evaluates.
+        if (objects.isRatio(v)) {
+            return b.arena.add(.{ .quote = .{ .datum = v, .span = b.current_span } });
+        }
         if (objects.isString(v)) {
             const bytes = objects.stringBytes(v);
             const owned = try b.arena.dupString(bytes);

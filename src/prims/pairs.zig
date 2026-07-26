@@ -6,6 +6,7 @@ const Value = abi.Value;
 const value_mod = abi.value;
 
 const runtime = @import("../runtime/mod.zig");
+const gc_mod = @import("../gc/collector.zig"); // zepo-or1d: HandleScope for ratio parsing
 const objects = runtime.objects;
 const io = @import("io.zig"); // zepo-nwaw: render a raised payload for diagnostics
 
@@ -278,6 +279,11 @@ pub fn primNumberToString(vm: *VM, args: []const Value) LispError!Value {
         defer vm.gc.allocator.free(s);
         return objects.makeString(vm.gc, s) catch error.OutOfMemory;
     }
+    if (objects.isRatio(args[0])) { // zepo-or1d
+        const s = runtime.ratio.toString(vm.gc.allocator, args[0]) catch return error.OutOfMemory;
+        defer vm.gc.allocator.free(s);
+        return objects.makeString(vm.gc, s) catch error.OutOfMemory;
+    }
     return error.TypeError;
 }
 
@@ -454,6 +460,28 @@ pub fn primStringToNumber(vm: *VM, args: []const Value) LispError!Value {
     // bignum (not an imprecise float).
     if (isIntegerString(s)) {
         return runtime.bignum.fromDecimal(vm.gc, s) catch return error.OutOfMemory;
+    }
+    // zepo-or1d: a "num/den" rational string parses to an exact ratio.
+    if (std.mem.indexOfScalar(u8, s, '/')) |slash| {
+        const num_txt = s[0..slash];
+        const den_txt = s[slash + 1 ..];
+        // numerator may be signed; denominator must be unsigned digits.
+        if (isIntegerString(num_txt) and isIntegerString(den_txt) and
+            den_txt[0] != '+' and den_txt[0] != '-')
+        {
+            const num_v = runtime.bignum.fromDecimal(vm.gc, num_txt) catch return error.OutOfMemory;
+            var scope = gc_mod.HandleScope{};
+            vm.gc.roots.pushHandleScope(&scope);
+            defer vm.gc.roots.popHandleScope();
+            const num_slot = scope.push(num_v);
+            const den_v = runtime.bignum.fromDecimal(vm.gc, den_txt) catch return error.OutOfMemory;
+            // A zero denominator ("1/0") is not a number.
+            const v = runtime.ratio.make(vm.gc, num_slot.*, den_v) catch |e| switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return value_mod.FALSE,
+            };
+            return v;
+        }
     }
     if (std.fmt.parseFloat(f64, s)) |f| {
         return objects.makeFloat(vm.gc, f) catch error.OutOfMemory;

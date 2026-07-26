@@ -99,6 +99,12 @@ fn displayInner(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Value,
             try out.appendSlice(allocator, s);
             return;
         }
+        if (objects.isRatio(v)) { // zepo-or1d
+            const s = try runtime.ratio.toString(allocator, v);
+            defer allocator.free(s);
+            try out.appendSlice(allocator, s);
+            return;
+        }
         if (objects.isString(v)) {
             try out.appendSlice(allocator, objects.stringBytes(v));
             return;

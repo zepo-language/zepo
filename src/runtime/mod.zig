@@ -2,6 +2,7 @@
 
 pub const objects = @import("objects.zig");
 pub const bignum = @import("bignum.zig"); // zepo-nfak
+pub const ratio = @import("ratio.zig"); // zepo-or1d
 pub const hashtable = @import("hashtable.zig"); // zepo-hlz
 pub const symbols = @import("symbols.zig");
 pub const portable_value = @import("portable_value.zig"); // zepo-vhi

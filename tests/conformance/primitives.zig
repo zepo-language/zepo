@@ -319,6 +319,79 @@ test "bignum: exact arithmetic (no overflow→float) and comparison" {
     try helpers.expectInt(try r.eval("(- (expt 2 100) (- (expt 2 100) 42))"), 42);
 }
 
+// zepo-or1d: exact rationals. Exact division of non-divisible integers yields a
+// reduced ratio (not a float); arithmetic across fixnum/bignum/ratio stays exact.
+test "ratio: exact division, arithmetic, and reduction" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // Non-divisible exact division is a reduced ratio; divisible reduces to int.
+    try helpers.expectString(try r.eval("(display-to-string (/ 1 3))"), "1/3");
+    try helpers.expectString(try r.eval("(display-to-string (/ 6 4))"), "3/2");
+    try helpers.expectInt(try r.eval("(/ 6 3)"), 2);
+    try helpers.expectString(try r.eval("(display-to-string (/ 3))"), "1/3"); // unary = 1/x
+    // Arithmetic across ratios reduces (and normalizes back to an integer).
+    try helpers.expectString(try r.eval("(display-to-string (+ 1/2 1/3))"), "5/6");
+    try helpers.expectString(try r.eval("(display-to-string (* 2/3 3/4))"), "1/2");
+    try helpers.expectInt(try r.eval("(+ 1/3 2/3)"), 1);
+    try helpers.expectInt(try r.eval("(* 6 1/2)"), 3);
+    try helpers.expectString(try r.eval("(display-to-string (- 5/3))"), "-5/3"); // unary negate
+    // Denominator sign is normalized onto the numerator.
+    try helpers.expectString(try r.eval("(display-to-string (/ 1 -3))"), "-1/3");
+    // Exact comparison, including ratio vs integer.
+    try helpers.expectTrue(try r.eval("(< 1/3 1/2)"));
+    try helpers.expectTrue(try r.eval("(= 1/2 2/4)"));
+    try helpers.expectTrue(try r.eval("(> 3/2 1)"));
+    // numerator / denominator (prims).
+    try helpers.expectInt(try r.eval("(numerator 3/4)"), 3);
+    try helpers.expectInt(try r.eval("(denominator 3/4)"), 4);
+    try helpers.expectInt(try r.eval("(denominator 5)"), 1);
+    // eqv?/equal? by value; number->string / string->number round-trip.
+    try helpers.expectTrue(try r.eval("(eqv? 1/2 2/4)"));
+    try helpers.expectString(try r.eval("(number->string 3/4)"), "3/4");
+    try helpers.expectString(try r.eval("(display-to-string (string->number \"3/4\"))"), "3/4");
+    // A big-numerator ratio stays exact (numerator is a bignum literal).
+    try helpers.expectString(try r.eval("(display-to-string (/ 1000000000000000000000000000000 7))"), "1000000000000000000000000000000/7");
+}
+
+test "ratio: predicates, conversions, and negative exponents" {
+    const r = try Rig.initWithPrelude(alloc); // exact?/rational?/expt
+    defer r.deinit();
+    try helpers.expectTrue(try r.eval("(exact? 1/3)"));
+    try helpers.expectFalse(try r.eval("(inexact? 1/3)"));
+    try helpers.expectTrue(try r.eval("(rational? 1/3)"));
+    try helpers.expectTrue(try r.eval("(rational? 2.5)"));
+    try helpers.expectTrue(try r.eval("(number? 1/3)"));
+    try helpers.expectFalse(try r.eval("(integer? 1/3)"));
+    // exact <-> inexact.
+    try helpers.expectString(try r.eval("(display-to-string (exact->inexact 1/4))"), "0.25");
+    try helpers.expectString(try r.eval("(display-to-string (inexact->exact 0.5))"), "1/2");
+    // A negative exponent is an exact reciprocal.
+    try helpers.expectString(try r.eval("(display-to-string (expt 2 -3))"), "1/8");
+    try helpers.expectString(try r.eval("(display-to-string (expt 1/2 3))"), "1/8");
+}
+
+test "ratio: reader literals (#e decimals, #i), rounding" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // #e on a decimal is its EXACT value as written (#e0.1 is 1/10, not the float).
+    try helpers.expectString(try r.eval("(display-to-string #e0.1)"), "1/10");
+    try helpers.expectString(try r.eval("(display-to-string #e1.5)"), "3/2");
+    try helpers.expectString(try r.eval("(display-to-string #e2.75)"), "11/4");
+    try helpers.expectInt(try r.eval("#e1.5e2"), 150);
+    try helpers.expectTrue(try r.eval("(= 1/10 #e0.1)")); // proves exact-decimal value
+    // #e/#i on a rational literal.
+    try helpers.expectString(try r.eval("(display-to-string #e1/2)"), "1/2");
+    try helpers.expectString(try r.eval("(display-to-string #i1/2)"), "0.5");
+    // floor/ceiling/truncate/round of a ratio (round is half-to-even).
+    try helpers.expectInt(try r.eval("(floor 7/2)"), 3);
+    try helpers.expectInt(try r.eval("(ceiling 7/2)"), 4);
+    try helpers.expectInt(try r.eval("(truncate -7/2)"), -3);
+    try helpers.expectInt(try r.eval("(floor -7/2)"), -4);
+    try helpers.expectInt(try r.eval("(round 7/2)"), 4); // 3.5 -> 4 (even)
+    try helpers.expectInt(try r.eval("(round 5/2)"), 2); // 2.5 -> 2 (even)
+    try helpers.expectString(try r.eval("(display-to-string (abs -3/4))"), "3/4");
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {

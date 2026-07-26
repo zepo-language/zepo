@@ -33,7 +33,8 @@ pub fn toFloat(v: Value) f64 {
 }
 
 /// Copy an integer Value (fixnum or bignum) into a host-allocated Managed.
-fn toManaged(alloc: std.mem.Allocator, v: Value) !Managed {
+/// pub so the ratio module (zepo-or1d) can lift integer parts to big-int.
+pub fn toManaged(alloc: std.mem.Allocator, v: Value) !Managed {
     if (objects.isBignum(v)) {
         var m = try Managed.init(alloc);
         errdefer m.deinit();
@@ -47,7 +48,8 @@ fn toManaged(alloc: std.mem.Allocator, v: Value) !Managed {
 /// Normalize a big-int result: return a fixnum if it fits the fixnum range,
 /// otherwise a fresh bignum object. Errors narrow to OutOfMemory so callers in
 /// the LispError world (arith prims) can propagate them directly.
-fn fromManaged(gc: *GC, r: *Managed) error{OutOfMemory}!Value {
+/// pub so the ratio module (zepo-or1d) can normalize its num/den parts.
+pub fn fromManaged(gc: *GC, r: *Managed) error{OutOfMemory}!Value {
     const c = r.toConst();
     if (c.toInt(i64)) |i| {
         if (value_mod.fixnumFits(i)) return value_mod.fixnum(@intCast(i));
