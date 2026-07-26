@@ -1002,6 +1002,21 @@ pub const Builder = struct {
             else
                 try b.buildExpr(test_v);
 
+            // zepo-7gpd: `(test => proc)` — the truthy test value is applied to
+            // proc. Detect the `=>` arrow as the first body element.
+            if (objects.isPair(body_form)) {
+                const first = objects.pairCar(body_form).*;
+                if (objects.isSymbol(first) and std.mem.eql(u8, objects.symbolName(first), "=>")) {
+                    const arrow_rest = objects.pairCdr(body_form).*;
+                    if (!objects.isPair(arrow_rest)) return BuildError.InvalidSpecialForm; // (test =>)
+                    if (!value_mod.isNil(objects.pairCdr(arrow_rest).*)) return BuildError.InvalidSpecialForm; // (test => p q)
+                    const recv_id = try b.buildExpr(objects.pairCar(arrow_rest).*);
+                    try clauses.append(b.allocator, .{ .test_ = test_id, .body = &.{}, .recv = recv_id });
+                    cur = objects.pairCdr(cur).*;
+                    continue;
+                }
+            }
+
             var body_ids = std.ArrayListUnmanaged(NodeId).empty;
             defer body_ids.deinit(b.allocator);
             try b.collectBody(body_form, &body_ids);
