@@ -187,6 +187,40 @@ pub const Parser = struct {
                 }
                 return value_mod.fixnum(@intCast(tok.int_val));
             },
+            .ratio => {
+                // zepo-or1d: `num/den` rational literal. Parse each part as an
+                // exact integer, then reduce via ratio.make (a denominator of 0
+                // is an invalid literal; a reducible ratio may become an integer).
+                const slash = std.mem.indexOfScalar(u8, tok.text, '/').?;
+                const num_v = runtime.bignum.fromDecimal(p.gc, tok.text[0..slash]) catch |e| switch (e) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return p.setDiag(error.InvalidNumber, tok.span),
+                };
+                var scope = HandleScope{};
+                p.gc.roots.pushHandleScope(&scope);
+                defer p.gc.roots.popHandleScope();
+                const num_slot = scope.push(num_v);
+                const den_v = runtime.bignum.fromDecimal(p.gc, tok.text[slash + 1 ..]) catch |e| switch (e) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return p.setDiag(error.InvalidNumber, tok.span),
+                };
+                const v = runtime.ratio.make(p.gc, num_slot.*, den_v) catch |e| switch (e) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return p.setDiag(error.InvalidNumber, tok.span), // e.g. den 0
+                };
+                try p.recordSpan(v, tok.span.start, tok.span.end);
+                return v;
+            },
+            .exact_decimal => {
+                // zepo-or1d: `#e<decimal>` — the exact rational value of the
+                // decimal as written (e.g. #e0.1 => 1/10).
+                const v = runtime.ratio.fromDecimalExact(p.gc, tok.text) catch |e| switch (e) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return p.setDiag(error.InvalidNumber, tok.span),
+                };
+                try p.recordSpan(v, tok.span.start, tok.span.end);
+                return v;
+            },
             .float => {
                 const v = try objects.makeFloat(p.gc, tok.float_val);
                 try p.recordSpan(v, tok.span.start, tok.span.end);

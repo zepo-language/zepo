@@ -431,6 +431,38 @@ pub fn bignumConst(v: Value) std.math.big.int.Const {
     return .{ .limbs = limbs[0..n], .positive = (meta & 1) == 0 };
 }
 
+// -------------------- Ratio (zepo-or1d) --------------------
+// Body: body[0] = numerator (Value), body[1] = denominator (Value). Both are
+// exact integers (fixnum or bignum). A well-formed ratio is always reduced,
+// has denominator > 0, and denominator != 1 (den==1 normalizes to an integer).
+// Both children are traced.
+
+pub fn isRatio(v: Value) bool {
+    return isKind(v, .ratio);
+}
+
+/// Raw constructor — stores num/den as given. Callers MUST have already
+/// normalized (reduced via gcd, den>0, den!=1). See runtime/ratio.zig make().
+pub fn makeRatio(gc: *GC, num: Value, den: Value) !Value {
+    var scope = gc_mod.HandleScope{};
+    gc.roots.pushHandleScope(&scope);
+    defer gc.roots.popHandleScope();
+    const nv = scope.push(num);
+    const dv = scope.push(den);
+    const h = try gc.alloc(.ratio, 2);
+    storeValue(gc, h, bodyValueSlot(h, 0), nv.*);
+    storeValue(gc, h, bodyValueSlot(h, 1), dv.*);
+    return value_mod.fromPtr(h);
+}
+
+pub fn ratioNum(v: Value) Value {
+    return bodyValueSlot(value_mod.ptrVal(v), 0).*;
+}
+
+pub fn ratioDen(v: Value) Value {
+    return bodyValueSlot(value_mod.ptrVal(v), 1).*;
+}
+
 // -------------------- Type predicates --------------------
 
 pub inline fn isKind(v: Value, k: Kind) bool {
@@ -587,7 +619,7 @@ pub fn isParameter(v: Value) bool { // zepo-6o3p
 }
 
 pub fn isNumber(v: Value) bool {
-    return value_mod.isFixnum(v) or isFloat(v) or isBignum(v); // zepo-nfak
+    return value_mod.isFixnum(v) or isFloat(v) or isBignum(v) or isRatio(v); // zepo-nfak, zepo-or1d
 }
 
 pub fn isProcedure(v: Value) bool {

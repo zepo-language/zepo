@@ -43,12 +43,14 @@ const hash_table_offsets = [_]u16{1};
 const fiber_offsets = [_]u16{1};
 // zepo-6o3p: parameter object body[0]=default value (Value), body[1]=converter (Value, NIL if none).
 const parameter_offsets = [_]u16{ 0, 1 };
+// zepo-or1d: ratio body[0]=numerator (Value), body[1]=denominator (Value).
+const ratio_offsets = [_]u16{ 0, 1 };
 
-pub const LAYOUT_TABLE: [16]LayoutDesc = blk: {
-    var t: [16]LayoutDesc = undefined;
+pub const LAYOUT_TABLE: [17]LayoutDesc = blk: {
+    var t: [17]LayoutDesc = undefined;
     for (&t, 0..) |*slot, i| {
         slot.* = .{
-            .kind = @enumFromInt(@as(u4, @intCast(i))),
+            .kind = @enumFromInt(@as(u5, @intCast(i))),
             .body_words = 0,
             .value_offsets = &no_offsets,
             .has_raw_tail = false,
@@ -188,6 +190,16 @@ pub const LAYOUT_TABLE: [16]LayoutDesc = blk: {
         .kind = .parameter,
         .body_words = 2,
         .value_offsets = &parameter_offsets,
+        .has_raw_tail = false,
+        .length_offset = 0,
+    };
+
+    // zepo-or1d: ratio. body[0]=numerator (Value), body[1]=denominator (Value).
+    // Both children are traced (each may itself be a heap bignum).
+    t[@intFromEnum(Kind.ratio)] = .{
+        .kind = .ratio,
+        .body_words = 2,
+        .value_offsets = &ratio_offsets,
         .has_raw_tail = false,
         .length_offset = 0,
     };

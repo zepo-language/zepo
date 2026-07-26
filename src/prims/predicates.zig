@@ -73,7 +73,7 @@ pub fn primBooleanQ(vm: *VM, args: []const Value) LispError!Value {
 
 fn isRealNum(v: Value) bool {
     if (v == value_mod.NIL or v == value_mod.TRUE or v == value_mod.FALSE) return false;
-    return value_mod.isFixnum(v) or objects.isFloat(v) or objects.isBignum(v); // zepo-nfak
+    return value_mod.isFixnum(v) or objects.isFloat(v) or objects.isBignum(v) or objects.isRatio(v); // zepo-nfak, zepo-or1d
 }
 
 pub fn primNumberQ(vm: *VM, args: []const Value) LispError!Value {

@@ -134,6 +134,7 @@ pub fn primAbs(vm: *VM, args: []const Value) LispError!Value {
         return bignum.fromI64(vm.gc, a) catch error.OutOfMemory;
     }
     if (objects.isBignum(v)) return bignum.absValue(vm.gc, v) catch error.OutOfMemory; // zepo-nfak
+    if (objects.isRatio(v)) return runtime.ratio.absValue(vm.gc, v) catch error.OutOfMemory; // zepo-or1d
     if (objects.isFloat(v)) return mkf(vm, @abs(objects.floatVal(v)));
     return error.TypeError;
 }

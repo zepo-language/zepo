@@ -8,6 +8,7 @@ const value_mod = abi.value;
 const runtime = @import("../runtime/mod.zig");
 const objects = runtime.objects;
 const bignum = runtime.bignum; // zepo-nfak
+const ratio = runtime.ratio; // zepo-or1d
 
 const vm_mod = @import("../vm/dispatch.zig");
 const VM = vm_mod.VM;
@@ -27,6 +28,7 @@ fn isNum(v: Value) bool {
 fn toFloat(v: Value) f64 {
     if (value_mod.isFixnum(v)) return @floatFromInt(value_mod.fixnumVal(v));
     if (objects.isBignum(v)) return bignum.toFloat(v); // zepo-nfak
+    if (objects.isRatio(v)) return ratio.toFloat(v); // zepo-or1d
     return objects.floatVal(v);
 }
 
@@ -66,6 +68,20 @@ fn exactBinop(vm: *VM, comptime op: ExactOp, a: Value, b: Value) LispError!Value
         .sub => bignum.sub(vm.gc, a, b),
         .mul => bignum.mul(vm.gc, a, b),
     };
+}
+
+// zepo-or1d: one step of an exact +,-,* fold. If either operand is a ratio the
+// whole step goes through rational arithmetic (which may reduce back to an
+// integer); otherwise it stays on the integer (fixnum/bignum) fast path.
+fn exactFold(vm: *VM, comptime op: ExactOp, a: Value, b: Value) LispError!Value {
+    if (objects.isRatio(a) or objects.isRatio(b)) {
+        return switch (op) {
+            .add => ratio.add(vm.gc, a, b),
+            .sub => ratio.sub(vm.gc, a, b),
+            .mul => ratio.mul(vm.gc, a, b),
+        };
+    }
+    return exactBinop(vm, op, a, b);
 }
 
 /// Classify all args; returns whether any is a float.
@@ -111,7 +127,7 @@ pub fn primAdd(vm: *VM, args: []const Value) LispError!Value {
     // Exact fold (fixnum/bignum), promoting to bignum on any overflow.
     if (args.len == 0) return value_mod.fixnum(0);
     var acc: Value = args[0];
-    for (args[1..]) |v| acc = try exactBinop(vm, .add, acc, v);
+    for (args[1..]) |v| acc = try exactFold(vm, .add, acc, v);
     return acc;
 }
 
@@ -133,10 +149,10 @@ pub fn primSub(vm: *VM, args: []const Value) LispError!Value {
         for (args[1..]) |v| acc -= toFloat(v);
         return makeNum(vm, true, 0, acc);
     }
-    // Exact (fixnum/bignum). Unary is negation: 0 - x.
-    if (args.len == 1) return exactBinop(vm, .sub, value_mod.fixnum(0), args[0]);
+    // Exact (fixnum/bignum/ratio). Unary is negation: 0 - x.
+    if (args.len == 1) return exactFold(vm, .sub, value_mod.fixnum(0), args[0]);
     var acc: Value = args[0];
-    for (args[1..]) |v| acc = try exactBinop(vm, .sub, acc, v);
+    for (args[1..]) |v| acc = try exactFold(vm, .sub, acc, v);
     return acc;
 }
 
@@ -158,14 +174,14 @@ pub fn primMul(vm: *VM, args: []const Value) LispError!Value {
     }
     if (args.len == 0) return value_mod.fixnum(1);
     var acc: Value = args[0];
-    for (args[1..]) |v| acc = try exactBinop(vm, .mul, acc, v);
+    for (args[1..]) |v| acc = try exactFold(vm, .mul, acc, v);
     return acc;
 }
 
 pub fn primDiv(vm: *VM, args: []const Value) LispError!Value {
     if (args.len == 0) return error.ArityMismatch;
-    // zepo-712: 2-arg fixnum fast path. Exact divide stays fixnum,
-    // otherwise return float (matches Scheme's int+int → float on inexact).
+    // zepo-712/or1d: 2-arg fixnum fast path. Divisible → fixnum; otherwise an
+    // EXACT ratio (was: a float — the numeric tower now keeps it exact).
     if (args.len == 2 and bothFixnum(args[0], args[1])) {
         const av = value_mod.fixnumVal(args[0]);
         const bv = value_mod.fixnumVal(args[1]);
@@ -174,65 +190,28 @@ pub fn primDiv(vm: *VM, args: []const Value) LispError!Value {
             const r = @divTrunc(@as(i64, av), @as(i64, bv));
             if (tryEncodeFixnum(r)) |fx| return fx;
         }
-        return makeNum(vm, true, 0, @as(f64, @floatFromInt(av)) / @as(f64, @floatFromInt(bv)));
+        return ratio.make(vm.gc, args[0], args[1]);
     }
-    // Scheme (/) with all int args still produces an int when divisible; we
-    // keep it simple: if all ints and exact divides, return int; otherwise
-    // return float.
+    // If any operand is a float the whole division is inexact (float result).
     const any_f = try anyFloat(args);
-    if (any_f or args.len == 1) {
+    if (any_f) {
         var acc: f64 = if (args.len == 1) 1 else toFloat(args[0]);
         const start: usize = if (args.len == 1) 0 else 1;
         for (args[start..]) |v| {
-            // zepo-mqvc: R7RS/IEEE — this branch is inexact (some operand is a
-            // float). Division by an INEXACT zero yields ±inf.0 / +nan.0 via
-            // ordinary IEEE division; only division by an EXACT (fixnum) zero
-            // stays an error (matching (/ 1.0 0) → error, (/ 1.0 0.0) → +inf.0).
-            if (value_mod.isFixnum(v) and value_mod.fixnumVal(v) == 0) return error.DivisionByZero;
+            // zepo-mqvc: division by an EXACT zero errors; by an INEXACT zero
+            // (0.0) yields ±inf.0 / +nan.0 via ordinary IEEE division.
+            if (isExactZero(v)) return error.DivisionByZero;
             acc /= toFloat(v);
         }
         return makeNum(vm, true, 0, acc);
     }
-    // All exact integers, 2+ args. Fast path: all fixnums stay in i64.
-    var all_fixnum = true;
-    for (args) |v| {
-        if (!value_mod.isFixnum(v)) {
-            all_fixnum = false;
-            break;
-        }
-    }
-    if (all_fixnum) {
-        var int_acc: i64 = value_mod.fixnumVal(args[0]);
-        var float_needed = false;
-        var float_acc: f64 = @floatFromInt(int_acc);
-        for (args[1..]) |v| {
-            const n: i64 = value_mod.fixnumVal(v);
-            if (n == 0) return error.DivisionByZero;
-            if (!float_needed and @mod(int_acc, n) == 0) {
-                int_acc = @divTrunc(int_acc, n);
-                float_acc = @floatFromInt(int_acc);
-            } else {
-                float_needed = true;
-                float_acc /= @floatFromInt(n);
-            }
-        }
-        if (float_needed) return makeNum(vm, true, 0, float_acc);
-        return makeNum(vm, false, int_acc, 0);
-    }
-    // zepo-nfak: a bignum operand. 2-arg exact division is exact when divisible
-    // (no rationals yet — see zepo-or1d), otherwise a float. n-ary falls to float.
-    if (args.len == 2) {
-        if (isExactZero(args[1])) return error.DivisionByZero;
-        const rem = try bignum.remainder(vm.gc, args[0], args[1]);
-        if (isExactZero(rem)) return bignum.quotient(vm.gc, args[0], args[1]);
-        return makeNum(vm, true, 0, toFloat(args[0]) / toFloat(args[1]));
-    }
-    var acc: f64 = toFloat(args[0]);
-    for (args[1..]) |v| {
-        if (isExactZero(v)) return error.DivisionByZero;
-        acc /= toFloat(v);
-    }
-    return makeNum(vm, true, 0, acc);
+    // zepo-or1d: all operands exact (fixnum/bignum/ratio). Fold with exact
+    // rational division; a divisible result reduces back to an integer.
+    // Unary (/ x) == 1/x.
+    if (args.len == 1) return ratio.make(vm.gc, value_mod.fixnum(1), args[0]);
+    var acc: Value = args[0];
+    for (args[1..]) |v| acc = try ratio.div(vm.gc, acc, v);
+    return acc;
 }
 
 const CmpOp = enum { eq, lt, gt, lte, gte };
@@ -241,9 +220,12 @@ const CmpOp = enum { eq, lt, gt, lte, gte };
 // compared EXACTLY (converting a huge bignum to f64 would lose precision and
 // give wrong answers); if a float is involved, compare as f64 (NaN-correct).
 fn compareOne(vm: *VM, comptime op: CmpOp, a: Value, b: Value) LispError!bool {
-    if (bignum.isInteger(a) and bignum.isInteger(b)) {
+    // zepo-or1d: two EXACT rationals (fixnum/bignum/ratio) compare exactly.
+    if (ratio.isRational(a) and ratio.isRational(b)) {
         const ord: std.math.Order = if (bothFixnum(a, b))
             std.math.order(value_mod.fixnumVal(a), value_mod.fixnumVal(b))
+        else if (objects.isRatio(a) or objects.isRatio(b))
+            try ratio.order(vm.gc.allocator, a, b)
         else
             try bignum.order(vm.gc.allocator, a, b);
         return switch (op) {
@@ -373,6 +355,7 @@ pub fn primFloor(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!isNum(args[0])) return error.TypeError;
     if (value_mod.isFixnum(args[0]) or objects.isBignum(args[0])) return args[0]; // zepo-nfak
+    if (objects.isRatio(args[0])) return ratio.roundToInteger(vm.gc, .floor, args[0]); // zepo-or1d
     return makeNum(vm, true, 0, @floor(objects.floatVal(args[0])));
 }
 
@@ -380,6 +363,7 @@ pub fn primCeiling(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!isNum(args[0])) return error.TypeError;
     if (value_mod.isFixnum(args[0]) or objects.isBignum(args[0])) return args[0]; // zepo-nfak
+    if (objects.isRatio(args[0])) return ratio.roundToInteger(vm.gc, .ceiling, args[0]); // zepo-or1d
     return makeNum(vm, true, 0, @ceil(objects.floatVal(args[0])));
 }
 
@@ -387,6 +371,7 @@ pub fn primRound(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!isNum(args[0])) return error.TypeError;
     if (value_mod.isFixnum(args[0]) or objects.isBignum(args[0])) return args[0]; // zepo-nfak
+    if (objects.isRatio(args[0])) return ratio.roundToInteger(vm.gc, .round, args[0]); // zepo-or1d
     return makeNum(vm, true, 0, @round(objects.floatVal(args[0])));
 }
 
@@ -394,7 +379,36 @@ pub fn primTruncate(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!isNum(args[0])) return error.TypeError;
     if (value_mod.isFixnum(args[0]) or objects.isBignum(args[0])) return args[0]; // zepo-nfak
+    if (objects.isRatio(args[0])) return ratio.roundToInteger(vm.gc, .truncate, args[0]); // zepo-or1d
     return makeNum(vm, true, 0, @trunc(objects.floatVal(args[0])));
+}
+
+// zepo-or1d: numerator/denominator of a rational. Exact operands return exact
+// parts; an (inexact) float returns the inexact part of its exact value.
+pub fn primNumerator(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    const v = args[0];
+    if (ratio.isRational(v)) return ratio.numerator(v);
+    if (objects.isFloat(v)) {
+        const f = objects.floatVal(v);
+        if (!std.math.isFinite(f)) return error.TypeError;
+        const ex = try ratio.fromFloat(vm.gc, f);
+        return objects.makeFloat(vm.gc, toFloat(ratio.numerator(ex))) catch error.OutOfMemory;
+    }
+    return error.TypeError;
+}
+
+pub fn primDenominator(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    const v = args[0];
+    if (ratio.isRational(v)) return ratio.denominator(v);
+    if (objects.isFloat(v)) {
+        const f = objects.floatVal(v);
+        if (!std.math.isFinite(f)) return error.TypeError;
+        const ex = try ratio.fromFloat(vm.gc, f);
+        return objects.makeFloat(vm.gc, toFloat(ratio.denominator(ex))) catch error.OutOfMemory;
+    }
+    return error.TypeError;
 }
 
 pub fn primExactToInexact(vm: *VM, args: []const Value) LispError!Value {
@@ -408,8 +422,11 @@ pub fn primExactToInexact(vm: *VM, args: []const Value) LispError!Value {
 pub fn primInexactToExact(vm: *VM, args: []const Value) LispError!Value {
     if (args.len != 1) return error.ArityMismatch;
     if (!isNum(args[0])) return error.TypeError;
-    if (value_mod.isFixnum(args[0]) or objects.isBignum(args[0])) return args[0]; // zepo-nfak
+    // Already exact (fixnum/bignum/ratio) — identity.
+    if (value_mod.isFixnum(args[0]) or objects.isBignum(args[0]) or objects.isRatio(args[0])) return args[0]; // zepo-nfak, zepo-or1d
     const f = objects.floatVal(args[0]);
-    const i: i64 = @intFromFloat(@trunc(f));
-    return makeNum(vm, false, i, 0);
+    // zepo-or1d: a non-finite float has no exact value.
+    if (!std.math.isFinite(f)) return error.TypeError;
+    // The exact rational the float represents (f = m * 2^e exactly).
+    return ratio.fromFloat(vm.gc, f);
 }

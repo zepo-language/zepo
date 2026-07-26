@@ -4,17 +4,17 @@
 //!   bit 0 = forward flag
 //!     1 => bits 63:1 shifted-left-by-1 are the forwarding pointer target
 //!     0 => normal header:
-//!       bits  4:1  = Kind          (4 bits)
-//!       bits  6:5  = Space         (2 bits)
-//!       bits 10:7  = age           (4 bits)
-//!       bit  11    = mark
-//!       bit  12    = pinned
-//!       bits 28:13 = layout_desc_id (16 bits)
-//!       bits 63:29 = size_words    (35 bits; body length in words)
+//!       bits  5:1  = Kind          (5 bits)   // zepo-or1d: widened from u4
+//!       bits  7:6  = Space         (2 bits)
+//!       bits 11:8  = age           (4 bits)
+//!       bit  12    = mark
+//!       bit  13    = pinned
+//!       bits 29:14 = layout_desc_id (16 bits)
+//!       bits 63:30 = size_words    (34 bits; body length in words)
 
 const std = @import("std");
 
-pub const Kind = enum(u4) {
+pub const Kind = enum(u5) { // zepo-or1d: widened u4->u5 to make room for ratio (slot 16)
     pair = 1,
     string = 2,
     symbol = 3,
@@ -30,6 +30,7 @@ pub const Kind = enum(u4) {
     fiber = 13, // zepo-4d6: fiber handle — body [status][result][fs_ptr]
     parameter = 14, // zepo-6o3p: parameter object — body [default(Value)][converter(Value, NIL=none)]
     bignum = 15, // zepo-nfak: arbitrary-precision exact integer — body[0]=(nlimbs<<1)|neg, body[1..]=limbs (raw, no traced children)
+    ratio = 16, // zepo-or1d: exact rational — body[0]=numerator (Value), body[1]=denominator (Value); both fixnum-or-bignum, reduced, den>0, den!=1
     _,
 };
 
@@ -44,18 +45,20 @@ pub const ObjHeader = extern struct {
     word: u64,
 
     // --- Bit field constants ---
+    // zepo-or1d: Kind widened u4->u5, so every field above layout shifts up 1 bit
+    // and size_words loses its top bit (35->34, still 16 Gword = plenty).
     pub const KIND_SHIFT: u6 = 1;
-    pub const KIND_MASK: u64 = 0xF << KIND_SHIFT; // bits 4:1
-    pub const SPACE_SHIFT: u6 = 5;
-    pub const SPACE_MASK: u64 = 0x3 << SPACE_SHIFT; // bits 6:5
-    pub const AGE_SHIFT: u6 = 7;
-    pub const AGE_MASK: u64 = 0xF << AGE_SHIFT; // bits 10:7
-    pub const MARK_BIT: u64 = 1 << 11;
-    pub const PINNED_BIT: u64 = 1 << 12;
-    pub const LAYOUT_SHIFT: u6 = 13;
-    pub const LAYOUT_MASK: u64 = 0xFFFF << LAYOUT_SHIFT; // bits 28:13
-    pub const SIZE_SHIFT: u6 = 29;
-    pub const SIZE_MASK: u64 = ((@as(u64, 1) << 35) - 1) << SIZE_SHIFT; // bits 63:29
+    pub const KIND_MASK: u64 = 0x1F << KIND_SHIFT; // bits 5:1
+    pub const SPACE_SHIFT: u6 = 6;
+    pub const SPACE_MASK: u64 = 0x3 << SPACE_SHIFT; // bits 7:6
+    pub const AGE_SHIFT: u6 = 8;
+    pub const AGE_MASK: u64 = 0xF << AGE_SHIFT; // bits 11:8
+    pub const MARK_BIT: u64 = 1 << 12;
+    pub const PINNED_BIT: u64 = 1 << 13;
+    pub const LAYOUT_SHIFT: u6 = 14;
+    pub const LAYOUT_MASK: u64 = 0xFFFF << LAYOUT_SHIFT; // bits 29:14
+    pub const SIZE_SHIFT: u6 = 30;
+    pub const SIZE_MASK: u64 = ((@as(u64, 1) << 34) - 1) << SIZE_SHIFT; // bits 63:30
 
     pub inline fn isForward(h: ObjHeader) bool {
         return (h.word & 1) == 1;
@@ -75,7 +78,7 @@ pub const ObjHeader = extern struct {
     }
 
     pub inline fn kind(h: ObjHeader) Kind {
-        const bits: u4 = @intCast((h.word & KIND_MASK) >> KIND_SHIFT);
+        const bits: u5 = @intCast((h.word & KIND_MASK) >> KIND_SHIFT);
         return @enumFromInt(bits);
     }
 
@@ -100,7 +103,7 @@ pub const ObjHeader = extern struct {
         return @intCast((h.word & LAYOUT_MASK) >> LAYOUT_SHIFT);
     }
 
-    pub inline fn sizeWords(h: ObjHeader) u35 {
+    pub inline fn sizeWords(h: ObjHeader) u34 { // zepo-or1d: 34-bit size field
         return @intCast((h.word & SIZE_MASK) >> SIZE_SHIFT);
     }
 
@@ -126,7 +129,7 @@ pub const ObjHeader = extern struct {
         h.setAge(next);
     }
 
-    pub fn init(k: Kind, sp: Space, layout_id: u16, sz_words: u35) ObjHeader {
+    pub fn init(k: Kind, sp: Space, layout_id: u16, sz_words: u34) ObjHeader {
         var w: u64 = 0;
         w |= (@as(u64, @intFromEnum(k)) << KIND_SHIFT);
         w |= (@as(u64, @intFromEnum(sp)) << SPACE_SHIFT);
@@ -142,7 +145,7 @@ test "header round-trip" {
     try std.testing.expectEqual(Kind.pair, h.kind());
     try std.testing.expectEqual(Space.nursery_from, h.space());
     try std.testing.expectEqual(@as(u16, 0), h.layoutDescId());
-    try std.testing.expectEqual(@as(u35, 2), h.sizeWords());
+    try std.testing.expectEqual(@as(u34, 2), h.sizeWords());
     try std.testing.expectEqual(@as(u4, 0), h.age());
     try std.testing.expect(!h.marked());
 

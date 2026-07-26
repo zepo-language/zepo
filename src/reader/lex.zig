@@ -17,6 +17,8 @@ pub const TokenKind = enum {
     unquote_splicing,
     boolean,
     integer,
+    ratio, // zepo-or1d: `num/den` rational literal — text holds the num/den body
+    exact_decimal, // zepo-or1d: `#e<decimal>` — text holds the decimal body; parser builds an exact rational
     float,
     string,
     character,
@@ -328,6 +330,23 @@ pub const Lexer = struct {
         if (l.src[l.pos] == '+' or l.src[l.pos] == '-') _ = l.advance();
         // Int part
         while (!l.atEnd() and std.ascii.isDigit(l.src[l.pos])) _ = l.advance();
+        // zepo-or1d: rational literal `num/den` (both plain integers — no
+        // decimal point or exponent in either part). The numerator (with its
+        // optional sign) has already been consumed above.
+        if (!l.atEnd() and l.src[l.pos] == '/') {
+            _ = l.advance(); // consume '/'
+            const den_start = l.pos;
+            while (!l.atEnd() and std.ascii.isDigit(l.src[l.pos])) _ = l.advance();
+            if (l.pos == den_start) return ReaderError.InvalidNumber; // no denominator digits
+            const text = l.src[start_off..l.pos];
+            const end_pos = l.curPos();
+            if (!l.atEnd() and !isDelimiter(l.src[l.pos])) return ReaderError.InvalidNumber;
+            return .{
+                .kind = .ratio,
+                .text = text,
+                .span = .{ .start = start_pos, .end = end_pos, .file = l.file },
+            };
+        }
         // Fraction
         if (!l.atEnd() and l.src[l.pos] == '.') {
             is_float = true;
@@ -525,6 +544,29 @@ pub const Lexer = struct {
         if (!l.atEnd() and (l.src[l.pos] == '+' or l.src[l.pos] == '-')) _ = l.advance();
         var is_float = false;
         while (!l.atEnd() and radixDigit(l.src[l.pos], radix)) _ = l.advance();
+        // zepo-or1d: a prefixed rational `#e1/2` / `#i1/2` / `#x1/f`. The
+        // denominator uses the same radix. #i makes it a float, otherwise exact.
+        if (!l.atEnd() and l.src[l.pos] == '/') {
+            _ = l.advance();
+            const den_start = l.pos;
+            while (!l.atEnd() and radixDigit(l.src[l.pos], radix)) _ = l.advance();
+            if (l.pos == den_start) return ReaderError.InvalidNumber;
+            const body = l.src[body_start..l.pos];
+            const span = Span{ .start = start_pos, .end = l.curPos(), .file = l.file };
+            const text = l.src[start_off..l.pos];
+            if (!l.atEnd() and !isDelimiter(l.src[l.pos])) return ReaderError.InvalidNumber;
+            if (exact == false) {
+                // #i: the inexact (float) value of the rational.
+                const slash = std.mem.indexOfScalar(u8, body, '/').?;
+                const nf: f64 = @floatFromInt(std.fmt.parseInt(i64, body[0..slash], radix) catch return ReaderError.InvalidNumber);
+                const df: f64 = @floatFromInt(std.fmt.parseInt(i64, body[slash + 1 ..], radix) catch return ReaderError.InvalidNumber);
+                if (df == 0) return ReaderError.InvalidNumber;
+                return .{ .kind = .float, .text = text, .span = span, .float_val = nf / df };
+            }
+            // Exact rational (radix 10 num/den handled by the parser).
+            if (radix != 10) return ReaderError.InvalidNumber; // non-decimal exact ratios unsupported
+            return .{ .kind = .ratio, .text = body, .span = span };
+        }
         if (radix == 10 and !l.atEnd() and l.src[l.pos] == '.') {
             is_float = true;
             _ = l.advance();
@@ -543,8 +585,11 @@ pub const Lexer = struct {
         const text = l.src[start_off..l.pos];
         const span = Span{ .start = start_pos, .end = l.curPos(), .file = l.file };
 
-        // #e on an inexact literal would need exact rationals, which zepo lacks.
-        if (is_float and exact == true) return ReaderError.InvalidNumber;
+        // zepo-or1d: #e on a decimal literal is its EXACT rational value
+        // (e.g. #e0.1 => 1/10). The parser builds it from the decimal body.
+        if (is_float and exact == true) {
+            return .{ .kind = .exact_decimal, .text = body, .span = span };
+        }
 
         if (is_float or exact == false) {
             const f: f64 = if (is_float)
