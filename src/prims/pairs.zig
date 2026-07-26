@@ -273,6 +273,11 @@ pub fn primNumberToString(vm: *VM, args: []const Value) LispError!Value {
         const s = objects.formatFloat(&buf, objects.floatVal(args[0]));
         return objects.makeString(vm.gc, s) catch error.OutOfMemory;
     }
+    if (objects.isBignum(args[0])) { // zepo-nfak
+        const s = runtime.bignum.toString(vm.gc.allocator, args[0]) catch return error.OutOfMemory;
+        defer vm.gc.allocator.free(s);
+        return objects.makeString(vm.gc, s) catch error.OutOfMemory;
+    }
     return error.TypeError;
 }
 
@@ -445,10 +450,24 @@ pub fn primStringToNumber(vm: *VM, args: []const Value) LispError!Value {
     if (std.fmt.parseInt(i63, s, 10)) |n| {
         return value_mod.fixnum(n);
     } else |_| {}
+    // zepo-nfak: a whole-number string too big for a fixnum becomes an exact
+    // bignum (not an imprecise float).
+    if (isIntegerString(s)) {
+        return runtime.bignum.fromDecimal(vm.gc, s) catch return error.OutOfMemory;
+    }
     if (std.fmt.parseFloat(f64, s)) |f| {
         return objects.makeFloat(vm.gc, f) catch error.OutOfMemory;
     } else |_| {}
     return value_mod.FALSE;
+}
+
+// zepo-nfak: optional sign followed by one-or-more decimal digits.
+fn isIntegerString(s: []const u8) bool {
+    if (s.len == 0) return false;
+    const digits = if (s[0] == '+' or s[0] == '-') s[1..] else s;
+    if (digits.len == 0) return false;
+    for (digits) |c| if (c < '0' or c > '9') return false;
+    return true;
 }
 
 pub fn primSymbolToString(vm: *VM, args: []const Value) LispError!Value {

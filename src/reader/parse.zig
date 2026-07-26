@@ -174,14 +174,18 @@ pub const Parser = struct {
             .unquote_splicing => return p.parseReaderAbbrev("unquote-splicing", tok),
             .boolean => return if (tok.bool_val) value_mod.TRUE else value_mod.FALSE,
             .integer => {
-                const n = tok.int_val;
-                // zepo-9usm: an integer literal wider than the fixnum range has
-                // no exact representation (no bignum tower) — reject it rather
-                // than silently wrap into a corrupted fixnum.
-                if (!value_mod.fixnumFits(n)) {
-                    return p.setDiag(error.OverflowInt, tok.span);
+                // zepo-nfak: a literal outside the fixnum range (either wider
+                // than i64, flagged by the lexer, or in [2^60, 2^63)) is an
+                // exact bignum, parsed from the source text.
+                if (tok.int_overflow or !value_mod.fixnumFits(tok.int_val)) {
+                    const v = runtime.bignum.fromDecimal(p.gc, tok.text) catch |e| switch (e) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return p.setDiag(error.InvalidNumber, tok.span),
+                    };
+                    try p.recordSpan(v, tok.span.start, tok.span.end);
+                    return v;
                 }
-                return value_mod.fixnum(@intCast(n));
+                return value_mod.fixnum(@intCast(tok.int_val));
             },
             .float => {
                 const v = try objects.makeFloat(p.gc, tok.float_val);

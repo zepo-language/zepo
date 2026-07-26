@@ -402,6 +402,35 @@ pub fn bytevectorBytes(v: Value) []u8 {
     return tail_ptr[0..n];
 }
 
+// -------------------- Bignum (zepo-nfak) --------------------
+// Body: body[0] = (nlimbs << 1) | (negative ? 1 : 0); body[1..1+nlimbs] = limbs
+// (std.math.big.int.Limb = usize each). Raw — no traced Value children.
+const Limb = std.math.big.Limb;
+
+pub fn isBignum(v: Value) bool {
+    return isKind(v, .bignum);
+}
+
+/// Allocate a bignum from canonical big-int limbs (no leading-zero limbs). The
+/// caller must have already normalized fixnum-range values to a fixnum.
+pub fn makeBignum(gc: *GC, positive: bool, limbs: []const Limb) !Value {
+    const h = try gc.alloc(.bignum, 1 + limbs.len);
+    bodyPtr(u64, h, 0).* = (@as(u64, @intCast(limbs.len)) << 1) | (if (positive) @as(u64, 0) else 1);
+    const dst: [*]Limb = @ptrCast(@alignCast(bodyPtr(Limb, h, 1)));
+    for (limbs, 0..) |limb, i| dst[i] = limb;
+    return value_mod.fromPtr(h);
+}
+
+/// A read-only big-int view over a bignum's inline limbs. Valid until the next
+/// GC that could move the object — read it before any allocation.
+pub fn bignumConst(v: Value) std.math.big.int.Const {
+    const h = value_mod.ptrVal(v);
+    const meta = bodyPtr(u64, h, 0).*;
+    const n: usize = @intCast(meta >> 1);
+    const limbs: [*]Limb = @ptrCast(@alignCast(bodyPtr(Limb, h, 1)));
+    return .{ .limbs = limbs[0..n], .positive = (meta & 1) == 0 };
+}
+
 // -------------------- Type predicates --------------------
 
 pub inline fn isKind(v: Value, k: Kind) bool {
@@ -558,7 +587,7 @@ pub fn isParameter(v: Value) bool { // zepo-6o3p
 }
 
 pub fn isNumber(v: Value) bool {
-    return value_mod.isFixnum(v) or isFloat(v);
+    return value_mod.isFixnum(v) or isFloat(v) or isBignum(v); // zepo-nfak
 }
 
 pub fn isProcedure(v: Value) bool {

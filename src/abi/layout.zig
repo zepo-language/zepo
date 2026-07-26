@@ -163,6 +163,17 @@ pub const LAYOUT_TABLE: [16]LayoutDesc = blk: {
         .length_offset = 0,
     };
 
+    // zepo-nfak: bignum — body[0]=(nlimbs<<1)|neg, body[1..]=limbs (raw usize).
+    // NO traced Value children, so it is never a source of old->young edges;
+    // size comes from the header, tracing consults value_offsets (none here).
+    t[@intFromEnum(Kind.bignum)] = .{
+        .kind = .bignum,
+        .body_words = 0, // variable (limb count in body[0])
+        .value_offsets = &no_offsets,
+        .has_raw_tail = true,
+        .length_offset = 0,
+    };
+
     // zepo-4d6: fiber handle. body[0]=status(raw), body[1]=result(Value), body[2]=fs_ptr(raw).
     t[@intFromEnum(Kind.fiber)] = .{
         .kind = .fiber,

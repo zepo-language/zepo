@@ -26,8 +26,14 @@ pub fn primEqQ(vm: *VM, args: []const Value) LispError!Value {
 // are immediates, so identity (a == b) already decides them.
 pub fn eqv(a: Value, b: Value) bool {
     if (a == b) return true;
-    if (value_mod.isPtr(a) and value_mod.isPtr(b) and objects.isFloat(a) and objects.isFloat(b)) {
-        return @as(u64, @bitCast(objects.floatVal(a))) == @as(u64, @bitCast(objects.floatVal(b)));
+    if (value_mod.isPtr(a) and value_mod.isPtr(b)) {
+        if (objects.isFloat(a) and objects.isFloat(b)) {
+            return @as(u64, @bitCast(objects.floatVal(a))) == @as(u64, @bitCast(objects.floatVal(b)));
+        }
+        // zepo-nfak: two distinct bignum objects of equal value are eqv?.
+        if (objects.isBignum(a) and objects.isBignum(b)) {
+            return runtime.bignum.eql(a, b);
+        }
     }
     return false;
 }

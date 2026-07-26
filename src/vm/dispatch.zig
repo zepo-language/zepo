@@ -1299,8 +1299,11 @@ pub const VM = struct {
                             continue;
                         }
                     }
-                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
-                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .add);
+                    // zepo-nfak: slow path via primAdd — handles fixnum overflow →
+                    // exact bignum, bignum operands, and floats. GC-safe for these
+                    // two args: the prim reads both operands before its one alloc.
+                    var add_args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primAdd(vm, add_args[0..]);
                 },
                 .SUB2 => {
                     const a = bytecode.decodeA(instr);
@@ -1320,8 +1323,9 @@ pub const VM = struct {
                             continue;
                         }
                     }
-                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
-                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .sub);
+                    // zepo-nfak: slow path via primSub (bignum/float aware).
+                    var sub_args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primSub(vm, sub_args[0..]);
                 },
                 .MUL2 => {
                     const a = bytecode.decodeA(instr);
@@ -1341,8 +1345,9 @@ pub const VM = struct {
                             }
                         }
                     }
-                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
-                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .mul);
+                    // zepo-nfak: slow path via primMul (bignum/float aware).
+                    var mul_args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primMul(vm, mul_args[0..]);
                 },
                 .NUM_EQ2 => {
                     const a = bytecode.decodeA(instr);
@@ -1597,8 +1602,10 @@ pub const VM = struct {
                             continue;
                         }
                     }
-                    // zepo-a72: GC-safe slow path (see binaryFloatOp doc).
-                    vm.call_stack.reg(a).* = try vm.binaryFloatOp(va, vb, .modulo);
+                    // zepo-nfak: slow path via primModulo — exact for bignum
+                    // integer operands, error on a non-integer, DivisionByZero on 0.
+                    var mod_args = [_]Value{ va, vb };
+                    vm.call_stack.reg(a).* = try arith_prims.primModulo(vm, mod_args[0..]);
                 },
                 .BR_IF_NUM_NLT_I => {
                     const a_reg = bytecode.decodeA(instr);
@@ -1702,39 +1709,6 @@ pub const VM = struct {
                 },
             }
         }
-    }
-
-    /// zepo-a72: shared slow-path for 2-arg float arithmetic invoked by
-    /// ADD2/SUB2/MUL2/MOD2 when the fixnum fast path doesn't apply. We
-    /// CANNOT pass a stack-local `[2]Value` array to the corresponding
-    /// prim (primAdd/primSub/...) because the prim may allocate a result
-    /// float, triggering a minor GC that moves the boxed-float operands
-    /// — the stack array is not a root, so the prim would dereference
-    /// forwarded objects and yield TypeError. Instead we read both
-    /// operands as f64 BEFORE any allocation, then alloc once at the end.
-    fn binaryFloatOp(vm: *VM, va: Value, vb: Value, op: enum { add, sub, mul, modulo }) LispError!Value {
-        if (!objects.isNumber(va) or !objects.isNumber(vb)) return error.TypeError;
-        const fa: f64 = if (value_mod.isFixnum(va))
-            @as(f64, @floatFromInt(value_mod.fixnumVal(va)))
-        else
-            objects.floatVal(va);
-        const fb: f64 = if (value_mod.isFixnum(vb))
-            @as(f64, @floatFromInt(value_mod.fixnumVal(vb)))
-        else
-            objects.floatVal(vb);
-        const result: f64 = switch (op) {
-            .add => fa + fb,
-            .sub => fa - fb,
-            .mul => fa * fb,
-            .modulo => blk: {
-                if (fb == 0) return error.DivisionByZero;
-                const r = @rem(fa, fb);
-                break :blk if (r == 0) 0
-                    else if ((r > 0) == (fb > 0)) r
-                    else r + fb;
-            },
-        };
-        return objects.makeFloat(vm.gc, result) catch return error.OutOfMemory;
     }
 
     /// zepo-9bi: Errors that should NEVER be intercepted by user handlers.
