@@ -102,6 +102,10 @@ pub const Builder = struct {
         if (objects.isFloat(v)) {
             return b.arena.add(.{ .literal = .{ .val = .{ .float = objects.floatVal(v) }, .span = b.current_span } });
         }
+        // zepo-nfak: a bignum literal self-evaluates (like a number literal).
+        if (objects.isBignum(v)) {
+            return b.arena.add(.{ .quote = .{ .datum = v, .span = b.current_span } });
+        }
         if (objects.isString(v)) {
             const bytes = objects.stringBytes(v);
             const owned = try b.arena.dupString(bytes);

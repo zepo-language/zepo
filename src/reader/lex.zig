@@ -34,6 +34,9 @@ pub const Token = struct {
     float_val: f64 = 0,
     bool_val: bool = false,
     char_val: u21 = 0,
+    /// zepo-nfak: set when a decimal integer literal exceeds i64 — the parser
+    /// builds a bignum from `text` rather than reading int_val.
+    int_overflow: bool = false,
     /// For strings: a decoded-bytes slice owned by the Lexer's string_buf
     /// when the string contained escapes, or a sub-slice of `src` when raw.
     /// For symbols: sub-slice of `src`.
@@ -358,7 +361,17 @@ pub const Lexer = struct {
                 .float_val = f,
             };
         } else {
-            const n = std.fmt.parseInt(i64, text, 10) catch return ReaderError.OverflowInt;
+            // zepo-nfak: a literal wider than i64 is a bignum — flag it and let
+            // the parser build the bignum from `text`.
+            const n = std.fmt.parseInt(i64, text, 10) catch |e| switch (e) {
+                error.Overflow => return .{
+                    .kind = .integer,
+                    .text = text,
+                    .span = .{ .start = start_pos, .end = end_pos, .file = l.file },
+                    .int_overflow = true,
+                },
+                else => return ReaderError.InvalidNumber,
+            };
             return .{
                 .kind = .integer,
                 .text = text,

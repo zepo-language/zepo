@@ -24,35 +24,39 @@ test "prims: float promotion" {
     try helpers.expectFloat(v, 2.5, 1e-9);
 }
 
-// zepo-9usm: fixnum payload is a 61-bit field (range [-2^60, 2^60-1]).
-// Arithmetic that lands inside the range stays an exact fixnum; anything
-// that steps outside must promote to a boxed float, never silently wrap.
-test "prims: fixnum overflow promotes to float, no silent wrap" {
+// zepo-9usm/nfak: fixnum payload is a 61-bit field (range [-2^60, 2^60-1]).
+// Arithmetic inside the range stays an exact fixnum; stepping outside now
+// promotes to an EXACT BIGNUM (zepo-nfak — previously a lossy float), never a
+// silently-wrapped fixnum.
+test "prims: fixnum overflow promotes to an exact bignum, no silent wrap" {
     const r = try Rig.init(alloc);
     defer r.deinit();
-    // 2^60-1 is the largest fixnum — reaching it exactly stays exact.
+    // 2^60-1 is the largest fixnum — reaching it exactly stays a fixnum.
     try helpers.expectInt(try r.eval("(+ 1152921504606846974 1)"), 1152921504606846975);
-    // One past the top must promote (was corrupting to -1152921504606846976).
-    try helpers.expectFloat(try r.eval("(+ 1152921504606846975 1)"), 1152921504606846976.0, 512.0);
-    // Formatting-independent proof it did not wrap negative.
+    // One past the top is an exact bignum (was corrupting to -2^60, then a float).
+    try helpers.expectString(try r.eval("(display-to-string (+ 1152921504606846975 1))"), "1152921504606846976");
     try helpers.expectTrue(try r.eval("(> (+ 1152921504606846975 1) 0)"));
     // MUL2 fast path: 2^30 * 2^30 = 2^60 overflows the fixnum range.
-    try helpers.expectFloat(try r.eval("(* 1073741824 1073741824)"), 1152921504606846976.0, 512.0);
-    // Below the floor (-2^60) must promote too.
-    try helpers.expectFloat(try r.eval("(- -1152921504606846976 1)"), -1152921504606846977.0, 512.0);
-    // abs / negate of the most-negative fixnum (-2^60) is +2^60, one past the
-    // top — must promote, not wrap back to a negative fixnum.
-    try helpers.expectFloat(try r.eval("(abs -1152921504606846976)"), 1152921504606846976.0, 512.0);
-    try helpers.expectFloat(try r.eval("(- -1152921504606846976)"), 1152921504606846976.0, 512.0);
+    try helpers.expectString(try r.eval("(display-to-string (* 1073741824 1073741824))"), "1152921504606846976");
+    // Below the floor (-2^60).
+    try helpers.expectString(try r.eval("(display-to-string (- -1152921504606846976 1))"), "-1152921504606846977");
+    // abs / negate of the most-negative fixnum (-2^60) is +2^60, one past the top.
+    try helpers.expectString(try r.eval("(display-to-string (abs -1152921504606846976))"), "1152921504606846976");
+    try helpers.expectString(try r.eval("(display-to-string (- -1152921504606846976))"), "1152921504606846976");
+    // Exact: the bignum minus itself-less-42 is exactly 42 (normalizes to fixnum).
+    try helpers.expectInt(try r.eval("(- (* 1073741824 1073741824) (- (* 1073741824 1073741824) 42))"), 42);
 }
 
-// zepo-9usm: an integer literal wider than the fixnum range has no exact
-// representation and must be rejected, not silently wrapped.
-test "reader: over-range integer literal is rejected" {
-    const r = try Rig.init(alloc);
+// zepo-9usm/nfak: an integer literal wider than the fixnum range now reads as
+// an exact bignum (previously rejected as OverflowInt — there was no bignum
+// tower). Both a value in [2^60, 2^63) and one wider than i64 read exactly.
+test "reader: over-range integer literal reads as an exact bignum" {
+    const r = try Rig.initWithPrelude(alloc); // uses exact?
     defer r.deinit();
-    try std.testing.expectError(error.OverflowInt, r.eval("1152921504606846976"));
-    try std.testing.expectError(error.OverflowInt, r.eval("4611686018427387903"));
+    try helpers.expectString(try r.eval("(display-to-string 1152921504606846976)"), "1152921504606846976");
+    try helpers.expectString(try r.eval("(display-to-string 4611686018427387903)"), "4611686018427387903");
+    try helpers.expectString(try r.eval("(display-to-string 123456789012345678901234567890)"), "123456789012345678901234567890");
+    try helpers.expectTrue(try r.eval("(exact? 1152921504606846976)"));
 }
 
 // zepo-s2o4: rendering a cyclic or pathologically deep structure must not
@@ -267,6 +271,52 @@ test "control: call/ec escape continuations" {
         try r.eval("(call-with-values (lambda () (call/ec (lambda (k) (k 3 4)))) (lambda (a b) (+ a b)))"),
         7,
     );
+}
+
+// zepo-nfak: arbitrary-precision exact integers. Overflow promotes to an exact
+// bignum instead of an imprecise float; literals, arithmetic, comparison,
+// predicates, equality, and string conversions all work at full precision.
+test "bignum: literals, predicates, and string conversion" {
+    const r = try Rig.initWithPrelude(alloc); // uses exact?/inexact?
+    defer r.deinit();
+    // A literal wider than the fixnum range reads as an exact integer.
+    try helpers.expectString(try r.eval("(display-to-string 123456789012345678901234567890)"), "123456789012345678901234567890");
+    try helpers.expectString(try r.eval("(display-to-string -99999999999999999999999999999999)"), "-99999999999999999999999999999999");
+    try helpers.expectTrue(try r.eval("(number? 123456789012345678901234567890)"));
+    try helpers.expectTrue(try r.eval("(integer? 123456789012345678901234567890)"));
+    try helpers.expectTrue(try r.eval("(exact? 123456789012345678901234567890)"));
+    try helpers.expectFalse(try r.eval("(inexact? 123456789012345678901234567890)"));
+    // number->string / string->number round-trip at full precision.
+    try helpers.expectString(try r.eval("(number->string 123456789012345678901234567890)"), "123456789012345678901234567890");
+    try helpers.expectString(try r.eval("(display-to-string (string->number \"123456789012345678901234567890\"))"), "123456789012345678901234567890");
+    // eqv?/equal? by value.
+    try helpers.expectTrue(try r.eval("(eqv? 123456789012345678901234567890 123456789012345678901234567890)"));
+    try helpers.expectFalse(try r.eval("(eqv? 123456789012345678901234567890 5)"));
+    try helpers.expectTrue(try r.eval("(equal? 123456789012345678901234567890 123456789012345678901234567890)"));
+}
+
+test "bignum: exact arithmetic (no overflow→float) and comparison" {
+    const r = try Rig.initWithPrelude(alloc); // uses expt
+    defer r.deinit();
+    // Multiplication that overflows a fixnum stays exact.
+    try helpers.expectString(try r.eval("(display-to-string (* 1000000000000000000 1000000000000000000))"), "1000000000000000000000000000000000000");
+    try helpers.expectString(try r.eval("(display-to-string (expt 2 100))"), "1267650600228229401496703205376");
+    try helpers.expectString(try r.eval("(display-to-string (+ 999999999999999999999999 1))"), "1000000000000000000000000");
+    try helpers.expectString(try r.eval("(display-to-string (- 0 123456789012345678901234567890))"), "-123456789012345678901234567890");
+    try helpers.expectString(try r.eval("(display-to-string (abs (- (expt 2 90))))"), "1237940039285380274899124224");
+    // quotient / remainder / modulo on bignums.
+    try helpers.expectString(try r.eval("(display-to-string (quotient (expt 10 30) 7))"), "142857142857142857142857142857");
+    try helpers.expectInt(try r.eval("(remainder (expt 10 30) 7)"), 1);
+    try helpers.expectInt(try r.eval("(modulo (- (expt 10 30)) 7)"), 6);
+    // exact division: divisible → exact, indivisible → float.
+    try helpers.expectString(try r.eval("(display-to-string (/ (expt 10 30) (expt 10 15)))"), "1000000000000000");
+    // comparison, including bignum vs fixnum (a bignum is never fixnum-range).
+    try helpers.expectTrue(try r.eval("(= (expt 2 100) (expt 2 100))"));
+    try helpers.expectTrue(try r.eval("(< (expt 2 100) (expt 2 101))"));
+    try helpers.expectTrue(try r.eval("(> (expt 10 50) 999999999)"));
+    try helpers.expectFalse(try r.eval("(= (expt 2 100) (expt 2 101))"));
+    // A bignum result that shrinks back into fixnum range normalizes to a fixnum.
+    try helpers.expectInt(try r.eval("(- (expt 2 100) (- (expt 2 100) 42))"), 42);
 }
 
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;

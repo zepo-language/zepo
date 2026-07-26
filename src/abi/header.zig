@@ -29,6 +29,7 @@ pub const Kind = enum(u4) {
     bytevector = 12, // zepo-9qg
     fiber = 13, // zepo-4d6: fiber handle — body [status][result][fs_ptr]
     parameter = 14, // zepo-6o3p: parameter object — body [default(Value)][converter(Value, NIL=none)]
+    bignum = 15, // zepo-nfak: arbitrary-precision exact integer — body[0]=(nlimbs<<1)|neg, body[1..]=limbs (raw, no traced children)
     _,
 };
 
