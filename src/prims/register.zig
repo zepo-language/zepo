@@ -137,6 +137,11 @@ const TABLE: []const Entry = &.{
     make("number->string", 1, pairs.primNumberToString),
     make("string-ref", 2, pairs.primStringRef),
     make("substring", -1, pairs.primSubstring),
+    // zepo-1meg: mutable byte-strings.
+    make("make-string", -1, pairs.primMakeString),
+    make("string-set!", 3, pairs.primStringSet),
+    make("string-fill!", -1, pairs.primStringFill),
+    make("string-copy", -1, pairs.primStringCopy),
     make("string->number", 1, pairs.primStringToNumber),
     make("symbol->string", 1, pairs.primSymbolToString),
     make("string->symbol", 1, pairs.primStringToSymbol),

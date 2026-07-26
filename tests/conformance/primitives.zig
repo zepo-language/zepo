@@ -483,6 +483,30 @@ test "ports: with-output-to-string and with-input-from-string parameterize I/O" 
     try helpers.expectTrue(try r.eval("(output-port? (open-output-string))"));
 }
 
+// zepo-1meg: mutable byte-strings. make-string / string-copy produce mutable
+// strings; string-set! / string-fill! mutate them in place (byte-indexed, like
+// string-ref). Immutable literals are rejected. Chars must fit one byte (0..255).
+test "strings: make-string / string-copy are mutable; string-set!/-fill!" {
+    const r = try Rig.init(alloc);
+    defer r.deinit();
+    // make-string with a fill, then mutate.
+    try helpers.expectString(try r.eval("(make-string 3 #\\x)"), "xxx");
+    try helpers.expectString(try r.eval("(define s (make-string 3 #\\a)) (string-set! s 1 #\\Z) s"), "aZa");
+    try helpers.expectInt(try r.eval("(string-length (make-string 5))"), 5);
+    // string-copy makes a mutable copy of a literal; the literal is unchanged.
+    try helpers.expectString(try r.eval("(define c (string-copy \"hello\")) (string-set! c 0 #\\H) c"), "Hello");
+    try helpers.expectString(try r.eval("(string-copy \"abcdef\" 2 5)"), "cde");
+    // string-fill! over a range.
+    try helpers.expectString(try r.eval("(define f (make-string 4 #\\-)) (string-fill! f #\\* 1 3) f"), "-**-");
+    // A mutable string is still a string, equal? / string=? compare by content.
+    try helpers.expectTrue(try r.eval("(string? (make-string 2))"));
+    try helpers.expectTrue(try r.eval("(equal? (make-string 3 #\\a) \"aaa\")"));
+    // Mutating an immutable literal is an error.
+    try std.testing.expectError(error.ContractViolation, r.eval("(string-set! \"lit\" 0 #\\X)"));
+    // A char wider than one byte does not fit zepo's byte strings.
+    try std.testing.expectError(error.ContractViolation, r.eval("(string-set! (make-string 1) 0 (integer->char 300))"));
+}
+
 // zepo-aqwc: #(...) vector literals self-evaluate; equal? recurses into vectors;
 // quasiquote walks vector templates; #; comments out a datum.
 test "reader: vector literals self-evaluate and compare with equal?" {

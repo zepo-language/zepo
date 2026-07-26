@@ -430,6 +430,84 @@ pub fn primStringRef(vm: *VM, args: []const Value) LispError!Value {
     return value_mod.char(@intCast(bytes[idx]));
 }
 
+// zepo-1meg: mutable byte-strings. zepo strings are byte-indexed (string-ref
+// returns a byte), so a "character" for string-set!/-fill!/make-string must fit
+// in one byte (codepoint 0..255); a wider codepoint is rejected. string-set!/
+// -fill! require a MUTABLE string (make-string / string-copy), never a literal.
+
+fn charToByte(v: Value) LispError!u8 {
+    if (!value_mod.isChar(v)) return error.TypeError;
+    const cp = value_mod.charVal(v);
+    if (cp > 255) return error.ContractViolation; // no room in a single byte
+    return @intCast(cp);
+}
+
+// (make-string k [char]) → a fresh mutable string of k bytes (default #\space).
+pub fn primMakeString(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len < 1 or args.len > 2) return error.ArityMismatch;
+    if (!value_mod.isFixnum(args[0])) return error.TypeError;
+    const kv = value_mod.fixnumVal(args[0]);
+    if (kv < 0) return error.ContractViolation;
+    const fill: u8 = if (args.len == 2) try charToByte(args[1]) else ' ';
+    return objects.makeMutableStringFill(vm.gc, @intCast(kv), fill) catch error.OutOfMemory;
+}
+
+// (string-set! s k char) — replace byte k of a mutable string.
+pub fn primStringSet(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len != 3) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    if (!objects.stringIsMutable(args[0])) return error.ContractViolation; // immutable literal
+    if (!value_mod.isFixnum(args[1])) return error.TypeError;
+    const byte = try charToByte(args[2]);
+    const idx: usize = @intCast(value_mod.fixnumVal(args[1]));
+    const dst = objects.stringBytesMut(args[0]);
+    if (idx >= dst.len) return error.ContractViolation;
+    dst[idx] = byte;
+    return value_mod.NIL;
+}
+
+// (string-fill! s char [start [end]]) — fill a mutable string's byte range.
+pub fn primStringFill(vm: *VM, args: []const Value) LispError!Value {
+    _ = vm;
+    if (args.len < 2 or args.len > 4) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    if (!objects.stringIsMutable(args[0])) return error.ContractViolation;
+    const byte = try charToByte(args[1]);
+    const dst = objects.stringBytesMut(args[0]);
+    const start: usize = if (args.len >= 3) blk: {
+        if (!value_mod.isFixnum(args[2])) return error.TypeError;
+        break :blk @intCast(value_mod.fixnumVal(args[2]));
+    } else 0;
+    const end: usize = if (args.len == 4) blk: {
+        if (!value_mod.isFixnum(args[3])) return error.TypeError;
+        break :blk @intCast(value_mod.fixnumVal(args[3]));
+    } else dst.len;
+    if (start > end or end > dst.len) return error.ContractViolation;
+    @memset(dst[start..end], byte);
+    return value_mod.NIL;
+}
+
+// (string-copy s [start [end]]) → a fresh MUTABLE copy of the byte range.
+pub fn primStringCopy(vm: *VM, args: []const Value) LispError!Value {
+    if (args.len < 1 or args.len > 3) return error.ArityMismatch;
+    if (!objects.isString(args[0])) return error.TypeError;
+    const bytes = objects.stringBytes(args[0]);
+    const start: usize = if (args.len >= 2) blk: {
+        if (!value_mod.isFixnum(args[1])) return error.TypeError;
+        break :blk @intCast(value_mod.fixnumVal(args[1]));
+    } else 0;
+    const end: usize = if (args.len == 3) blk: {
+        if (!value_mod.isFixnum(args[2])) return error.TypeError;
+        break :blk @intCast(value_mod.fixnumVal(args[2]));
+    } else bytes.len;
+    if (start > end or end > bytes.len) return error.ContractViolation;
+    // Copy out before makeMutableString allocs (a GC could move the source).
+    const copy = vm.allocator.dupe(u8, bytes[start..end]) catch return error.OutOfMemory;
+    defer vm.allocator.free(copy);
+    return objects.makeMutableString(vm.gc, copy) catch error.OutOfMemory;
+}
+
 pub fn primSubstring(vm: *VM, args: []const Value) LispError!Value {
     if (args.len < 2 or args.len > 3) return error.ArityMismatch;
     if (!objects.isString(args[0])) return error.TypeError;
